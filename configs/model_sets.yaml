@@ -65,3 +65,37 @@ model_sets:
     selectors:
       - source: store
         id_regex: ".*"
+
+  # --- Curated e2e matrix (explicitly pinned to staged models, not regex, so
+  # --- the matrix is reproducible and does not drift with the live catalog).
+
+  dense-singles:
+    name: dense-singles
+    description: Dense models that fit a single node. The single-node leg of the matrix.
+    models:
+      - mlx-community/Qwen3.5-9B-4bit
+      - mlx-community/gemma-4-12B-it-4bit
+      - mlx-community/NVIDIA-Nemotron-Nano-9B-v2-4bits
+      - mlx-community/Meta-Llama-3.1-8B-Instruct-4bit
+      - mlx-community/GLM-4.7-Flash-4bit
+      - mlx-community/Devstral-Small-2-24B-Instruct-2512-4bit
+
+  moe:
+    name: moe
+    description: Mixture-of-experts models. Larger ones widen to multi-node automatically.
+    models:
+      - mlx-community/Qwen3-30B-A3B-4bit
+      - mlx-community/gemma-4-26b-a4b-it-4bit
+      - mlx-community/gpt-oss-20b-MXFP4-Q8
+      - mlx-community/Moonlight-16B-A3B-Instruct-4-bit
+      - mlx-community/Qwen3.5-35B-A3B-4bit
+      - mlx-community/Qwen3.6-35B-A3B-nvfp4
+
+  multinode-large:
+    name: multinode-large
+    description: Large dense + MTP-capable models forced across nodes. The coherence-critical leg (the #297 garble path runs here under sampled multi-node MTP).
+    models:
+      - mlx-community/Qwen3.5-27B-4bit
+      - mlx-community/Qwen3.6-27B-4bit
+      - mlx-community/gemma-4-31b-it-4bit
+      - mlx-community/Qwen3.5-35B-A3B-4bit
