@@ -584,6 +584,20 @@ def run_churn(
                 )
             )
 
+        # If the churned node hosted a shard, Skulk correctly tears down the
+        # non-redundant instance (failing its tasks, #223/#224), so the original
+        # placement may be gone. The churn property is that the cluster stays
+        # SERVICEABLE across node turnover, so re-establish an instance before
+        # asserting a completion rather than expecting the old one to survive a
+        # shard loss it structurally cannot.
+        if not _wait_for_model_servable(
+            client, model_id, timeout_s=20.0, poll_interval_s=config.poll_interval_s
+        ):
+            replaced = _place_multinode(client, config, model_id, report, min_nodes=2)
+            if replaced is not None:
+                placement = replaced
+            round_log["re_placed"] = replaced is not None
+
         try:
             execution = _coherence_completion(client, model_id)
             coherent = completion_is_coherent(execution)
@@ -609,13 +623,22 @@ def run_churn(
 def _pick_non_master_friendly(
     client: SkulkClient, config: HarnessConfig
 ) -> str | None:
-    """Return a friendly name that is configured and is not the master."""
+    """Return a configured friendly name that is neither master nor the client node.
+
+    Skips the master (we churn workers, not the leader — failover covers leader
+    death) and skips the node the harness API client is talking to: killing that
+    node would blind the harness mid-round, the same hazard the failover suite
+    guards against.
+    """
 
     master_id = chaos.current_master(client)
     master_friendly = chaos.friendly_for_node(client, master_id)
     for friendly in config.cluster_nodes:
-        if friendly != master_friendly:
-            return friendly
+        if friendly == master_friendly:
+            continue
+        if friendly in client.base_url:
+            continue
+        return friendly
     return None
 
 
