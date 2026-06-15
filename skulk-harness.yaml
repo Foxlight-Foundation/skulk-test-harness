@@ -1,0 +1,10 @@
+api_base_url: http://kite1:52415
+request_timeout_s: 30
+generation_timeout_s: 1800
+placement_ready_timeout_s: 1800
+store_download_timeout_s: 14400
+poll_interval_s: 2
+output_dir: runs
+model_sets_path: configs/model_sets.yaml
+test_sets_path: configs/test_sets.yaml
+

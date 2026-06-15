@@ -1,0 +1,304 @@
+test_sets:
+  chat-tests:
+    name: chat-tests
+    description: General chat sanity and instruction-following tests.
+    tests:
+      - name: concise-factual-answer
+        kind: chat
+        system: You are a careful assistant. Answer directly and briefly.
+        prompt: What is the capital of France? Answer with only the city name.
+        max_tokens: 32
+        temperature: 0
+        enable_thinking: false
+        success:
+          min_chars: 5
+          required_substrings:
+            - Paris
+
+      - name: structured-list
+        kind: chat
+        system: Follow the user's requested format exactly.
+        prompt: "Return exactly three bullet points about why cluster-level testing matters."
+        max_tokens: 160
+        temperature: 0.2
+        enable_thinking: false
+        success:
+          min_chars: 60
+          required_regexes:
+            - "(?m)^[-*]\\s+"
+
+      # Output-coherence gate. Temperature > 0 so multi-node sampled speculative
+      # decoding is exercised — the path a data-plane delivery reorder (Skulk
+      # #297) silently transposed while every presence-only check stayed green.
+      - name: ordered-integers-coherence
+        kind: chat
+        system: Follow the user's requested format exactly.
+        prompt: "Output the integers from 1 to 30 in order, separated by single spaces, and nothing else."
+        max_tokens: 256
+        temperature: 0.2
+        enable_thinking: false
+        success:
+          in_order_integers: 30
+
+  code-tests:
+    name: code-tests
+    description: Code-generation prompts with simple artifact checks.
+    tests:
+      - name: python-function
+        kind: code
+        prompt: |
+          Write a Python function `is_palindrome(text: str) -> bool` and include only
+          one fenced python code block. It should ignore case and non-alphanumeric characters.
+        max_tokens: 320
+        temperature: 0.1
+        enable_thinking: false
+        success:
+          min_code_block_chars: 120
+          required_substrings:
+            - is_palindrome
+            - bool
+
+  asteroids-challenge:
+    name: asteroids-challenge
+    description: Generate a playable single-file Asteroids-style HTML canvas game.
+    tests:
+      - name: single-file-asteroids
+        kind: artifact
+        system: You are an expert browser game programmer.
+        prompt: |
+          Create a complete playable Asteroids-style game as a single HTML file.
+          Requirements:
+          - Use a canvas element and plain JavaScript, no external assets or libraries.
+          - Include a player ship with rotation, thrust, inertia, shooting, asteroids,
+            collision, score, lives, restart, and keyboard controls.
+          - Return one fenced html code block and no explanatory prose outside it.
+        max_tokens: 4096
+        temperature: 0.3
+        enable_thinking: false
+        success:
+          min_code_block_chars: 2500
+          require_html_artifact: true
+          required_substrings:
+            - canvas
+            - Asteroids
+            - requestAnimationFrame
+            - addEventListener
+
+  gpt-oss-20b-complete:
+    name: gpt-oss-20b-complete
+    description: Broad GPT-OSS 20B suite covering chat, reasoning controls, code, artifacts, and OpenAI tool calls.
+    tests:
+      - name: direct-instruction-smoke
+        kind: chat
+        system: You are a precise conformance test assistant.
+        prompt: Reply with exactly this token and no other text colon SKULK-GPT-OSS-20B-OK
+        max_tokens: 48
+        temperature: 0
+        enable_thinking: false
+        success:
+          min_chars: 20
+          required_substrings:
+            - SKULK-GPT-OSS-20B-OK
+
+      - name: structured-json-contract
+        kind: chat
+        system: Return only valid compact JSON. Do not wrap it in markdown.
+        prompt: |
+          Return a JSON object with these exact keys:
+          "suite", "model_family", "checks".
+          Use "gpt-oss-20b-complete" as suite, "gpt-oss" as model_family,
+          and make checks an array containing "chat", "code", and "tools".
+        max_tokens: 220
+        temperature: 0
+        enable_thinking: false
+        success:
+          min_chars: 80
+          required_substrings:
+            - gpt-oss-20b-complete
+            - model_family
+            - tools
+          required_regexes:
+            - "\"checks\"\\s*:"
+
+      - name: reasoning-toggle-summary
+        kind: chat
+        system: You are testing a reasoning-capable model. Keep final answers concise.
+        prompt: |
+          Think through this internally, then answer in exactly two bullet points:
+          Why can cluster-wide inference tests pass while tool-call parsing still fails?
+        max_tokens: 260
+        temperature: 0.2
+        enable_thinking: true
+        reasoning_effort: low
+        success:
+          min_chars: 80
+          required_regexes:
+            - "(?m)^[-*]\\s+"
+          required_substrings:
+            - tool
+
+      - name: python-code-artifact
+        kind: code
+        prompt: |
+          Write one fenced python code block defining:
+          def summarize_latency(samples: list[float]) -> dict[str, float]
+          It must return count, min, max, mean, and p95. Use only the standard library.
+        max_tokens: 520
+        temperature: 0.1
+        enable_thinking: false
+        success:
+          min_code_block_chars: 260
+          required_substrings:
+            - summarize_latency
+            - p95
+            - statistics
+
+      - name: single-file-status-dashboard
+        kind: artifact
+        system: You are an expert frontend engineer.
+        prompt: |
+          Create a complete single-file HTML dashboard for a Skulk cluster test run.
+          Requirements:
+          - Include a canvas visualization of three nodes and active runners.
+          - Include a table of model, TTFT, TPS, pass/fail, and issue count.
+          - Use plain JavaScript and CSS, no external assets or libraries.
+          - Return one fenced html code block and no prose outside it.
+        max_tokens: 4096
+        temperature: 0.25
+        enable_thinking: false
+        success:
+          min_code_block_chars: 2500
+          require_html_artifact: true
+          required_substrings:
+            - canvas
+            - TTFT
+            - TPS
+            - requestAnimationFrame
+
+      - name: forced-weather-tool-call
+        kind: tool
+        system: Use tools whenever the requested answer depends on live or external data.
+        prompt: What is the current weather in Cedar Rapids, Iowa?
+        max_tokens: 240
+        temperature: 0
+        enable_thinking: false
+        tools:
+          - type: function
+            function:
+              name: get_weather
+              description: Get current weather for a city.
+              parameters:
+                type: object
+                properties:
+                  location:
+                    type: string
+                    description: City and region for the weather lookup.
+                  units:
+                    type: string
+                    enum:
+                      - fahrenheit
+                      - celsius
+                required:
+                  - location
+                  - units
+        tool_choice:
+          type: function
+          function:
+            name: get_weather
+        parallel_tool_calls: false
+        tool_mocks:
+          - name: get_weather
+            content: '{"location":"Cedar Rapids, Iowa","temperature_f":72,"condition":"clear","wind_mph":8}'
+        success:
+          min_chars: 20
+          min_tool_calls: 1
+          required_substrings:
+            - "72"
+            - clear
+          expected_tool_calls:
+            - name: get_weather
+              required_arguments:
+                - location
+              argument_substrings:
+                location: Cedar Rapids
+
+      - name: auto-tool-routing-calculator
+        kind: tool
+        system: Choose the most appropriate tool and call it rather than solving manually.
+        prompt: Use a tool to calculate 187 multiplied by 493.
+        max_tokens: 240
+        temperature: 0
+        enable_thinking: false
+        tools:
+          - type: function
+            function:
+              name: calculate
+              description: Evaluate a deterministic arithmetic expression.
+              parameters:
+                type: object
+                properties:
+                  expression:
+                    type: string
+                    description: Arithmetic expression to evaluate.
+                required:
+                  - expression
+          - type: function
+            function:
+              name: get_weather
+              description: Get current weather for a city.
+              parameters:
+                type: object
+                properties:
+                  location:
+                    type: string
+                required:
+                  - location
+        tool_choice: auto
+        parallel_tool_calls: false
+        tool_mocks:
+          - name: calculate
+            content: '{"expression":"187 * 493","result":92191}'
+        success:
+          min_chars: 5
+          min_tool_calls: 1
+          required_substrings:
+            - "92191"
+          expected_tool_calls:
+            - name: calculate
+              required_arguments:
+                - expression
+              argument_substrings:
+                expression: "187"
+
+      - name: parallel-node-diagnostic-tool-calls
+        kind: tool
+        system: Use available tools to inspect cluster nodes. Return tool calls only.
+        prompt: Check node diagnostics for kite1 and kite2.
+        max_tokens: 360
+        temperature: 0
+        enable_thinking: false
+        tools:
+          - type: function
+            function:
+              name: inspect_node
+              description: Inspect one Skulk node by hostname.
+              parameters:
+                type: object
+                properties:
+                  hostname:
+                    type: string
+                    description: Node hostname.
+                required:
+                  - hostname
+        tool_choice: auto
+        parallel_tool_calls: true
+        success:
+          min_chars: 0
+          min_tool_calls: 2
+          expected_tool_calls:
+            - name: inspect_node
+              argument_substrings:
+                hostname: kite1
+            - name: inspect_node
+              argument_substrings:
+                hostname: kite2

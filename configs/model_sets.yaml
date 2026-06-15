@@ -1,0 +1,67 @@
+model_sets:
+  smoke:
+    name: smoke
+    description: Store-backed default for harness validation on the Kite cluster.
+    models:
+      - mlx-community/Qwen3.5-9B-MLX-4bit
+
+  qwen35-small:
+    name: qwen35-small
+    description: Qwen 3.5 small models useful for MTP and fast loop checks.
+    models:
+      - mlx-community/Qwen3.5-9B-4bit
+      - mlx-community/Qwen3.5-9B-MLX-4bit
+      - mlx-community/Qwen3.5-27B-4bit
+
+  gemma4-family:
+    name: gemma4-family
+    description: Gemma 4 family models discovered from the live Skulk catalog plus known seeds.
+    selectors:
+      - source: both
+        id_regex: "gemma[-_]?4"
+        max_models: 20
+    huggingface_seeds:
+      - model_id: mlx-community/gemma-4-e2b-it-8bit
+        reason: Small Gemma 4 smoke candidate.
+      - model_id: mlx-community/gemma-4-e4b-it-8bit
+        reason: Gemma 4 E4B candidate.
+      - model_id: mlx-community/gemma-4-12B-it-4bit
+        reason: Gemma 4 12B candidate.
+      - model_id: mlx-community/gemma-4-26b-a4b-it-4bit
+        reason: Gemma 4 A4B candidate.
+
+  moe-family:
+    name: moe-family
+    description: Mixture-of-experts style models from common Skulk families.
+    selectors:
+      - source: both
+        id_regex: "(A3B|A4B|A10B|A17B|A22B|A35B|MoE|Mixtral|DeepSeek|Kimi|MiniMax)"
+        max_models: 40
+
+  mtp-tests:
+    name: mtp-tests
+    description: Models expected to exercise speculative decoding paths.
+    selectors:
+      - source: both
+        id_regex: "(Qwen3\\.5|DeepSeek|gemma[-_]?4)"
+        max_models: 30
+
+  gpt-oss-20b:
+    name: gpt-oss-20b
+    description: GPT-OSS 20B target for broad harness and tool-calling coverage.
+    models:
+      - mlx-community/gpt-oss-20b-MXFP4-Q8
+    selectors:
+      - source: both
+        id_regex: "gpt[-_]?oss[-_]?20b"
+        max_models: 5
+    huggingface_seeds:
+      - model_id: mlx-community/gpt-oss-20b-MXFP4-Q8
+        reason: Store-backed GPT-OSS 20B Q8 candidate used on the Kite cluster.
+
+  store-all:
+    name: store-all
+    description: Every model currently present in the configured Skulk model store.
+    selectors:
+      - source: store
+        id_regex: ".*"
