@@ -22,6 +22,23 @@ class HarnessBaseModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class ClusterNode(HarnessBaseModel):
+    """SSH-reachable control surface for one physical cluster node.
+
+    The harness uses this to crash and relaunch a node's skulk process during
+    the stability suites (failover/churn). It is intentionally separate from the
+    libp2p node identity: ``ssh_host`` is an SSH alias/hostname, while the live
+    libp2p ``node_id`` is ephemeral and discovered from cluster state at runtime.
+    """
+
+    ssh_host: str = Field(
+        description="SSH host or alias used to reach this node (passed to `ssh`)."
+    )
+    repo_path: str = Field(
+        description="Absolute path to the Skulk checkout on the node, used to relaunch."
+    )
+
+
 class HarnessConfig(HarnessBaseModel):
     """Top-level local coordinator settings."""
 
@@ -34,6 +51,14 @@ class HarnessConfig(HarnessBaseModel):
     output_dir: Path = Path("runs")
     model_sets_path: Path = Path("configs/model_sets.yaml")
     test_sets_path: Path = Path("configs/test_sets.yaml")
+    cluster_nodes: dict[str, ClusterNode] = Field(
+        default_factory=dict,
+        description=(
+            "Map of friendly node name to its SSH control surface. Required for "
+            "the failover and churn stability suites; keyed by the friendly name "
+            "reported in cluster state (nodeIdentities[<nodeId>].friendlyName)."
+        ),
+    )
 
 
 class HuggingFaceSeed(HarnessBaseModel):
@@ -283,6 +308,65 @@ class RunReport(HarnessBaseModel):
         )
 
     def finish(self) -> "RunReport":
+        """Return a copy marked with the current UTC finish time."""
+
+        return self.model_copy(update={"finished_at": datetime.now(tz=UTC)})
+
+
+StabilitySuite = Literal["failover", "churn", "soak", "refusal"]
+
+
+class LatencySummary(HarnessBaseModel):
+    """Aggregate latency statistics over a population of completions."""
+
+    count: int = 0
+    failures: int = 0
+    p50_s: float | None = None
+    p95_s: float | None = None
+    max_s: float | None = None
+    min_s: float | None = None
+    mean_s: float | None = None
+
+
+class StabilityReport(HarnessBaseModel):
+    """Machine-readable result of one stability suite run.
+
+    Unlike :class:`RunReport`, stability suites assert cluster *properties*
+    (master election, instance continuity, refusal behavior) rather than scoring
+    model output, so they carry a free-form ``observations`` map alongside the
+    shared :class:`Issue` list. ``passed`` is true only when no error-severity
+    issue was recorded.
+    """
+
+    run_id: str
+    suite: StabilitySuite
+    model_id: str
+    started_at: datetime
+    finished_at: datetime | None = None
+    passed: bool = True
+    issues: list[Issue] = Field(default_factory=list)
+    latency: LatencySummary | None = None
+    observations: dict[str, object] = Field(default_factory=dict)
+
+    @classmethod
+    def start(cls, run_id: str, suite: StabilitySuite, model_id: str) -> "StabilityReport":
+        """Create a stability report stamped with the current UTC start time."""
+
+        return cls(
+            run_id=run_id,
+            suite=suite,
+            model_id=model_id,
+            started_at=datetime.now(tz=UTC),
+        )
+
+    def add_issue(self, issue: Issue) -> None:
+        """Record an issue and clear ``passed`` on any error severity."""
+
+        self.issues.append(issue)
+        if issue.severity == "error":
+            self.passed = False
+
+    def finish(self) -> "StabilityReport":
         """Return a copy marked with the current UTC finish time."""
 
         return self.model_copy(update={"finished_at": datetime.now(tz=UTC)})

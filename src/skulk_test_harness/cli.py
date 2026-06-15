@@ -10,9 +10,15 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from skulk_test_harness import stability
 from skulk_test_harness.client import SkulkClient
 from skulk_test_harness.goal_parser import parse_goal
-from skulk_test_harness.models import HarnessConfig, PlacementPolicy, RunSpec
+from skulk_test_harness.models import (
+    HarnessConfig,
+    PlacementPolicy,
+    RunSpec,
+    StabilityReport,
+)
 from skulk_test_harness.orchestrator import HarnessRunner
 from skulk_test_harness.reporting import ReportWriter
 from skulk_test_harness.specs import load_config, load_model_sets, load_test_sets
@@ -20,10 +26,16 @@ from skulk_test_harness.specs import load_config, load_model_sets, load_test_set
 app = typer.Typer(help="Agent-controlled Skulk end-to-end test and benchmark harness.")
 models_app = typer.Typer(help="Inspect model sets and live Skulk model catalog.")
 tests_app = typer.Typer(help="Inspect named test sets.")
+stability_app = typer.Typer(help="Run cluster stability suites (failover/churn/soak/refusal).")
 app.add_typer(models_app, name="models")
 app.add_typer(tests_app, name="tests")
+app.add_typer(stability_app, name="stability")
 
 console = Console()
+
+# A small model that can shard across the kite TP pair, used as the default
+# target for the stability suites.
+DEFAULT_STABILITY_MODEL = "mlx-community/Qwen3.5-9B-4bit"
 
 
 ConfigPath = Annotated[
@@ -297,6 +309,107 @@ def goal(
     report = runner.execute(spec) if execute else runner.plan(spec)
     run_dir = ReportWriter(cfg.output_dir).write(report)
     _print_report_summary(report, run_dir)
+
+
+ModelOption = Annotated[
+    str,
+    typer.Option("--model", "-m", help="Model ID to exercise (multinode-capable)."),
+]
+
+
+def _stability_client(cfg: HarnessConfig) -> SkulkClient:
+    return SkulkClient(
+        cfg.api_base_url,
+        request_timeout_s=cfg.request_timeout_s,
+        generation_timeout_s=cfg.generation_timeout_s,
+    )
+
+
+def _write_stability(cfg: HarnessConfig, report: StabilityReport) -> None:
+    run_dir = ReportWriter(cfg.output_dir).write_stability(report)
+    _print_stability_summary(report, run_dir)
+
+
+@stability_app.command("failover")
+def stability_failover(
+    model: ModelOption = DEFAULT_STABILITY_MODEL,
+    config: ConfigPath = Path("skulk-harness.yaml"),
+    min_nodes: Annotated[int, typer.Option(help="Minimum nodes to place across.")] = 2,
+) -> None:
+    """Crash the master mid-stream and assert the cluster survives (#273)."""
+
+    cfg = load_config(config)
+    with _stability_client(cfg) as client:
+        report = stability.run_failover(client, cfg, model, min_nodes=min_nodes)
+    _write_stability(cfg, report)
+
+
+@stability_app.command("churn")
+def stability_churn(
+    model: ModelOption = DEFAULT_STABILITY_MODEL,
+    config: ConfigPath = Path("skulk-harness.yaml"),
+    rounds: Annotated[int, typer.Option(help="Kill/relaunch rounds to run.")] = 3,
+) -> None:
+    """Repeatedly crash and relaunch a non-master node, asserting recovery."""
+
+    cfg = load_config(config)
+    with _stability_client(cfg) as client:
+        report = stability.run_churn(client, cfg, model, rounds=rounds)
+    _write_stability(cfg, report)
+
+
+@stability_app.command("soak")
+def stability_soak(
+    model: ModelOption = DEFAULT_STABILITY_MODEL,
+    config: ConfigPath = Path("skulk-harness.yaml"),
+    concurrency: Annotated[int, typer.Option(help="Concurrent completion workers.")] = 4,
+    duration_s: Annotated[float, typer.Option(help="Soak duration in seconds.")] = 120.0,
+) -> None:
+    """Drive sustained concurrent load and report latency/failures."""
+
+    cfg = load_config(config)
+    with _stability_client(cfg) as client:
+        report = stability.run_soak(
+            client, cfg, model, concurrency=concurrency, duration_s=duration_s
+        )
+    _write_stability(cfg, report)
+
+
+@stability_app.command("refusal")
+def stability_refusal(
+    model: ModelOption = DEFAULT_STABILITY_MODEL,
+    config: ConfigPath = Path("skulk-harness.yaml"),
+) -> None:
+    """Assert an impossible placement is refused or re-placed, not wedged (#290)."""
+
+    cfg = load_config(config)
+    with _stability_client(cfg) as client:
+        report = stability.run_placement_refusal(client, cfg, model)
+    _write_stability(cfg, report)
+
+
+def _print_stability_summary(report: StabilityReport, run_dir: Path) -> None:
+    error_count = sum(1 for issue in report.issues if issue.severity == "error")
+    warning_count = sum(1 for issue in report.issues if issue.severity == "warning")
+    table = Table(title=f"Stability {report.suite}: {report.run_id}")
+    table.add_column("Field")
+    table.add_column("Value")
+    table.add_row("Model", report.model_id)
+    table.add_row("Result", "PASS" if report.passed else "FAIL")
+    table.add_row("Errors", str(error_count))
+    table.add_row("Warnings", str(warning_count))
+    if report.latency is not None:
+        table.add_row("Completions", str(report.latency.count))
+        table.add_row("Failures", str(report.latency.failures))
+        if report.latency.p50_s is not None:
+            table.add_row("p50 s", f"{report.latency.p50_s:.2f}")
+        if report.latency.p95_s is not None:
+            table.add_row("p95 s", f"{report.latency.p95_s:.2f}")
+    table.add_row("Report dir", str(run_dir))
+    console.print(table)
+    for issue in report.issues:
+        color = "red" if issue.severity == "error" else "yellow"
+        console.print(f"[{color}]{issue.severity}[/{color}] {issue.message}")
 
 
 def _print_report_summary(report, run_dir: Path) -> None:  # noqa: ANN001

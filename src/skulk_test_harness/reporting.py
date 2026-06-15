@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from skulk_test_harness.models import Issue, RunReport
+from skulk_test_harness.models import Issue, RunReport, StabilityReport
 from skulk_test_harness.utils import slugify
 
 
@@ -30,6 +30,17 @@ class ReportWriter:
         )
         (run_dir / "events.jsonl").write_text(_jsonl(report))
         (run_dir / "summary.md").write_text(_markdown(report))
+        return run_dir
+
+    def write_stability(self, report: StabilityReport) -> Path:
+        """Write a stability suite report's JSON and Markdown summary."""
+
+        run_dir = self.run_dir(report.run_id)
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "report.json").write_text(
+            report.model_dump_json(indent=2, serialize_as_any=True)
+        )
+        (run_dir / "summary.md").write_text(_stability_markdown(report))
         return run_dir
 
 
@@ -125,6 +136,49 @@ def _issue_lines(issue: Issue) -> list[str]:
     if issue.test_name:
         scope += f" test=`{issue.test_name}`"
     return [f"- **{issue.severity}**{scope}: {issue.message}"]
+
+
+def _stability_markdown(report: StabilityReport) -> str:
+    lines: list[str] = [
+        f"# Skulk Stability Suite: {report.suite}",
+        "",
+        f"- Run: `{report.run_id}`",
+        f"- Model: `{report.model_id}`",
+        f"- Started: `{report.started_at.isoformat()}`",
+        f"- Finished: `{report.finished_at.isoformat() if report.finished_at else 'running'}`",
+        f"- Result: **{'PASS' if report.passed else 'FAIL'}**",
+        "",
+    ]
+    if report.latency is not None:
+        latency = report.latency
+        lines.extend(
+            [
+                "## Latency",
+                "",
+                f"- Successful completions: {latency.count}",
+                f"- Failures: {latency.failures}",
+                f"- p50: {_fmt(latency.p50_s)} s",
+                f"- p95: {_fmt(latency.p95_s)} s",
+                f"- max: {_fmt(latency.max_s)} s",
+                "",
+            ]
+        )
+
+    lines.extend(["## Observations", ""])
+    if report.observations:
+        for key in sorted(report.observations):
+            lines.append(f"- `{key}`: {report.observations[key]}")
+    else:
+        lines.append("- None")
+
+    lines.extend(["", "## Issues", ""])
+    if report.issues:
+        for issue in report.issues:
+            lines.extend(_issue_lines(issue))
+    else:
+        lines.append("- None")
+    lines.append("")
+    return "\n".join(lines)
 
 
 def _fmt(value: float | None) -> str:

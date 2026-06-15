@@ -107,6 +107,29 @@ class SkulkClient:
             raise TypeError("Expected /state to return an object")
         return payload
 
+    def get_diagnostics_node(self) -> dict[str, object]:
+        """Return this API node's diagnostics payload.
+
+        The ``runtime`` block carries ``masterNodeId``, ``isMaster``, ``nodeId``,
+        and ``friendlyName`` for the node serving this request, which the
+        stability suites use to identify the current master before crashing it.
+        """
+
+        payload = self._request_json("GET", "/v1/diagnostics/node")
+        if not isinstance(payload, dict):
+            raise TypeError("Expected /v1/diagnostics/node to return an object")
+        return payload
+
+    def get_master_node_id(self) -> str:
+        """Return the current master node ID as seen by this API node."""
+
+        diagnostics = self.get_diagnostics_node()
+        runtime = diagnostics.get("runtime")
+        if not isinstance(runtime, dict):
+            return ""
+        master = runtime.get("masterNodeId")
+        return master if isinstance(master, str) else ""
+
     def list_models(self) -> list[dict[str, object]]:
         """Return the Skulk model catalog."""
 
