@@ -13,3 +13,6 @@ build/
 logs/
 runs/
 tmp/
+
+# Local per-node harness configs (e.g. failover routed at a surviving node)
+skulk-harness-*.yaml
