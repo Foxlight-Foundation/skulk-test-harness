@@ -82,12 +82,18 @@ def summarize_latency(samples: list[float], *, failures: int = 0) -> LatencySumm
 def completion_is_coherent(execution: ChatExecution) -> bool:
     """Return whether a completion produced usable, non-empty output.
 
-    A coherent completion has non-empty text and at least one streamed chunk;
-    an empty or zero-chunk result indicates a wedged/aborted generation even if
-    the HTTP request itself returned 200.
+    A healthy completion produced non-empty output in EITHER the content or the
+    reasoning channel, and streamed at least one chunk. Reasoning models legitly
+    emit their answer as ``reasoning_text`` with empty ``text`` (especially when
+    a tight ``max_tokens`` is consumed mid-think), so checking ``text`` alone
+    would wrongly fail a perfectly-serving model. An empty/zero-chunk result
+    indicates a wedged or aborted generation even if the HTTP request returned
+    200 — which is what the stability suites care about (is the cluster serving),
+    not answer correctness.
     """
 
-    return bool(execution.text.strip()) and execution.metrics.chunks > 0
+    produced = bool(execution.text.strip()) or bool(execution.reasoning_text.strip())
+    return produced and execution.metrics.chunks > 0
 
 
 def classify_placement_outcome(

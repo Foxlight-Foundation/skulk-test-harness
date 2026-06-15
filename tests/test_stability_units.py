@@ -88,6 +88,21 @@ def test_completion_not_coherent_when_empty() -> None:
     assert completion_is_coherent(_execution("   ", chunks=2)) is False
 
 
+def test_completion_coherent_for_reasoning_only_output() -> None:
+    # Reasoning models stream their answer as reasoning_text with empty content
+    # (e.g. max_tokens consumed mid-think). That is a healthy, serving cluster,
+    # so liveness must not require non-empty `text`.
+    reasoning_only = ChatExecution(
+        text="",
+        reasoning_text="1 2 3 4 5",
+        tool_calls=[],
+        metrics=GenerationMetrics(elapsed_s=1.0, chunks=5, output_chars=0),
+        command_id="cmd-2",
+        raw_events=[],
+    )
+    assert completion_is_coherent(reasoning_only) is True
+
+
 def test_completion_not_coherent_when_no_chunks() -> None:
     assert completion_is_coherent(_execution("text", chunks=0)) is False
 
