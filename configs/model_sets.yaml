@@ -99,3 +99,14 @@ model_sets:
       - mlx-community/Qwen3.6-27B-4bit
       - mlx-community/gemma-4-31b-it-4bit
       - mlx-community/Qwen3.5-35B-A3B-4bit
+
+  gguf-llama-cpp:
+    name: gguf-llama-cpp
+    description: >-
+      GGUF models served by the llama.cpp engine on a non-Mac GPU node (e.g. an
+      AMD Strix Halo box, kite4). The card's compatible_backends are llama.cpp
+      tags, so Skulk's placement filter routes these only to a llama_cpp node --
+      no harness-side node pinning needed. Small + already staged so the run is
+      fast and self-contained.
+    models:
+      - unsloth/Llama-3.2-1B-Instruct-GGUF

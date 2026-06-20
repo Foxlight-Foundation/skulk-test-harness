@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from skulk_test_harness.client import _extract_stream_delta
+from skulk_test_harness.client import _extract_stream_delta, _extract_stream_logprobs
 from skulk_test_harness.models import (
     ExpectedToolCall,
     SuccessCriteria,
@@ -238,3 +238,76 @@ def test_gpt_oss_complete_suite_loads_tool_tests() -> None:
     assert len(tool_tests) == 3
     assert all(test.tools for test in tool_tests)
     assert sum(1 for test in tool_tests if test.tool_mocks) == 2
+
+
+def test_score_output_require_logprobs_fails_when_absent() -> None:
+    issues = _score_output(
+        "model",
+        "logprobs-parity",
+        "hello",
+        SuccessCriteria(min_chars=1, require_logprobs=True),
+        logprob_tokens=0,
+    )
+    assert any("logprobs" in issue.message.lower() for issue in issues)
+
+
+def test_score_output_require_logprobs_passes_when_present() -> None:
+    issues = _score_output(
+        "model",
+        "logprobs-parity",
+        "hello",
+        SuccessCriteria(min_chars=1, require_logprobs=True),
+        logprob_tokens=5,
+    )
+    assert issues == []
+
+
+def test_extract_stream_logprobs_counts_tokens_and_top() -> None:
+    event: dict[str, object] = {
+        "choices": [
+            {
+                "delta": {"content": "Hi"},
+                "logprobs": {
+                    "content": [
+                        {
+                            "token": "Hi",
+                            "logprob": -0.2,
+                            "top_logprobs": [
+                                {"token": "Hi", "logprob": -0.2},
+                                {"token": "Hey", "logprob": -1.5},
+                            ],
+                        }
+                    ]
+                },
+            }
+        ]
+    }
+    assert _extract_stream_logprobs(event) == (1, 1)
+
+
+def test_extract_stream_logprobs_zero_without_logprobs() -> None:
+    no_logprobs: dict[str, object] = {"choices": [{"delta": {"content": "x"}}]}
+    assert _extract_stream_logprobs(no_logprobs) == (0, 0)
+    assert _extract_stream_logprobs({}) == (0, 0)
+    # logprob entry without ranked alternatives counts as a token, not a top.
+    event: dict[str, object] = {
+        "choices": [{"logprobs": {"content": [{"token": "a", "logprob": -1.0}]}}]
+    }
+    assert _extract_stream_logprobs(event) == (1, 0)
+
+
+def test_llama_cpp_suite_and_gguf_set_load() -> None:
+    root = Path(__file__).parents[1]
+    model_sets = load_model_sets(root / "configs/model_sets.yaml").model_sets
+    test_sets = load_test_sets(root / "configs/test_sets.yaml").test_sets
+
+    assert model_sets["gguf-llama-cpp"].models == [
+        "unsloth/Llama-3.2-1B-Instruct-GGUF"
+    ]
+    suite = test_sets["llama-cpp"]
+    names = {test.name for test in suite.tests}
+    assert {"ordered-integers-coherence", "logprobs-parity", "tool-call-path"} <= names
+
+    logprobs_test = next(t for t in suite.tests if t.name == "logprobs-parity")
+    assert logprobs_test.top_logprobs == 3
+    assert logprobs_test.success.require_logprobs is True

@@ -302,3 +302,76 @@ test_sets:
             - name: inspect_node
               argument_substrings:
                 hostname: kite2
+
+  llama-cpp:
+    name: llama-cpp
+    description: >-
+      Capability + coherence checks for the llama.cpp (GGUF) engine on a non-Mac
+      GPU node. Pair with the gguf-llama-cpp model set. Covers basic generation,
+      streamed-order coherence, logprob parity, and the tool-calling code path.
+    tests:
+      - name: concise-factual-answer
+        kind: chat
+        system: You are a careful assistant. Answer in as few words as possible.
+        prompt: What is the capital of France?
+        max_tokens: 32
+        temperature: 0
+        enable_thinking: false
+        success:
+          min_chars: 4
+          required_substrings:
+            - Paris
+
+      - name: ordered-integers-coherence
+        kind: chat
+        system: Follow the user's requested format exactly.
+        prompt: "Output the integers from 1 to 20 in order, separated by single spaces, and nothing else."
+        max_tokens: 192
+        temperature: 0.2
+        enable_thinking: false
+        success:
+          in_order_integers: 20
+
+      - name: logprobs-parity
+        kind: chat
+        # Verifies the llama.cpp logprobs capability end-to-end: the runner loads
+        # with logits_all so logprobs are produced, the API streams them, and the
+        # harness sees per-token logprobs. A CPU-only/degraded build that cannot
+        # serve logprobs would return none and fail require_logprobs.
+        prompt: Say hello in one word.
+        max_tokens: 8
+        temperature: 0
+        enable_thinking: false
+        top_logprobs: 3
+        success:
+          min_chars: 1
+          require_logprobs: true
+
+      - name: tool-call-path
+        kind: tool
+        # The runner forwards `tools` and emits a ToolCallChunk when the model
+        # returns a structured tool call, else a normal terminal chunk. A small
+        # model often describes the call in prose rather than emitting a native
+        # tool_call, so this asserts the path completes coherently (no error,
+        # non-empty output) rather than a native tool_call. A tool-trained GGUF
+        # can tighten this with min_tool_calls / expected_tool_calls.
+        prompt: What is the weather in San Francisco?
+        max_tokens: 96
+        temperature: 0
+        enable_thinking: false
+        tools:
+          - type: function
+            function:
+              name: get_weather
+              description: Get the current weather for a city.
+              parameters:
+                type: object
+                properties:
+                  city:
+                    type: string
+                    description: City name.
+                required:
+                  - city
+        tool_choice: auto
+        success:
+          min_chars: 2

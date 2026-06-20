@@ -362,6 +362,7 @@ class HarnessRunner:
                 tools=test.tools,
                 tool_choice=test.tool_choice,
                 parallel_tool_calls=test.parallel_tool_calls,
+                top_logprobs=test.top_logprobs,
             )
         except SkulkApiError as exc:
             issue = Issue(
@@ -422,6 +423,7 @@ class HarnessRunner:
             scored_execution.text,
             test.success,
             tool_calls=execution.tool_calls,
+            logprob_tokens=execution.logprob_tokens,
         )
         issues.extend(roundtrip_issues)
         artifact_path = _artifact_path(artifact_dir, model_id, test, repetition, execution)
@@ -564,9 +566,22 @@ def _score_output(
     criteria: SuccessCriteria,
     *,
     tool_calls: list[ToolCallRecord] | None = None,
+    logprob_tokens: int = 0,
 ) -> list[Issue]:
     issues: list[Issue] = []
     tool_calls = tool_calls or []
+    if criteria.require_logprobs and logprob_tokens <= 0:
+        issues.append(
+            Issue(
+                severity="error",
+                model_id=model_id,
+                test_name=test_name,
+                message=(
+                    "Expected per-token logprobs but the stream returned none "
+                    "(the serving runner/build did not produce logprobs)"
+                ),
+            )
+        )
     if len(text) < criteria.min_chars:
         issues.append(
             Issue(
