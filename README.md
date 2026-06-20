@@ -61,6 +61,7 @@ Model sets:
 - `moe-family`
 - `mtp-tests`
 - `gpt-oss-20b`
+- `gguf-llama-cpp`
 - `store-all`
 
 Test sets:
@@ -69,6 +70,27 @@ Test sets:
 - `code-tests`
 - `asteroids-challenge`
 - `gpt-oss-20b-complete`
+- `llama-cpp`
+
+### AMD / llama.cpp (GGUF) node
+
+`gguf-llama-cpp` + `llama-cpp` exercise the non-MLX engine on a GPU node (e.g. an
+AMD Strix Halo box). The GGUF card's `compatible_backends` are llama.cpp tags, so
+Skulk's placement filter routes the model only to a `llama_cpp` node; no
+harness-side node pinning is needed (point `api_base_url` at any cluster node).
+
+```bash
+uv run skulk-harness run \
+  --model-set gguf-llama-cpp \
+  --test-set llama-cpp \
+  --execute --delete-created-instances
+```
+
+The `llama-cpp` suite covers basic generation, streamed-order coherence
+(`in_order_integers`), logprob parity (`top_logprobs` + `require_logprobs` -- a
+CPU-only/degraded build that cannot serve logprobs fails this), and the
+tool-calling code path. Logprob coverage works for any engine; only this suite
+opts in.
 
 ## Safety Notes
 

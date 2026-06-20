@@ -127,6 +127,16 @@ class SuccessCriteria(HarnessBaseModel):
     required_regexes: list[str] = Field(default_factory=list)
     expected_tool_calls: list["ExpectedToolCall"] = Field(default_factory=list)
     require_html_artifact: bool = False
+    require_logprobs: bool = Field(
+        default=False,
+        description=(
+            "When true, assert the stream returned per-token logprobs (i.e. the "
+            "test must also set top_logprobs). Verifies the logprobs capability "
+            "end-to-end through the API and the serving runner -- the key check "
+            "for llama.cpp logprob parity, where a build that cannot serve "
+            "logprobs would yield none."
+        ),
+    )
 
 
 class ExpectedToolCall(HarnessBaseModel):
@@ -162,6 +172,15 @@ class PromptTest(HarnessBaseModel):
     tool_choice: str | dict[str, object] | None = None
     parallel_tool_calls: bool | None = None
     tool_mocks: list[ToolMock] = Field(default_factory=list)
+    top_logprobs: int | None = Field(
+        default=None,
+        ge=0,
+        le=20,
+        description=(
+            "Request this many ranked logprob alternatives per token (sets "
+            "logprobs=true on the request). Pair with success.require_logprobs."
+        ),
+    )
     repetitions: int = Field(default=1, ge=1)
     success: SuccessCriteria = Field(default_factory=SuccessCriteria)
 

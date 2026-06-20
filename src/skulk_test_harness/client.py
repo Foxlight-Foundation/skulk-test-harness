@@ -41,6 +41,11 @@ class ChatExecution:
     metrics: GenerationMetrics
     command_id: str | None
     raw_events: list[dict[str, object]]
+    # Per-token logprob coverage observed in the stream (0 unless logprobs were
+    # requested). ``logprob_tokens`` counts tokens that carried a logprob;
+    # ``top_logprob_tokens`` counts those that also carried ranked alternatives.
+    logprob_tokens: int = 0
+    top_logprob_tokens: int = 0
 
 
 class SkulkClient:
@@ -339,6 +344,7 @@ class SkulkClient:
         tools: list[dict[str, object]] | None = None,
         tool_choice: str | dict[str, object] | None = None,
         parallel_tool_calls: bool | None = None,
+        top_logprobs: int | None = None,
     ) -> ChatExecution:
         """Run one streaming chat completion and measure wall-clock metrics."""
 
@@ -362,6 +368,10 @@ class SkulkClient:
             payload["tool_choice"] = tool_choice
         if parallel_tool_calls is not None:
             payload["parallel_tool_calls"] = parallel_tool_calls
+        if top_logprobs is not None:
+            # OpenAI semantics: logprobs must be on for top_logprobs to apply.
+            payload["logprobs"] = True
+            payload["top_logprobs"] = top_logprobs
 
         start = time.monotonic()
         first_token_at: float | None = None
@@ -371,6 +381,8 @@ class SkulkClient:
         raw_events: list[dict[str, object]] = []
         command_id: str | None = None
         chunks = 0
+        logprob_tokens = 0
+        top_logprob_tokens = 0
 
         with self._client.stream(
             "POST",
@@ -398,6 +410,9 @@ class SkulkClient:
                 if event is None:
                     continue
                 raw_events.append(event)
+                event_logprobs, event_top_logprobs = _extract_stream_logprobs(event)
+                logprob_tokens += event_logprobs
+                top_logprob_tokens += event_top_logprobs
                 content, reasoning, event_tool_calls = _extract_stream_delta(event)
                 text_for_timing = content or reasoning
                 if text_for_timing:
@@ -436,6 +451,8 @@ class SkulkClient:
             metrics=metrics,
             command_id=command_id,
             raw_events=raw_events,
+            logprob_tokens=logprob_tokens,
+            top_logprob_tokens=top_logprob_tokens,
         )
 
     def bench_chat(
@@ -606,6 +623,39 @@ def _extract_stream_delta(
         reasoning if isinstance(reasoning, str) else "",
         _tool_call_records(delta.get("tool_calls")),
     )
+
+
+def _extract_stream_logprobs(event: dict[str, object]) -> tuple[int, int]:
+    """Count per-token logprob entries in one streaming chunk.
+
+    Skulk (OpenAI-compatible) puts logprobs at the choice level, as a sibling of
+    ``delta``: ``choices[0].logprobs.content`` is a list of per-token entries,
+    each optionally carrying ``top_logprobs`` alternatives. Returns
+    ``(logprob_tokens, top_logprob_tokens)`` for this chunk; ``(0, 0)`` when the
+    chunk carries no logprobs (the common case when they were not requested).
+    """
+    choices = event.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return 0, 0
+    first = choices[0]
+    if not isinstance(first, dict):
+        return 0, 0
+    logprobs = first.get("logprobs")
+    if not isinstance(logprobs, dict):
+        return 0, 0
+    content = logprobs.get("content")
+    if not isinstance(content, list):
+        return 0, 0
+    logprob_tokens = 0
+    top_logprob_tokens = 0
+    for entry in content:
+        if not isinstance(entry, dict) or "logprob" not in entry:
+            continue
+        logprob_tokens += 1
+        top = entry.get("top_logprobs")
+        if isinstance(top, list) and top:
+            top_logprob_tokens += 1
+    return logprob_tokens, top_logprob_tokens
 
 
 def _extract_non_stream_text(event: dict[str, object]) -> str:
