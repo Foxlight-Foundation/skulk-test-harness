@@ -375,3 +375,27 @@ test_sets:
         tool_choice: auto
         success:
           min_chars: 2
+
+  throughput:
+    name: throughput
+    description: >
+      Sustained-generation decode throughput. Drives a long continuous output so
+      wall_tps (approx tokens / decode time, excluding TTFT) is a meaningful
+      steady-state tok/s rather than the noise of a few-token chat answer.
+      Averaged over repetitions. Pair with any model set; tear down between cells.
+    tests:
+      - name: sustained-decode-512
+        kind: chat
+        system: You are a thorough technical writer. Write continuous prose.
+        prompt: >
+          Write a detailed, self-contained explanation (around 700 words) of how a
+          distributed inference system shards a large language model across several
+          machines: pipeline vs tensor parallelism, how the KV cache is managed,
+          how tokens stream back to the client, and the main failure modes and how
+          a cluster recovers from them. Use flowing paragraphs, no lists.
+        max_tokens: 512
+        temperature: 0.7
+        enable_thinking: false
+        repetitions: 3
+        success:
+          min_chars: 800
