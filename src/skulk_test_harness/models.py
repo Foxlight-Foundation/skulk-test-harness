@@ -48,6 +48,17 @@ class HarnessConfig(HarnessBaseModel):
     placement_ready_timeout_s: float = 1800.0
     store_download_timeout_s: float = 14400.0
     poll_interval_s: float = 2.0
+    preview_settle_attempts: int = Field(
+        default=8,
+        ge=1,
+        description=(
+            "How many times to re-request placement previews when none are yet "
+            "viable, polling at poll_interval_s. Bridges the transient where a "
+            "just-torn-down instance's freed memory has not yet reflected in "
+            "gossiped telemetry (the tear-down-then-place matrix loop), which the "
+            "cluster clears within a few seconds."
+        ),
+    )
     output_dir: Path = Path("runs")
     model_sets_path: Path = Path("configs/model_sets.yaml")
     test_sets_path: Path = Path("configs/test_sets.yaml")

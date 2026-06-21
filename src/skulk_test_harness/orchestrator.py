@@ -159,7 +159,27 @@ class HarnessRunner:
     def choose_preview(
         self, client: SkulkClient, model_id: str, placement: PlacementPolicy
     ) -> dict[str, object] | None:
-        """Select the best placement preview for a model and policy."""
+        """Select the best placement preview for a model and policy.
+
+        Retries the previews request while none are viable: right after a
+        teardown the freed memory of the prior model lags in gossiped telemetry,
+        so a single shot can transiently see no fit (the tear-down-then-place
+        matrix loop). The cluster clears it within a few seconds; a real no-fit
+        keeps returning empty and we give up after ``preview_settle_attempts``.
+        """
+        attempts = max(1, self.config.preview_settle_attempts)
+        chosen: dict[str, object] | None = None
+        for attempt in range(attempts):
+            chosen = self._choose_preview_once(client, model_id, placement)
+            if chosen is not None or attempt == attempts - 1:
+                break
+            time.sleep(self.config.poll_interval_s)
+        return chosen
+
+    def _choose_preview_once(
+        self, client: SkulkClient, model_id: str, placement: PlacementPolicy
+    ) -> dict[str, object] | None:
+        """Single pass: pick the best viable preview for a model and policy."""
 
         previews = [
             preview
