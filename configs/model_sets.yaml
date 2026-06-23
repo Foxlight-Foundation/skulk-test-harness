@@ -78,7 +78,6 @@ model_sets:
       - mlx-community/NVIDIA-Nemotron-Nano-9B-v2-4bits
       - mlx-community/Meta-Llama-3.1-8B-Instruct-4bit
       - mlx-community/GLM-4.7-Flash-4bit
-      - mlx-community/Devstral-Small-2-24B-Instruct-2512-4bit
 
   moe:
     name: moe
