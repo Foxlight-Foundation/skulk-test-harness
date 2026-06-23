@@ -1,13 +1,26 @@
 from pathlib import Path
 
-from skulk_test_harness.client import _extract_stream_delta, _extract_stream_logprobs
+from skulk_test_harness.client import (
+    ChatExecution,
+    SkulkApiError,
+    SkulkClient,
+    _extract_stream_delta,
+    _extract_stream_logprobs,
+)
 from skulk_test_harness.models import (
     ExpectedToolCall,
+    GenerationMetrics,
+    HarnessConfig,
+    PlacementResult,
+    PromptTest,
+    RunReport,
+    RunSpec,
     SuccessCriteria,
     ToolCallRecord,
     ToolMock,
 )
 from skulk_test_harness.orchestrator import (
+    HarnessRunner,
     _placement_from_preview,
     _score_output,
     _store_registry_entries,
@@ -311,3 +324,142 @@ def test_llama_cpp_suite_and_gguf_set_load() -> None:
     logprobs_test = next(t for t in suite.tests if t.name == "logprobs-parity")
     assert logprobs_test.top_logprobs == 3
     assert logprobs_test.success.require_logprobs is True
+
+
+# --- teardown sweep + thinking-default regression tests -------------------
+
+
+def _runner() -> HarnessRunner:
+    return HarnessRunner(config=HarnessConfig(), model_sets={}, test_sets={})
+
+
+def _report() -> RunReport:
+    spec = RunSpec(model_set="m", test_set="t", mode="execute")
+    return RunReport.start("run-1", spec, [])
+
+
+class _FakeClient:
+    """Minimal SkulkClient stand-in recording teardown + chat calls."""
+
+    def __init__(
+        self,
+        *,
+        live_placements: list[PlacementResult] | None = None,
+        not_found_ids: set[str] | None = None,
+        models: list[dict[str, object]] | None = None,
+    ) -> None:
+        self._live = live_placements or []
+        self._not_found = not_found_ids or set()
+        self._models = models or []
+        self.deleted: list[str] = []
+        self.thinking_seen: list[bool | None] = []
+
+    def find_placements_for_model(self, model_id: str) -> list[PlacementResult]:
+        return [p for p in self._live if p.model_id == model_id]
+
+    def delete_instance(self, instance_id: str) -> None:
+        self.deleted.append(instance_id)
+        if instance_id in self._not_found:
+            raise SkulkApiError("DELETE", f"/instance/{instance_id}", 404, "missing")
+
+    def list_models(self) -> list[dict[str, object]]:
+        return self._models
+
+    def stream_chat(self, *, enable_thinking=None, **_kwargs) -> ChatExecution:
+        self.thinking_seen.append(enable_thinking)
+        return ChatExecution(
+            text="ok",
+            reasoning_text="",
+            tool_calls=[],
+            metrics=GenerationMetrics(elapsed_s=0.01),
+            command_id=None,
+            raw_events=[],
+        )
+
+
+def test_teardown_sweeps_reissued_orphan_instance() -> None:
+    # Original id 404s (superseded), but a re-IDed instance is still live and
+    # must be swept so it does not starve the next cell.
+    client = _FakeClient(
+        live_placements=[
+            PlacementResult(model_id="m/Foo", instance_id="new-id")
+        ],
+        not_found_ids={"orig-id"},
+    )
+    runner = _runner()
+    report = _report()
+
+    runner._teardown_harness_instances(client, "m/Foo", "orig-id", report)  # type: ignore[arg-type]
+
+    assert client.deleted == ["orig-id", "new-id"]
+    # The 404 on the original id is benign and must not raise a warning.
+    assert [i.message for i in report.issues] == []
+
+
+def test_teardown_surfaces_non_404_delete_failure() -> None:
+    class _Boom(_FakeClient):
+        def delete_instance(self, instance_id: str) -> None:
+            self.deleted.append(instance_id)
+            raise SkulkApiError("DELETE", f"/instance/{instance_id}", 500, "boom")
+
+    client = _Boom()
+    runner = _runner()
+    report = _report()
+
+    runner._teardown_harness_instances(client, "m/Foo", "only-id", report)  # type: ignore[arg-type]
+
+    assert client.deleted == ["only-id"]
+    assert any("Failed to delete" in i.message for i in report.issues)
+
+
+def test_resolved_thinking_toggle_reads_resolved_capabilities() -> None:
+    client = SkulkClient("http://localhost:9")
+    models = [
+        {
+            "id": "m/Toggle",
+            "resolved_capabilities": {"supports_thinking_toggle": True},
+        },
+        {
+            "id": "m/NoToggle",
+            "resolved_capabilities": {"supports_thinking_toggle": False},
+        },
+        {"id": "m/Missing"},
+    ]
+    client.list_models = lambda: models  # type: ignore[method-assign]
+    try:
+        toggles = client.resolved_thinking_toggle_by_model()
+    finally:
+        client.close()
+    # m/Missing has no resolved_capabilities block, so it is absent from the
+    # map -- the harness then falls back to omitting the toggle for it.
+    assert toggles == {"m/Toggle": True, "m/NoToggle": False}
+
+
+def test_run_test_defaults_thinking_off_for_toggle_models(tmp_path: Path) -> None:
+    client = _FakeClient()
+    runner = _runner()
+    test = PromptTest(name="t", prompt="hi")  # enable_thinking unset
+    runner._run_test(
+        client,  # type: ignore[arg-type]
+        model_id="m/Foo",
+        test=test,
+        repetition=1,
+        artifact_dir=tmp_path,
+        thinking_default=False,
+    )
+    assert client.thinking_seen == [False]
+
+
+def test_run_test_explicit_thinking_overrides_default(tmp_path: Path) -> None:
+    client = _FakeClient()
+    runner = _runner()
+    test = PromptTest(name="t", prompt="hi", enable_thinking=True)
+    runner._run_test(
+        client,  # type: ignore[arg-type]
+        model_id="m/Foo",
+        test=test,
+        repetition=1,
+        artifact_dir=tmp_path,
+        thinking_default=False,
+    )
+    assert client.thinking_seen == [True]

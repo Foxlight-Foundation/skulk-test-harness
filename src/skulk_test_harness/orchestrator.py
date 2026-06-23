@@ -84,10 +84,18 @@ class HarnessRunner:
             report.issues.extend(client.detect_runner_state_drift())
             writer = ReportWriter(self.config.output_dir)
             test_set = self._test_set(spec.test_set)
+            # Resolve each model's thinking-toggle support once so per-test
+            # requests can default thinking OFF (dashboard parity) when a test
+            # leaves it unspecified. Best-effort: a catalog hiccup leaves the
+            # map empty and tests fall back to omitting the toggle.
+            try:
+                thinking_toggles = client.resolved_thinking_toggle_by_model()
+            except Exception:  # noqa: BLE001 - non-fatal capability lookup
+                thinking_toggles = {}
             deferred: list[ModelRef] = []
             for model in models:
                 if not self._run_model_lifecycle(
-                    client, model, spec, report, test_set, writer
+                    client, model, spec, report, test_set, writer, thinking_toggles
                 ):
                     deferred.append(model)
             # Deferred-retry pass: a model that couldn't place earlier (no viable
@@ -99,7 +107,14 @@ class HarnessRunner:
             # bigger node set."
             for model in deferred:
                 self._run_model_lifecycle(
-                    client, model, spec, report, test_set, writer, deferred_retry=True
+                    client,
+                    model,
+                    spec,
+                    report,
+                    test_set,
+                    writer,
+                    thinking_toggles,
+                    deferred_retry=True,
                 )
             finished = report.finish()
             writer.write(finished)
@@ -113,6 +128,7 @@ class HarnessRunner:
         report: RunReport,
         test_set: TestSet,
         writer: ReportWriter,
+        thinking_toggles: Mapping[str, bool],
         *,
         deferred_retry: bool = False,
     ) -> bool:
@@ -150,6 +166,12 @@ class HarnessRunner:
             if not placement.ready:
                 return True
             report.placements.append(placement)
+            # Dashboard parity: when the model exposes a thinking toggle and the
+            # test does not pin enable_thinking, default it OFF so the model
+            # answers instead of emitting an all-reasoning, length-capped reply.
+            thinking_default = (
+                False if thinking_toggles.get(model.model_id) else None
+            )
             for test in test_set.tests:
                 for repetition in range(1, test.repetitions + 1):
                     result = self._run_test(
@@ -158,6 +180,7 @@ class HarnessRunner:
                         test=test,
                         repetition=repetition,
                         artifact_dir=writer.run_dir(report.run_id) / "artifacts",
+                        thinking_default=thinking_default,
                     )
                     report.results.append(result)
                     writer.write(report)
@@ -178,19 +201,73 @@ class HarnessRunner:
                 placement is not None
                 and placement.created_by_harness
                 and not spec.retain_instances
-                and placement.instance_id
             ):
-                try:
-                    client.delete_instance(placement.instance_id)
-                except Exception as exc:  # noqa: BLE001 - teardown best-effort
+                self._teardown_harness_instances(
+                    client, model.model_id, placement.instance_id, report
+                )
+
+    def _teardown_harness_instances(
+        self,
+        client: SkulkClient,
+        model_id: str,
+        primary_instance_id: str | None,
+        report: RunReport,
+    ) -> None:
+        """Delete every live instance the harness owns for ``model_id``.
+
+        Teardown deletes by instance_id, but the cluster can re-place an
+        instance under a *new* id mid-run (failover / re-placement carry-over).
+        When that happens, deleting the id we were handed at creation 404s while
+        the re-IDed instance is orphaned -- it then starves the next cell and
+        reads as "the harness left the old instance running". So we delete the
+        original id AND sweep the current state for any instance still serving
+        this model. This branch only runs when the harness *created* the
+        lineage (``created_by_harness``), so every live instance for the model
+        is ours to reap; a pre-existing/reused instance never reaches here.
+        """
+        target_ids: list[str] = []
+        if primary_instance_id:
+            target_ids.append(primary_instance_id)
+        try:
+            for live in client.find_placements_for_model(model_id):
+                if live.instance_id and live.instance_id not in target_ids:
+                    target_ids.append(live.instance_id)
+        except Exception as exc:  # noqa: BLE001 - sweep is best-effort
+            report.issues.append(
+                Issue(
+                    severity="warning",
+                    model_id=model_id,
+                    message="Failed to enumerate instances for teardown sweep",
+                    evidence={"error": str(exc)},
+                )
+            )
+        for instance_id in target_ids:
+            try:
+                client.delete_instance(instance_id)
+            except SkulkApiError as exc:
+                # A 404 means this id was already superseded/removed -- benign
+                # for the original id; only surface non-404 failures.
+                if exc.status_code != 404:
                     report.issues.append(
                         Issue(
                             severity="warning",
-                            model_id=model.model_id,
+                            model_id=model_id,
                             message="Failed to delete harness-created instance",
-                            evidence={"error": str(exc)},
+                            evidence={
+                                "error": str(exc),
+                                "instance_id": instance_id,
+                            },
                         )
                     )
+            except Exception as exc:  # noqa: BLE001 - teardown best-effort
+                report.issues.append(
+                    Issue(
+                        severity="warning",
+                        model_id=model_id,
+                        message="Failed to delete harness-created instance",
+                        evidence={"error": str(exc), "instance_id": instance_id},
+                    )
+                )
 
     def resolve_model_set(self, name: str, client: SkulkClient) -> list[ModelRef]:
         """Resolve explicit IDs and catalog selectors for one named model set."""
@@ -441,11 +518,19 @@ class HarnessRunner:
         test: PromptTest,
         repetition: int,
         artifact_dir: Path,
+        thinking_default: bool | None = None,
     ) -> TestResult:
         messages = []
         if test.system:
             messages.append({"role": "system", "content": test.system})
         messages.append({"role": "user", "content": test.prompt})
+        # An explicit per-test value always wins; otherwise fall back to the
+        # model's resolved toggle default (OFF for toggle-capable models).
+        enable_thinking = (
+            test.enable_thinking
+            if test.enable_thinking is not None
+            else thinking_default
+        )
         try:
             execution = client.stream_chat(
                 model_id=model_id,
@@ -453,7 +538,7 @@ class HarnessRunner:
                 max_tokens=test.max_tokens,
                 temperature=test.temperature,
                 top_p=test.top_p,
-                enable_thinking=test.enable_thinking,
+                enable_thinking=enable_thinking,
                 reasoning_effort=test.reasoning_effort,
                 tools=test.tools,
                 tool_choice=test.tool_choice,

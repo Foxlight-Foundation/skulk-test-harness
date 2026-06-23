@@ -180,6 +180,26 @@ class SkulkClient:
             return []
         return [item for item in data if isinstance(item, dict)]
 
+    def resolved_thinking_toggle_by_model(self) -> dict[str, bool]:
+        """Map each catalog model id to whether it supports a thinking toggle.
+
+        Read from ``/models`` -> ``resolved_capabilities.supports_thinking_toggle``.
+        The harness uses this to mirror the dashboard's off-by-default thinking
+        behavior: a model whose toggle is on but whose request omits
+        ``enable_thinking`` lets the chat template default thinking ON, which on
+        models like GLM produces an all-reasoning, ``finish_reason=length``
+        response with empty content. Sending ``enable_thinking=false`` explicitly
+        (the dashboard default) avoids that.
+        """
+        toggles: dict[str, bool] = {}
+        for entry in self.list_models():
+            model_id = entry.get("id")
+            resolved = entry.get("resolved_capabilities")
+            if not isinstance(model_id, str) or not isinstance(resolved, dict):
+                continue
+            toggles[model_id] = bool(resolved.get("supports_thinking_toggle"))
+        return toggles
+
     def add_model_card(self, model_id: str) -> dict[str, object] | None:
         """Ask Skulk to add/fetch a custom model card for ``model_id``."""
 
