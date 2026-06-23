@@ -74,6 +74,24 @@ class SkulkClient:
     def __exit__(self, *_exc: object) -> None:
         self.close()
 
+    # Transport-level failures that are safe to retry: a long-lived client
+    # reusing a keep-alive connection the server has already closed surfaces as
+    # RemoteProtocolError ("Server disconnected without sending a response") on
+    # the next request, even though the server is healthy. Connect/read/pool
+    # timeouts under cluster load are likewise transient. These are NOT server
+    # responses (those come back as SkulkApiError), so retrying is correct; an
+    # uncaught one of these is exactly what crashed every cell of the last
+    # battery run.
+    _RETRYABLE_TRANSPORT_ERRORS = (
+        httpx.RemoteProtocolError,
+        httpx.ConnectError,
+        httpx.ReadError,
+        httpx.WriteError,
+        httpx.PoolTimeout,
+        httpx.ConnectTimeout,
+    )
+    _MAX_TRANSPORT_RETRIES = 4
+
     def _request_json(
         self,
         method: str,
@@ -83,13 +101,29 @@ class SkulkClient:
         params: QueryParams | None = None,
         timeout_s: float | None = None,
     ) -> dict[str, object] | list[object] | str | None:
-        response = self._client.request(
-            method,
-            path,
-            json=json_body,
-            params=params,
-            timeout=timeout_s or self.request_timeout_s,
-        )
+        last_exc: Exception | None = None
+        for attempt in range(self._MAX_TRANSPORT_RETRIES):
+            try:
+                response = self._client.request(
+                    method,
+                    path,
+                    json=json_body,
+                    params=params,
+                    timeout=timeout_s or self.request_timeout_s,
+                )
+                break
+            except self._RETRYABLE_TRANSPORT_ERRORS as exc:
+                # A stale-keepalive disconnect means the request never reached
+                # the server, so re-issuing is safe (idempotent for our GET /
+                # place / delete usage). Back off briefly and let httpx open a
+                # fresh connection.
+                last_exc = exc
+                if attempt == self._MAX_TRANSPORT_RETRIES - 1:
+                    raise
+                time.sleep(0.5 * (attempt + 1))
+        else:  # pragma: no cover - loop always breaks or raises
+            assert last_exc is not None
+            raise last_exc
         if response.status_code >= 400:
             raise SkulkApiError(method, path, response.status_code, response.text)
         if not response.content:

@@ -84,37 +84,113 @@ class HarnessRunner:
             report.issues.extend(client.detect_runner_state_drift())
             writer = ReportWriter(self.config.output_dir)
             test_set = self._test_set(spec.test_set)
+            deferred: list[ModelRef] = []
             for model in models:
-                placement = self._ensure_model_placed(client, model.model_id, spec, report)
-                if placement is None or not placement.ready:
-                    continue
-                report.placements.append(placement)
-                for test in test_set.tests:
-                    for repetition in range(1, test.repetitions + 1):
-                        result = self._run_test(
-                            client,
-                            model_id=model.model_id,
-                            test=test,
-                            repetition=repetition,
-                            artifact_dir=writer.run_dir(report.run_id) / "artifacts",
-                        )
-                        report.results.append(result)
-                        writer.write(report)
-                if placement.created_by_harness and not spec.retain_instances and placement.instance_id:
-                    try:
-                        client.delete_instance(placement.instance_id)
-                    except SkulkApiError as exc:
-                        report.issues.append(
-                            Issue(
-                                severity="warning",
-                                model_id=model.model_id,
-                                message="Failed to delete harness-created instance",
-                                evidence={"error": str(exc)},
-                            )
-                        )
+                if not self._run_model_lifecycle(
+                    client, model, spec, report, test_set, writer
+                ):
+                    deferred.append(model)
+            # Deferred-retry pass: a model that couldn't place earlier (no viable
+            # preview, typically transient memory pressure from a concurrently
+            # staging/serving peer) gets one more attempt now that every other
+            # model in the cell has been torn down -- a maximally-free cluster
+            # where choose_preview can settle onto a larger node set that did not
+            # fit under contention. Honors "retry refused placements later with a
+            # bigger node set."
+            for model in deferred:
+                self._run_model_lifecycle(
+                    client, model, spec, report, test_set, writer, deferred_retry=True
+                )
             finished = report.finish()
             writer.write(finished)
             return finished
+
+    def _run_model_lifecycle(
+        self,
+        client: SkulkClient,
+        model: ModelRef,
+        spec: RunSpec,
+        report: RunReport,
+        test_set: TestSet,
+        writer: ReportWriter,
+        *,
+        deferred_retry: bool = False,
+    ) -> bool:
+        """Place a model, run its tests, and ALWAYS tear it down.
+
+        Each model runs in its own try/finally so (a) one model's failure is
+        isolated and recorded, never aborting the rest of the cell, and (b) any
+        harness-created instance is always torn down, even on a crash mid-test --
+        a leaked instance was what poisoned later cells with resource contention
+        in the prior battery.
+
+        Returns ``True`` if the model obtained a placement (or failed after
+        placement); ``False`` only when placement was *refused* (no viable
+        preview), so the caller may defer and retry it once on a freer cluster.
+        On the deferred retry a still-refused model is recorded as a final
+        failure rather than deferred again.
+        """
+        placement = None
+        try:
+            placement = self._ensure_model_placed(client, model.model_id, spec, report)
+            if placement is None:
+                if deferred_retry:
+                    report.issues.append(
+                        Issue(
+                            severity="error",
+                            model_id=model.model_id,
+                            message=(
+                                "Placement still refused after deferred retry on a "
+                                "freed cluster (model likely too large for the fleet)"
+                            ),
+                        )
+                    )
+                    writer.write(report)
+                return False
+            if not placement.ready:
+                return True
+            report.placements.append(placement)
+            for test in test_set.tests:
+                for repetition in range(1, test.repetitions + 1):
+                    result = self._run_test(
+                        client,
+                        model_id=model.model_id,
+                        test=test,
+                        repetition=repetition,
+                        artifact_dir=writer.run_dir(report.run_id) / "artifacts",
+                    )
+                    report.results.append(result)
+                    writer.write(report)
+            return True
+        except Exception as exc:  # noqa: BLE001 - isolate per-model failure
+            report.issues.append(
+                Issue(
+                    severity="error",
+                    model_id=model.model_id,
+                    message="Model run failed; continuing to next model",
+                    evidence={"error": f"{type(exc).__name__}: {exc}"},
+                )
+            )
+            writer.write(report)
+            return True
+        finally:
+            if (
+                placement is not None
+                and placement.created_by_harness
+                and not spec.retain_instances
+                and placement.instance_id
+            ):
+                try:
+                    client.delete_instance(placement.instance_id)
+                except Exception as exc:  # noqa: BLE001 - teardown best-effort
+                    report.issues.append(
+                        Issue(
+                            severity="warning",
+                            model_id=model.model_id,
+                            message="Failed to delete harness-created instance",
+                            evidence={"error": str(exc)},
+                        )
+                    )
 
     def resolve_model_set(self, name: str, client: SkulkClient) -> list[ModelRef]:
         """Resolve explicit IDs and catalog selectors for one named model set."""
