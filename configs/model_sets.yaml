@@ -88,7 +88,10 @@ model_sets:
       - mlx-community/gpt-oss-20b-MXFP4-Q8
       - mlx-community/Moonlight-16B-A3B-Instruct-4-bit
       - mlx-community/Qwen3.5-35B-A3B-4bit
-      - mlx-community/Qwen3.6-35B-A3B-nvfp4
+      # NVFP4 is not a supported Skulk runtime format: the runner connects but the
+      # model never loads (stuck "LOADING / Connecting"), so it only burns the
+      # placement-ready timeout. Removed from the battery.
+      # - mlx-community/Qwen3.6-35B-A3B-nvfp4
 
   multinode-large:
     name: multinode-large
