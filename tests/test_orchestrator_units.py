@@ -11,6 +11,7 @@ from skulk_test_harness.models import (
     ExpectedToolCall,
     GenerationMetrics,
     HarnessConfig,
+    ModelRef,
     PlacementResult,
     PromptTest,
     RunReport,
@@ -19,6 +20,9 @@ from skulk_test_harness.models import (
     ToolCallRecord,
     ToolMock,
 )
+from skulk_test_harness.models import (
+    TestSet as HarnessTestSet,
+)
 from skulk_test_harness.orchestrator import (
     HarnessRunner,
     _placement_from_preview,
@@ -26,6 +30,7 @@ from skulk_test_harness.orchestrator import (
     _store_registry_entries,
     _tool_roundtrip_messages,
 )
+from skulk_test_harness.reporting import ReportWriter
 from skulk_test_harness.specs import load_model_sets, load_test_sets
 
 
@@ -244,9 +249,7 @@ def test_gpt_oss_complete_suite_loads_tool_tests() -> None:
     suite = test_sets["gpt-oss-20b-complete"]
     tool_tests = [test for test in suite.tests if test.kind == "tool"]
 
-    assert model_sets["gpt-oss-20b"].models == [
-        "mlx-community/gpt-oss-20b-MXFP4-Q8"
-    ]
+    assert model_sets["gpt-oss-20b"].models == ["mlx-community/gpt-oss-20b-MXFP4-Q8"]
     assert len(suite.tests) >= 8
     assert len(tool_tests) == 3
     assert all(test.tools for test in tool_tests)
@@ -314,16 +317,16 @@ def test_llama_cpp_suite_and_gguf_set_load() -> None:
     model_sets = load_model_sets(root / "configs/model_sets.yaml").model_sets
     test_sets = load_test_sets(root / "configs/test_sets.yaml").test_sets
 
-    assert model_sets["gguf-llama-cpp"].models == [
-        "unsloth/Llama-3.2-1B-Instruct-GGUF"
-    ]
+    assert model_sets["gguf-llama-cpp"].models == ["unsloth/Llama-3.2-1B-Instruct-GGUF"]
     suite = test_sets["llama-cpp"]
     names = {test.name for test in suite.tests}
-    assert {"ordered-integers-coherence", "logprobs-parity", "tool-call-path"} <= names
+    assert {"ordered-integers-coherence", "tool-call-path"} <= names
 
-    logprobs_test = next(t for t in suite.tests if t.name == "logprobs-parity")
-    assert logprobs_test.top_logprobs == 3
-    assert logprobs_test.success.require_logprobs is True
+    # logprobs-parity was removed from the default llama.cpp suite: per-token
+    # logprobs need a logits_all-enabled placement (opt-in), and a normal GGUF
+    # placement correctly returns none, so requiring them flagged expected
+    # behavior as a failure. Testing logprobs belongs in a dedicated placement.
+    assert "logprobs-parity" not in names
 
 
 # --- teardown sweep + thinking-default regression tests -------------------
@@ -352,6 +355,7 @@ class _FakeClient:
         self._not_found = not_found_ids or set()
         self._models = models or []
         self.deleted: list[str] = []
+        self.evicted: list[str] = []
         self.thinking_seen: list[bool | None] = []
 
     def find_placements_for_model(self, model_id: str) -> list[PlacementResult]:
@@ -361,6 +365,9 @@ class _FakeClient:
         self.deleted.append(instance_id)
         if instance_id in self._not_found:
             raise SkulkApiError("DELETE", f"/instance/{instance_id}", 404, "missing")
+
+    def delete_store_model(self, model_id: str) -> None:
+        self.evicted.append(model_id)
 
     def list_models(self) -> list[dict[str, object]]:
         return self._models
@@ -381,9 +388,7 @@ def test_teardown_sweeps_reissued_orphan_instance() -> None:
     # Original id 404s (superseded), but a re-IDed instance is still live and
     # must be swept so it does not starve the next cell.
     client = _FakeClient(
-        live_placements=[
-            PlacementResult(model_id="m/Foo", instance_id="new-id")
-        ],
+        live_placements=[PlacementResult(model_id="m/Foo", instance_id="new-id")],
         not_found_ids={"orig-id"},
     )
     runner = _runner()
@@ -463,3 +468,89 @@ def test_run_test_explicit_thinking_overrides_default(tmp_path: Path) -> None:
         thinking_default=False,
     )
     assert client.thinking_seen == [True]
+
+
+# --- staged-model eviction gating (only after a real harness teardown) -----
+
+
+def _drive_lifecycle(
+    runner: HarnessRunner,
+    client: "_FakeClient",
+    *,
+    retain_instances: bool,
+    delete_staged_models: bool,
+    created_by_harness: bool,
+    tmp_path: Path,
+) -> None:
+    placement = PlacementResult(
+        model_id="m/Foo",
+        instance_id="inst-1",
+        created_by_harness=created_by_harness,
+        ready=True,
+    )
+    runner._ensure_model_placed = lambda *_a, **_k: placement  # type: ignore[method-assign]
+    spec = RunSpec(
+        model_set="m",
+        test_set="t",
+        mode="execute",
+        retain_instances=retain_instances,
+        delete_staged_models=delete_staged_models,
+    )
+    report = RunReport.start("run-1", spec, [])
+    runner._run_model_lifecycle(
+        client,  # type: ignore[arg-type]
+        ModelRef(model_id="m/Foo", source="explicit"),
+        spec,
+        report,
+        HarnessTestSet(name="t", tests=[]),
+        ReportWriter(tmp_path),
+        {},
+    )
+
+
+def test_eviction_skipped_when_instance_retained(tmp_path: Path) -> None:
+    # --delete-staged-models WITHOUT --delete-created-instances: the instance is
+    # kept, so its weights MUST NOT be evicted out from under it.
+    client = _FakeClient()
+    _drive_lifecycle(
+        _runner(),
+        client,
+        retain_instances=True,
+        delete_staged_models=True,
+        created_by_harness=True,
+        tmp_path=tmp_path,
+    )
+    assert client.deleted == []  # retained: no teardown
+    assert client.evicted == []  # and therefore no eviction
+
+
+def test_eviction_skipped_for_reused_user_instance(tmp_path: Path) -> None:
+    # Placement reused an existing (user-owned) instance the harness did not
+    # create: never tear it down, never evict its weights.
+    client = _FakeClient()
+    _drive_lifecycle(
+        _runner(),
+        client,
+        retain_instances=False,
+        delete_staged_models=True,
+        created_by_harness=False,
+        tmp_path=tmp_path,
+    )
+    assert client.deleted == []
+    assert client.evicted == []
+
+
+def test_eviction_runs_after_harness_teardown(tmp_path: Path) -> None:
+    # The intended path: a harness-created instance with teardown enabled is torn
+    # down, and only then are its staged weights evicted.
+    client = _FakeClient()
+    _drive_lifecycle(
+        _runner(),
+        client,
+        retain_instances=False,
+        delete_staged_models=True,
+        created_by_harness=True,
+        tmp_path=tmp_path,
+    )
+    assert client.deleted == ["inst-1"]
+    assert client.evicted == ["m/Foo"]

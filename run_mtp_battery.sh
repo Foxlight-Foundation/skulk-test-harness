@@ -9,6 +9,7 @@
 set -u
 cd "$(dirname "$0")"
 LOG=runs/mtp_battery.log
+mkdir -p "$(dirname "$LOG")"  # runs/ is only gitignored; create it for a clean checkout
 : > "$LOG"
 say() { echo "[$(date '+%H:%M:%S')] $*" | tee -a "$LOG"; }
 
@@ -20,4 +21,8 @@ uv run skulk-harness run \
   --ensure-store-downloads \
   --delete-created-instances \
   --delete-staged-models >>"$LOG" 2>&1
-say "MTP BATTERY END (rc=$?)"
+# Capture the harness status immediately; without this the script's exit code
+# becomes the say/tee status (usually 0) and a failed battery looks green to CI.
+rc=$?
+say "MTP BATTERY END (rc=$rc)"
+exit "$rc"
