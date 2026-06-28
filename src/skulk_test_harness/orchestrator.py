@@ -72,7 +72,9 @@ class HarnessRunner:
                         )
                     )
                 else:
-                    report.placements.append(_placement_from_preview(model.model_id, preview))
+                    report.placements.append(
+                        _placement_from_preview(model.model_id, preview)
+                    )
             return report.finish()
 
     def execute(self, spec: RunSpec) -> RunReport:
@@ -169,9 +171,7 @@ class HarnessRunner:
             # Dashboard parity: when the model exposes a thinking toggle and the
             # test does not pin enable_thinking, default it OFF so the model
             # answers instead of emitting an all-reasoning, length-capped reply.
-            thinking_default = (
-                False if thinking_toggles.get(model.model_id) else None
-            )
+            thinking_default = False if thinking_toggles.get(model.model_id) else None
             for test in test_set.tests:
                 for repetition in range(1, test.repetitions + 1):
                     result = self._run_test(
@@ -197,6 +197,7 @@ class HarnessRunner:
             writer.write(report)
             return True
         finally:
+            instance_torn_down = False
             if (
                 placement is not None
                 and placement.created_by_harness
@@ -205,6 +206,45 @@ class HarnessRunner:
                 self._teardown_harness_instances(
                     client, model.model_id, placement.instance_id, report
                 )
+                instance_torn_down = True
+            # Evict staged weights ONLY after the harness actually tore down the
+            # instance it created (opt-in via --delete-staged-models), so test
+            # models do not accumulate on disk. Never evict out from under a
+            # retained instance (--delete-staged-models without
+            # --delete-created-instances) or a reused, user-owned placement --
+            # that would pull weights from a live model.
+            if spec.delete_staged_models and instance_torn_down:
+                self._evict_staged_model(client, model.model_id, report)
+
+    def _evict_staged_model(
+        self, client: SkulkClient, model_id: str, report: RunReport
+    ) -> None:
+        """Best-effort: remove a model's staged weights from the store after a run.
+
+        A 404 is benign (already absent). Other failures are recorded as warnings
+        and never abort the run; the next cell still proceeds.
+        """
+        try:
+            client.delete_store_model(model_id)
+        except SkulkApiError as exc:
+            if exc.status_code != 404:
+                report.issues.append(
+                    Issue(
+                        severity="warning",
+                        model_id=model_id,
+                        message="Failed to evict staged model from store",
+                        evidence={"error": str(exc)},
+                    )
+                )
+        except Exception as exc:  # noqa: BLE001 - eviction is best-effort
+            report.issues.append(
+                Issue(
+                    severity="warning",
+                    model_id=model_id,
+                    message="Failed to evict staged model from store",
+                    evidence={"error": str(exc)},
+                )
+            )
 
     def _teardown_harness_instances(
         self,
@@ -305,7 +345,9 @@ class HarnessRunner:
                     add(model_id, "selector", detail=selector.model_dump_json())
 
         for seed in model_set.huggingface_seeds:
-            if not seed.require_mlx_community or seed.model_id.startswith("mlx-community/"):
+            if not seed.require_mlx_community or seed.model_id.startswith(
+                "mlx-community/"
+            ):
                 add(seed.model_id, "huggingface_seed", detail=seed.reason)
         return refs
 
@@ -364,7 +406,9 @@ class HarnessRunner:
 
         if not previews:
             return None
-        return sorted(previews, key=lambda p: (_preview_node_count(p), str(p.get("sharding"))))[0]
+        return sorted(
+            previews, key=lambda p: (_preview_node_count(p), str(p.get("sharding")))
+        )[0]
 
     def _ensure_model_placed(
         self,
@@ -451,7 +495,9 @@ class HarnessRunner:
     def _ensure_model_card(
         self, client: SkulkClient, model_id: str, report: RunReport
     ) -> None:
-        catalog_ids = {_model_id_from_catalog_entry(item) for item in client.list_models()}
+        catalog_ids = {
+            _model_id_from_catalog_entry(item) for item in client.list_models()
+        }
         if model_id in catalog_ids:
             return
         try:
@@ -607,7 +653,9 @@ class HarnessRunner:
             logprob_tokens=execution.logprob_tokens,
         )
         issues.extend(roundtrip_issues)
-        artifact_path = _artifact_path(artifact_dir, model_id, test, repetition, execution)
+        artifact_path = _artifact_path(
+            artifact_dir, model_id, test, repetition, execution
+        )
         return TestResult(
             model_id=model_id,
             test_name=test.name,
@@ -650,9 +698,15 @@ def _select_catalog_models(
         model_id = _model_id_from_catalog_entry(model)
         if not model_id:
             continue
-        if selector.family and str(model.get("family") or "").lower() != selector.family.lower():
+        if (
+            selector.family
+            and str(model.get("family") or "").lower() != selector.family.lower()
+        ):
             continue
-        if selector.id_contains and selector.id_contains.lower() not in model_id.lower():
+        if (
+            selector.id_contains
+            and selector.id_contains.lower() not in model_id.lower()
+        ):
             continue
         if regex and regex.search(model_id) is None:
             continue
@@ -715,7 +769,9 @@ def _preview_node_count(preview: dict[str, object]) -> int:
     return len(node_to_runner) if isinstance(node_to_runner, dict) else 0
 
 
-def _placement_from_preview(model_id: str, preview: dict[str, object]) -> PlacementResult:
+def _placement_from_preview(
+    model_id: str, preview: dict[str, object]
+) -> PlacementResult:
     instance = preview.get("instance")
     parsed = unwrap_tagged(instance)
     if parsed is None:
@@ -803,7 +859,10 @@ def _score_output(
                 )
             )
     code_block = extract_first_code_block(text)
-    if criteria.min_code_block_chars and len(code_block or "") < criteria.min_code_block_chars:
+    if (
+        criteria.min_code_block_chars
+        and len(code_block or "") < criteria.min_code_block_chars
+    ):
         issues.append(
             Issue(
                 severity="error",
@@ -1020,7 +1079,9 @@ def _artifact_path(
     if test.kind not in {"artifact", "code"}:
         return None
     code = extract_first_code_block(execution.text) or execution.text
-    extension = "html" if "<html" in code.lower() or "<canvas" in code.lower() else "txt"
+    extension = (
+        "html" if "<html" in code.lower() or "<canvas" in code.lower() else "txt"
+    )
     filename = (
         f"{slugify(model_id)}--{slugify(test.name)}--rep-{repetition}.{extension}"
     )

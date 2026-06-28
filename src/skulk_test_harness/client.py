@@ -281,6 +281,16 @@ class SkulkClient:
         payload = self._request_json("DELETE", f"/instance/{path_instance}")
         return payload if isinstance(payload, dict) else None
 
+    def delete_store_model(self, model_id: str) -> dict[str, object] | None:
+        """Evict a model's staged weights from the model store (DELETE).
+
+        Used to clean up staged GGUF/MLX weights after a benchmark run so test
+        models do not accumulate on disk. Maps to ``DELETE /store/models/{id}``.
+        """
+        path_model = quote(model_id, safe="/")
+        payload = self._request_json("DELETE", f"/store/models/{path_model}")
+        return payload if isinstance(payload, dict) else None
+
     def find_placements_for_model(self, model_id: str) -> list[PlacementResult]:
         """Return instances currently placed for ``model_id``."""
 
