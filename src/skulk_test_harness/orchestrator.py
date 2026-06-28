@@ -205,6 +205,40 @@ class HarnessRunner:
                 self._teardown_harness_instances(
                     client, model.model_id, placement.instance_id, report
                 )
+            # Evict staged weights AFTER instance teardown so benchmark test
+            # models do not accumulate on disk (opt-in via --delete-staged-models).
+            if spec.delete_staged_models:
+                self._evict_staged_model(client, model.model_id, report)
+
+    def _evict_staged_model(
+        self, client: SkulkClient, model_id: str, report: RunReport
+    ) -> None:
+        """Best-effort: remove a model's staged weights from the store after a run.
+
+        A 404 is benign (already absent). Other failures are recorded as warnings
+        and never abort the run; the next cell still proceeds.
+        """
+        try:
+            client.delete_store_model(model_id)
+        except SkulkApiError as exc:
+            if exc.status_code != 404:
+                report.issues.append(
+                    Issue(
+                        severity="warning",
+                        model_id=model_id,
+                        message="Failed to evict staged model from store",
+                        evidence={"error": str(exc)},
+                    )
+                )
+        except Exception as exc:  # noqa: BLE001 - eviction is best-effort
+            report.issues.append(
+                Issue(
+                    severity="warning",
+                    model_id=model_id,
+                    message="Failed to evict staged model from store",
+                    evidence={"error": str(exc)},
+                )
+            )
 
     def _teardown_harness_instances(
         self,

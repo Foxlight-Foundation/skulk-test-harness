@@ -239,6 +239,10 @@ class RunSpec(HarnessBaseModel):
     ensure_store_downloads: bool = False
     reuse_existing_instances: bool = True
     retain_instances: bool = True
+    delete_staged_models: bool = False
+    """Evict each model's staged weights from the store after its run (after
+    instance teardown). Off by default so normal runs keep the store warm; set
+    for benchmark batteries so test models do not accumulate on disk."""
     run_name: str | None = None
 
 

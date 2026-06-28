@@ -127,3 +127,20 @@ model_sets:
       - unsloth/gemma-4-31B-it-GGUF
       - bartowski/Llama-3.3-70B-Instruct-GGUF
       - bartowski/openai_gpt-oss-120b-GGUF
+
+  mtp-served:
+    name: mtp-served
+    description: >-
+      Native multi-token-prediction GGUFs served via the llama_server engine
+      (llama.cpp --spec-type draft-mtp) on a GPU node (kite4). The cards declare
+      compatible_backends=llama_server-* so placement routes them to a node with
+      a llama-server binary; runtime.served_spec_type=draft_mtp turns on the
+      built-in MTP heads. Spread across family/size to benchmark draft-mtp:
+      small dense, mid dense, and MoE (a non-Qwen MTP GGUF is a follow-up;
+      the GLM-4.7-Flash MTP upload tested was missing its MTP tensors). Run with
+      --ensure-store-downloads --delete-created-instances --delete-staged-models
+      so weights stage from the store and are evicted after.
+    models:
+      - unsloth/Qwen3.5-9B-MTP-GGUF
+      - froggeric/Qwen3.6-27B-MTP-GGUF
+      - unsloth/Qwen3.6-35B-A3B-MTP-GGUF

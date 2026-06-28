@@ -264,6 +264,14 @@ def run(
         bool,
         typer.Option("--retain-instances/--delete-created-instances"),
     ] = True,
+    delete_staged_models: Annotated[
+        bool,
+        typer.Option(
+            "--delete-staged-models",
+            help="Evict each model's staged weights from the store after its run "
+            "(benchmark hygiene; off by default to keep the store warm).",
+        ),
+    ] = False,
     sharding: Annotated[str, typer.Option(help="Pipeline or Tensor")] = "Pipeline",
     instance_meta: Annotated[str, typer.Option(help="MlxRing or MlxJaccl")] = "MlxRing",
     min_nodes: Annotated[int | None, typer.Option(help="Minimum node count override")] = None,
@@ -277,6 +285,7 @@ def run(
         mode="execute" if execute else "plan",
         ensure_store_downloads=ensure_store_downloads,
         retain_instances=retain_instances,
+        delete_staged_models=delete_staged_models,
         placement=PlacementPolicy(
             sharding=sharding,  # type: ignore[arg-type]
             instance_meta=instance_meta,  # type: ignore[arg-type]
