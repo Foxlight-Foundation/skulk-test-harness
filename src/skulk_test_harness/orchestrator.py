@@ -269,11 +269,14 @@ class HarnessRunner:
         target_ids: list[str] = []
         if primary_instance_id:
             target_ids.append(primary_instance_id)
+        all_deletes_succeeded = bool(target_ids)
         try:
             for live in client.find_placements_for_model(model_id):
                 if live.instance_id and live.instance_id not in target_ids:
                     target_ids.append(live.instance_id)
+                    all_deletes_succeeded = True
         except Exception as exc:  # noqa: BLE001 - sweep is best-effort
+            all_deletes_succeeded = False
             report.issues.append(
                 Issue(
                     severity="warning",
@@ -289,6 +292,7 @@ class HarnessRunner:
                 # A 404 means this id was already superseded/removed -- benign
                 # for the original id; only surface non-404 failures.
                 if exc.status_code != 404:
+                    all_deletes_succeeded = False
                     report.issues.append(
                         Issue(
                             severity="warning",
@@ -301,6 +305,7 @@ class HarnessRunner:
                         )
                     )
             except Exception as exc:  # noqa: BLE001 - teardown best-effort
+                all_deletes_succeeded = False
                 report.issues.append(
                     Issue(
                         severity="warning",
@@ -309,7 +314,7 @@ class HarnessRunner:
                         evidence={"error": str(exc), "instance_id": instance_id},
                     )
                 )
-        return bool(target_ids)
+        return bool(target_ids) and all_deletes_succeeded
 
     def resolve_model_set(self, name: str, client: SkulkClient) -> list[ModelRef]:
         """Resolve explicit IDs and catalog selectors for one named model set."""

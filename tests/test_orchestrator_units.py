@@ -532,9 +532,10 @@ def test_teardown_sweeps_reissued_orphan_instance() -> None:
     runner = _runner()
     report = _report()
 
-    runner._teardown_harness_instances(client, "m/Foo", "orig-id", report)  # type: ignore[arg-type]
+    deleted = runner._teardown_harness_instances(client, "m/Foo", "orig-id", report)  # type: ignore[arg-type]
 
     assert client.deleted == ["orig-id", "new-id"]
+    assert deleted is True
     # The 404 on the original id is benign and must not raise a warning.
     assert [i.message for i in report.issues] == []
 
@@ -549,9 +550,10 @@ def test_teardown_surfaces_non_404_delete_failure() -> None:
     runner = _runner()
     report = _report()
 
-    runner._teardown_harness_instances(client, "m/Foo", "only-id", report)  # type: ignore[arg-type]
+    deleted = runner._teardown_harness_instances(client, "m/Foo", "only-id", report)  # type: ignore[arg-type]
 
     assert client.deleted == ["only-id"]
+    assert deleted is False
     assert any("Failed to delete" in i.message for i in report.issues)
 
 
@@ -740,6 +742,26 @@ def test_eviction_runs_after_harness_teardown(tmp_path: Path) -> None:
     )
     assert client.deleted == ["inst-1"]
     assert client.evicted == ["m/Foo"]
+
+
+def test_eviction_skipped_when_teardown_delete_fails(tmp_path: Path) -> None:
+    class _Boom(_FakeClient):
+        def delete_instance(self, instance_id: str) -> None:
+            self.deleted.append(instance_id)
+            raise SkulkApiError("DELETE", f"/instance/{instance_id}", 500, "boom")
+
+    client = _Boom()
+    _drive_lifecycle(
+        _runner(),
+        client,
+        retain_instances=False,
+        delete_staged_models=True,
+        created_by_harness=True,
+        tmp_path=tmp_path,
+    )
+
+    assert client.deleted == ["inst-1"]
+    assert client.evicted == []
 
 
 def test_eviction_skipped_when_placement_never_appears(tmp_path: Path) -> None:
