@@ -165,6 +165,15 @@ class SuccessCriteria(HarnessBaseModel):
             "test checks structure instead of one exact glyph."
         ),
     )
+    min_generated_chars: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "When > 0, require at least this many characters across visible "
+            "content plus separated reasoning. Use for reasoning-model gates "
+            "where a healthy response may be entirely in reasoning_content."
+        ),
+    )
     min_tool_calls: int = Field(default=0, ge=0)
     in_order_integers: int = Field(
         default=0,
@@ -218,14 +227,12 @@ class SuccessCriteria(HarnessBaseModel):
         ge=0,
         description=(
             "When set, assert steady-state decode throughput (wall_tps, tokens / "
-            "decode time excluding TTFT) is at least this value. A floor "
+            "decode time excluding TTFT) is at least this value. The token "
+            "estimate includes visible content and separated reasoning so "
+            "reasoning-only generations do not read as zero throughput. A floor "
             "calibrated ABOVE the model's non-speculative decode rate makes a "
-            "SILENT speculative/MTP fallback visible: a draft-mtp regression that "
-            "disables speculation still produces correct text, just slower, so "
-            "presence/coherence checks stay green and only a throughput floor "
-            "catches it. Hardware- and model-specific; set per benchmark cell for "
-            "the target node, and keep it conservative (well below the measured "
-            "MTP rate, above the measured non-MTP rate)."
+            "SILENT speculative/MTP fallback visible. Hardware- and model-specific; "
+            "set per benchmark cell for the target node, and keep it conservative."
         ),
     )
 
@@ -425,6 +432,7 @@ class GenerationMetrics(HarnessBaseModel):
     elapsed_s: float
     ttft_s: float | None = None
     output_chars: int = 0
+    generated_chars: int = 0
     chunks: int = 0
     approx_output_tokens: int | None = None
     wall_tps: float | None = None

@@ -291,6 +291,25 @@ def test_score_output_requires_separated_reasoning_present() -> None:
     assert split == []
 
 
+def test_score_output_accepts_reasoning_only_generated_text() -> None:
+    criteria = SuccessCriteria(min_chars=0, min_generated_chars=40)
+
+    issues = _score_output(
+        "reasoning-model",
+        "generated-presence",
+        "",
+        criteria,
+        reasoning_text="reasoning-only generation can still be a healthy response",
+    )
+
+    assert issues == []
+
+    empty = _score_output("reasoning-model", "generated-presence", "", criteria)
+    assert len(empty) == 1
+    assert "content + reasoning" in empty[0].message
+    assert empty[0].evidence == {"content_chars": 0, "reasoning_chars": 0}
+
+
 def test_score_output_throughput_floor_catches_silent_mtp_fallback() -> None:
     criteria = SuccessCriteria(min_chars=0, min_wall_tps=16.0)
     # Below the floor (a silent draft-mtp fallback) -> RED.
