@@ -11,6 +11,7 @@ from skulk_test_harness.models import (
     ExpectedToolCall,
     GenerationMetrics,
     HarnessConfig,
+    Issue,
     ModelRef,
     PlacementResult,
     PromptImage,
@@ -26,6 +27,7 @@ from skulk_test_harness.models import (
 )
 from skulk_test_harness.orchestrator import (
     HarnessRunner,
+    _clear_deferred_placement_issues,
     _messages_for_test,
     _placement_from_preview,
     _score_output,
@@ -656,6 +658,41 @@ def test_ensure_model_placed_fast_fails_when_instance_never_appears() -> None:
     assert placement.created_by_harness is True
     assert placement.ready is False
     assert any("placement refusal" in issue.message for issue in report.issues)
+
+
+def test_clear_deferred_placement_issues_keeps_real_run_errors() -> None:
+    report = _report()
+    report.issues.extend(
+        [
+            Issue(
+                severity="error",
+                model_id="m/Foo",
+                message="No usable placement preview found before execution",
+            ),
+            Issue(
+                severity="error",
+                model_id="m/Foo",
+                message="Placement request failed",
+            ),
+            Issue(
+                severity="error",
+                model_id="m/Foo",
+                message="Model run failed; continuing to next model",
+            ),
+            Issue(
+                severity="error",
+                model_id="m/Bar",
+                message="No usable placement preview found before execution",
+            ),
+        ]
+    )
+
+    _clear_deferred_placement_issues(report, "m/Foo")
+
+    assert [(issue.model_id, issue.message) for issue in report.issues] == [
+        ("m/Foo", "Model run failed; continuing to next model"),
+        ("m/Bar", "No usable placement preview found before execution"),
+    ]
 
 
 # --- staged-model eviction gating (only after a real harness teardown) -----
