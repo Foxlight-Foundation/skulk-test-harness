@@ -108,7 +108,7 @@ class HarnessRunner:
             # fit under contention. Honors "retry refused placements later with a
             # bigger node set."
             for model in deferred:
-                self._run_model_lifecycle(
+                placed_after_retry = self._run_model_lifecycle(
                     client,
                     model,
                     spec,
@@ -118,6 +118,8 @@ class HarnessRunner:
                     thinking_toggles,
                     deferred_retry=True,
                 )
+                if placed_after_retry:
+                    _clear_deferred_placement_issues(report, model.model_id)
             finished = report.finish()
             writer.write(finished)
             return finished
@@ -732,6 +734,26 @@ def _model_id_from_catalog_entry(model: dict[str, object]) -> str:
         if isinstance(value, str) and value:
             return value
     return ""
+
+
+_DEFERRED_PLACEMENT_MESSAGES = {
+    "No usable placement preview found before execution",
+    "Timed out waiting for placed model to appear in cluster state",
+}
+
+
+def _clear_deferred_placement_issues(report: RunReport, model_id: str) -> None:
+    """Drop provisional placement-refusal issues after a successful retry."""
+
+    report.issues = [
+        issue
+        for issue in report.issues
+        if not (
+            issue.model_id == model_id
+            and issue.severity == "error"
+            and issue.message in _DEFERRED_PLACEMENT_MESSAGES
+        )
+    ]
 
 
 def _store_registry_entries(
