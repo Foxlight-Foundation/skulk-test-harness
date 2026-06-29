@@ -1039,7 +1039,11 @@ class HarnessRunner:
             repetition=repetition,
             passed=not any(issue.severity == "error" for issue in issues),
             output_text=output,
-            metrics=GenerationMetrics(elapsed_s=elapsed, output_chars=len(output)),
+            metrics=GenerationMetrics(
+                elapsed_s=elapsed,
+                output_chars=len(output),
+                generated_chars=len(output),
+            ),
             issues=issues,
         )
 
@@ -1237,6 +1241,7 @@ def _score_output(
 ) -> list[Issue]:
     issues: list[Issue] = []
     tool_calls = tool_calls or []
+    generated_chars = len(text) + len(reasoning_text)
     if criteria.require_logprobs and logprob_tokens <= 0:
         issues.append(
             Issue(
@@ -1256,6 +1261,23 @@ def _score_output(
                 model_id=model_id,
                 test_name=test_name,
                 message=f"Output shorter than required minimum ({len(text)} < {criteria.min_chars})",
+            )
+        )
+    if criteria.min_generated_chars and generated_chars < criteria.min_generated_chars:
+        issues.append(
+            Issue(
+                severity="error",
+                model_id=model_id,
+                test_name=test_name,
+                message=(
+                    "Generated text shorter than required minimum "
+                    f"({generated_chars} < {criteria.min_generated_chars} chars "
+                    "across content + reasoning)"
+                ),
+                evidence={
+                    "content_chars": len(text),
+                    "reasoning_chars": len(reasoning_text),
+                },
             )
         )
     for substring in criteria.required_substrings:

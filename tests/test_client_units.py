@@ -1,3 +1,5 @@
+import json
+
 import httpx
 import pytest
 
@@ -48,3 +50,58 @@ def test_request_json_does_not_retry_post_read_timeout(
     finally:
         client.close()
     assert calls == 1
+
+
+def test_stream_chat_counts_reasoning_for_generated_throughput(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = SkulkClient("http://skulk.test")
+    reasoning = "reasoning token stream " * 12
+
+    class _Stream:
+        status_code = 200
+
+        def __enter__(self) -> "_Stream":
+            return self
+
+        def __exit__(self, *_exc: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return b""
+
+        def iter_lines(self):
+            event = {
+                "choices": [
+                    {
+                        "delta": {
+                            "reasoning_content": reasoning,
+                        }
+                    }
+                ]
+            }
+            yield f"data: {json.dumps(event)}"
+            yield "data: [DONE]"
+
+    def stream(*_args: object, **_kwargs: object) -> _Stream:
+        return _Stream()
+
+    monkeypatch.setattr(client._client, "stream", stream)
+    try:
+        execution = client.stream_chat(
+            model_id="m/Reasoning",
+            messages=[{"role": "user", "content": "think"}],
+            max_tokens=64,
+            temperature=0,
+            top_p=None,
+        )
+    finally:
+        client.close()
+
+    assert execution.text == ""
+    assert execution.reasoning_text == reasoning
+    assert execution.metrics.output_chars == 0
+    assert execution.metrics.generated_chars == len(reasoning)
+    assert execution.metrics.approx_output_tokens == round(len(reasoning) / 4)
+    assert execution.metrics.wall_tps is not None
+    assert execution.metrics.wall_tps > 0

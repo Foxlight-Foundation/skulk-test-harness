@@ -121,20 +121,19 @@ heads (the Qwen `draft_mtp` cards) and a separate draft assistant via
 
 - **`mtp-correctness`** asserts the two failure modes that presence/coherence
   checks miss:
-  - *reasoning split + no marker leak* -- `min_reasoning_chars` proves the
+  - *reasoning split + no marker leak* -- `min_generated_chars` accepts a
+    response that lives entirely in reasoning, `min_reasoning_chars` proves the
     thinking landed in its own channel, and `forbidden_substrings` (applied to
     content **and** reasoning via `forbid_in_reasoning`) proves no `<|channel>`
     control marker leaked into either. Guards the Gemma 4 served channel parser.
-  - *MTP-on throughput floor* -- `min_wall_tps` fails a run whose decode rate
-    dropped below a floor calibrated above the model's non-speculative rate, so a
-    **silent** `draft-mtp` fallback (correct text, just slower) shows red instead
-    of passing. Hardware/model-specific; the floor is kite4-Vulkan calibrated and
-    is a reliable MTP-off detector for the mid/large dense + Gemma cards (the 9B
-    is decode-bound-fast, the A3B MoE has less margin -- noted in the cell).
+  - *MTP-on throughput floor* -- `min_wall_tps` is computed from visible content
+    **plus** separated reasoning, then fails a run whose decode rate drops below
+    a calibrated floor. Hardware/model-specific; the floor is kite4-Vulkan
+    calibrated and should be retuned when the target node or model set changes.
 - **`throughput`** then records steady-state `wall_tps` as the benchmark number.
 
-These new `SuccessCriteria` keys (`min_reasoning_chars`, `forbid_in_reasoning`,
-`min_wall_tps`) are general and usable by any test set.
+These `SuccessCriteria` keys (`min_generated_chars`, `min_reasoning_chars`,
+`forbid_in_reasoning`, `min_wall_tps`) are general and usable by any test set.
 
 ## Coverage Suites
 

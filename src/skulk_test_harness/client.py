@@ -539,7 +539,9 @@ class SkulkClient:
 
         elapsed = time.monotonic() - start
         text = "".join(output_parts)
-        approx_tokens = max(1, round(len(text) / 4)) if text else 0
+        reasoning_text = "".join(reasoning_parts)
+        generated_chars = len(text) + len(reasoning_text)
+        approx_tokens = max(1, round(generated_chars / 4)) if generated_chars else 0
         active_decode_s = (
             elapsed - (first_token_at - start)
             if first_token_at is not None
@@ -550,13 +552,14 @@ class SkulkClient:
             elapsed_s=elapsed,
             ttft_s=(first_token_at - start) if first_token_at is not None else None,
             output_chars=len(text),
+            generated_chars=generated_chars,
             chunks=chunks,
             approx_output_tokens=approx_tokens,
             wall_tps=wall_tps,
         )
         return ChatExecution(
             text=text,
-            reasoning_text="".join(reasoning_parts),
+            reasoning_text=reasoning_text,
             tool_calls=tool_calls,
             metrics=metrics,
             command_id=command_id,
@@ -663,6 +666,7 @@ class SkulkClient:
             elapsed_s=elapsed,
             ttft_s=None,
             output_chars=len(text),
+            generated_chars=len(text),
             chunks=1 if text else 0,
             approx_output_tokens=max(1, round(len(text) / 4)) if text else 0,
         )
