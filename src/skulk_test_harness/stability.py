@@ -222,7 +222,12 @@ def _place_multinode(
     an error issue and returns ``None`` if no usable placement can be made ready.
     """
 
-    existing = client.find_placements_for_model(model_id)
+    excluded = excluded_node_ids or []
+    existing = [
+        placement
+        for placement in client.find_placements_for_model(model_id)
+        if _placement_avoids_nodes(placement, excluded)
+    ]
     if existing:
         placement = existing[0]
         if placement.instance_id and not placement.ready:
@@ -236,7 +241,7 @@ def _place_multinode(
     previews = [
         preview
         for preview in client.get_placement_previews(
-            model_id, excluded_node_ids=excluded_node_ids
+            model_id, excluded_node_ids=excluded
         )
         if preview.get("error") in (None, "")
     ]
@@ -256,7 +261,7 @@ def _place_multinode(
             sharding=str(preview.get("sharding") or "Pipeline"),
             instance_meta=str(preview.get("instance_meta") or "MlxRing"),
             min_nodes=min_nodes,
-            excluded_nodes=excluded_node_ids or [],
+            excluded_nodes=excluded,
         )
     except SkulkApiError as exc:
         report.add_issue(
@@ -274,7 +279,11 @@ def _place_multinode(
         config.placement_ready_timeout_s,
     )
     while time.monotonic() < appear_deadline:
-        placements = client.find_placements_for_model(model_id)
+        placements = [
+            placement
+            for placement in client.find_placements_for_model(model_id)
+            if _placement_avoids_nodes(placement, excluded)
+        ]
         if placements and placements[0].instance_id:
             ready_deadline = time.monotonic() + config.placement_ready_timeout_s
             placement = client.wait_for_instance_ready(
@@ -295,6 +304,14 @@ def _place_multinode(
         )
     )
     return None
+
+
+def _placement_avoids_nodes(
+    placement: PlacementResult, excluded_node_ids: list[str]
+) -> bool:
+    if not excluded_node_ids:
+        return True
+    return not set(placement.node_ids).intersection(excluded_node_ids)
 
 
 def _preview_node_count(preview: dict[str, object]) -> int:

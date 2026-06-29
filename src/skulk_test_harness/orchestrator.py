@@ -166,7 +166,7 @@ class HarnessRunner:
                     writer.write(report)
                 return False
             if not placement.ready:
-                return True
+                return not _is_retryable_placement_giveup(placement)
             report.placements.append(placement)
             # Dashboard parity: when the model exposes a thinking toggle and the
             # test does not pin enable_thinking, default it OFF so the model
@@ -1096,6 +1096,10 @@ def _served_spec_type(model: dict[str, object]) -> str:
             return value.lower()
     value = model.get("served_spec_type")
     return value.lower() if isinstance(value, str) else ""
+
+
+def _is_retryable_placement_giveup(placement: PlacementResult) -> bool:
+    return placement.created_by_harness and placement.instance_id is None
 
 
 def _expanded_prompt(test: PromptTest) -> str:

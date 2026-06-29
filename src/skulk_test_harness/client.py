@@ -87,15 +87,14 @@ class SkulkClient:
     def __exit__(self, *_exc: object) -> None:
         self.close()
 
-    # Transport-level failures that are safe to retry: a long-lived client
-    # reusing a keep-alive connection the server has already closed surfaces as
-    # RemoteProtocolError ("Server disconnected without sending a response") on
-    # the next request, even though the server is healthy. Connect/read/pool
-    # timeouts under cluster load are likewise transient. These are NOT server
-    # responses (those come back as SkulkApiError), so retrying is correct; an
-    # uncaught one of these is exactly what crashed every cell of the last
-    # battery run.
-    _RETRYABLE_TRANSPORT_ERRORS = (
+    # Transport-level failures that are safe to retry for read-only calls: a
+    # long-lived client reusing a keep-alive connection the server has already
+    # closed surfaces as RemoteProtocolError ("Server disconnected without
+    # sending a response") on the next request, even though the server is
+    # healthy. Timeouts under cluster load are likewise transient for idempotent
+    # reads. Mutating calls use the narrower tuple below so a placement/download
+    # request that may already have reached Skulk is not replayed.
+    _READ_RETRYABLE_TRANSPORT_ERRORS = (
         httpx.RemoteProtocolError,
         httpx.ConnectError,
         httpx.ReadError,
@@ -104,6 +103,11 @@ class SkulkClient:
         httpx.ConnectTimeout,
         httpx.ReadTimeout,
         httpx.WriteTimeout,
+    )
+    _MUTATION_RETRYABLE_TRANSPORT_ERRORS = (
+        httpx.ConnectError,
+        httpx.ConnectTimeout,
+        httpx.PoolTimeout,
     )
     _MAX_TRANSPORT_RETRIES = 4
 
@@ -116,6 +120,12 @@ class SkulkClient:
         params: QueryParams | None = None,
         timeout_s: float | None = None,
     ) -> dict[str, object] | list[object] | str | None:
+        method_upper = method.upper()
+        retryable_errors = (
+            self._READ_RETRYABLE_TRANSPORT_ERRORS
+            if method_upper in {"GET", "HEAD", "OPTIONS"}
+            else self._MUTATION_RETRYABLE_TRANSPORT_ERRORS
+        )
         last_exc: Exception | None = None
         for attempt in range(self._MAX_TRANSPORT_RETRIES):
             try:
@@ -127,11 +137,9 @@ class SkulkClient:
                     timeout=timeout_s or self.request_timeout_s,
                 )
                 break
-            except self._RETRYABLE_TRANSPORT_ERRORS as exc:
-                # A stale-keepalive disconnect means the request never reached
-                # the server, so re-issuing is safe (idempotent for our GET /
-                # place / delete usage). Back off briefly and let httpx open a
-                # fresh connection.
+            except retryable_errors as exc:
+                # Back off briefly and let httpx open a fresh connection.
+                # Mutations only retry pre-request connection/pool failures.
                 last_exc = exc
                 if attempt == self._MAX_TRANSPORT_RETRIES - 1:
                     raise

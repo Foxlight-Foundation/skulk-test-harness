@@ -758,7 +758,7 @@ def test_eviction_skipped_when_placement_never_appears(tmp_path: Path) -> None:
     )
     report = RunReport.start("run-1", spec, [])
 
-    runner._run_model_lifecycle(
+    placed = runner._run_model_lifecycle(
         client,  # type: ignore[arg-type]
         ModelRef(model_id="m/Foo", source="explicit"),
         spec,
@@ -768,5 +768,6 @@ def test_eviction_skipped_when_placement_never_appears(tmp_path: Path) -> None:
         {},
     )
 
+    assert placed is False
     assert client.deleted == []
     assert client.evicted == []
