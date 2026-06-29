@@ -738,6 +738,7 @@ def _model_id_from_catalog_entry(model: dict[str, object]) -> str:
 
 _DEFERRED_PLACEMENT_MESSAGES = {
     "No usable placement preview found before execution",
+    "Placement request failed",
     "Timed out waiting for placed model to appear in cluster state",
 }
 

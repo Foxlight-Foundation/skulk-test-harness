@@ -551,6 +551,11 @@ def test_clear_deferred_placement_issues_keeps_real_run_errors() -> None:
             Issue(
                 severity="error",
                 model_id="m/Foo",
+                message="Placement request failed",
+            ),
+            Issue(
+                severity="error",
+                model_id="m/Foo",
                 message="Model run failed; continuing to next model",
             ),
             Issue(
