@@ -651,6 +651,8 @@ class HarnessRunner:
             test.success,
             tool_calls=execution.tool_calls,
             logprob_tokens=execution.logprob_tokens,
+            reasoning_text=scored_execution.reasoning_text,
+            wall_tps=scored_execution.metrics.wall_tps,
         )
         issues.extend(roundtrip_issues)
         artifact_path = _artifact_path(
@@ -804,6 +806,8 @@ def _score_output(
     *,
     tool_calls: list[ToolCallRecord] | None = None,
     logprob_tokens: int = 0,
+    reasoning_text: str = "",
+    wall_tps: float | None = None,
 ) -> list[Issue]:
     issues: list[Issue] = []
     tool_calls = tool_calls or []
@@ -838,16 +842,67 @@ def _score_output(
                     message=f"Output missing required substring {substring!r}",
                 )
             )
+    # Forbidden substrings are checked against the visible content and, when
+    # forbid_in_reasoning is set, the separated reasoning channel too -- a leaked
+    # control marker (e.g. Gemma 4's literal '<|channel>') is a regression
+    # whichever channel it surfaces in.
+    forbidden_haystack = text
+    if criteria.forbid_in_reasoning and reasoning_text:
+        forbidden_haystack = f"{text}\n{reasoning_text}"
     for substring in criteria.forbidden_substrings:
-        if substring.lower() in text.lower():
+        if substring.lower() in forbidden_haystack.lower():
+            where = (
+                "output/reasoning"
+                if criteria.forbid_in_reasoning and reasoning_text
+                else "output"
+            )
             issues.append(
                 Issue(
                     severity="error",
                     model_id=model_id,
                     test_name=test_name,
-                    message=f"Output contained forbidden substring {substring!r}",
+                    message=f"{where} contained forbidden substring {substring!r}",
                 )
             )
+    if len(reasoning_text) < criteria.min_reasoning_chars:
+        # A reasoning model must surface its thinking in the SEPARATED reasoning
+        # channel. Too little reasoning_content means the parser swallowed the
+        # thought into content (or lost the split) -- the Gemma 4 served channel
+        # parser regression this guards against.
+        issues.append(
+            Issue(
+                severity="error",
+                model_id=model_id,
+                test_name=test_name,
+                message=(
+                    "Separated reasoning shorter than required minimum "
+                    f"({len(reasoning_text)} < {criteria.min_reasoning_chars} chars) "
+                    "-- reasoning not split into its own channel"
+                ),
+            )
+        )
+    # A throughput floor makes a SILENT speculative/MTP fallback visible: the text
+    # stays correct, only the decode rate drops. The gate is skipped when the run
+    # produced no measurable rate (e.g. an empty/failed generation, which the
+    # content checks already flag).
+    if (
+        criteria.min_wall_tps is not None
+        and wall_tps is not None
+        and wall_tps < criteria.min_wall_tps
+    ):
+        issues.append(
+            Issue(
+                severity="error",
+                model_id=model_id,
+                test_name=test_name,
+                message=(
+                    f"Decode throughput {wall_tps:.1f} tok/s below required "
+                    f"floor {criteria.min_wall_tps:.1f} tok/s -- speculative/"
+                    "MTP decoding may have silently fallen back"
+                ),
+                evidence={"wall_tps": wall_tps, "min_wall_tps": criteria.min_wall_tps},
+            )
+        )
     for pattern in criteria.required_regexes:
         if re.search(pattern, text, flags=re.IGNORECASE | re.DOTALL) is None:
             issues.append(

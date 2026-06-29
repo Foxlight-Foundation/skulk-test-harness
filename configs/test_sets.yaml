@@ -136,6 +136,17 @@ test_sets:
             - "(?m)^[-*]\\s+"
           required_substrings:
             - tool
+          # gpt-oss reasons in the harmony format; the runner must parse those
+          # control tokens into the reasoning channel, not leak them into the
+          # visible answer (the class of regression fixed in Skulk #403, where
+          # detokenized harmony markers leaked into chat on llama.cpp). Forbid the
+          # markers in content AND reasoning (forbid_in_reasoning default on).
+          forbidden_substrings:
+            - "<|channel|>"
+            - "<|start|>"
+            - "<|message|>"
+            - "<|end|>"
+            - "<|return|>"
 
       - name: python-code-artifact
         kind: code
@@ -392,3 +403,71 @@ test_sets:
         repetitions: 3
         success:
           min_chars: 800
+
+  mtp-correctness:
+    name: mtp-correctness
+    description: >
+      Correctness gates for the served MTP path (the mtp-served model set on the
+      GPU node). Two failure modes that presence/coherence checks are blind to:
+      (1) the reasoning channel parser regressing -- thinking swallowed into
+      content, or a control marker leaking into the visible answer; and (2) a
+      SILENT speculative/MTP fallback -- text stays correct, only the decode rate
+      drops. Pair with the mtp-served set. The throughput floor is kite4-Vulkan
+      calibrated; see per-cell notes.
+    tests:
+      # Reasoning split + no marker leak. Gemma 4 emits its thinking as literal
+      # <|channel>thought ... <channel|> markers that the served runner re-parses
+      # into reasoning_content (output_parser=gemma4); a parser regression either
+      # drops the split (reasoning_content empty) or leaks the markers into the
+      # answer. min_reasoning_chars asserts the split happened; forbidden_substrings
+      # (checked against content AND reasoning via forbid_in_reasoning) asserts no
+      # marker leaks in either channel. Meaningful for Gemma; for the Qwen MTP
+      # reasoning models the marker check passes trivially while the reasoning-present
+      # check still guards their thinking channel.
+      - name: reasoning-split-no-marker-leak
+        kind: chat
+        system: You are a careful reasoner. Think step by step, then answer.
+        prompt: >
+          A train leaves city A at 9:00 am traveling 60 mph toward city B, 210
+          miles away. A second train leaves city B at 9:30 am traveling 50 mph
+          toward city A on the same line. At what clock time do they meet? Show
+          your reasoning, then give the final clock time.
+        max_tokens: 600
+        temperature: 0
+        enable_thinking: true
+        repetitions: 2
+        success:
+          min_chars: 20
+          min_reasoning_chars: 40
+          forbid_in_reasoning: true
+          forbidden_substrings:
+            - "<|channel>"
+            - "<channel|>"
+            - "<|channel"
+            - "channel|>"
+      # MTP-on throughput floor. A draft-mtp regression that disables speculation
+      # still produces correct text, just slower, so only a decode-rate floor
+      # catches it. 16 tok/s is calibrated for kite4 (Radeon/Vulkan): it sits well
+      # below the measured draft-mtp rate of the mid/large dense + Gemma cards
+      # (~28-31 tok/s) and above their non-MTP decode (~13-16 tok/s), so a full
+      # fallback shows RED with margin. SCOPE: this reliably catches MTP-off on the
+      # mid/large DENSE models and Gemma 31B; the 9B is decode-bound-fast (clears 16
+      # even without MTP) and the A3B MoE's small speedup leaves less margin, so for
+      # those the cell is a coherence check, not a strict MTP-off detector. Retune
+      # the floor when the target node or model set changes.
+      - name: mtp-throughput-floor
+        kind: chat
+        system: You are a thorough technical writer. Write continuous prose.
+        prompt: >
+          Write a detailed, self-contained explanation (around 700 words) of how a
+          distributed inference system shards a large language model across several
+          machines: pipeline vs tensor parallelism, how the KV cache is managed,
+          how tokens stream back to the client, and the main failure modes and how
+          a cluster recovers from them. Use flowing paragraphs, no lists.
+        max_tokens: 512
+        temperature: 0.7
+        enable_thinking: false
+        repetitions: 3
+        success:
+          min_chars: 800
+          min_wall_tps: 16.0

@@ -148,6 +148,43 @@ class SuccessCriteria(HarnessBaseModel):
             "logprobs would yield none."
         ),
     )
+    min_reasoning_chars: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "When > 0, assert the model emitted at least this many characters of "
+            "SEPARATED reasoning (the reasoning_content channel), not just visible "
+            "content. Verifies a reasoning model's thinking was parsed into its "
+            "own channel rather than swallowed into content or dropped -- the key "
+            "check for the Gemma 4 served channel parser, where a regression would "
+            "either lose the split or leak the thought text into content."
+        ),
+    )
+    forbid_in_reasoning: bool = Field(
+        default=True,
+        description=(
+            "Also apply forbidden_substrings to the reasoning channel, not only "
+            "the visible content. On by default so a forbidden marker that leaks "
+            "into reasoning is caught too; the Gemma channel-marker check "
+            "(forbidden '<|channel>' / '<channel|>') relies on this to catch a "
+            "leak in either channel."
+        ),
+    )
+    min_wall_tps: float | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "When set, assert steady-state decode throughput (wall_tps, tokens / "
+            "decode time excluding TTFT) is at least this value. A floor "
+            "calibrated ABOVE the model's non-speculative decode rate makes a "
+            "SILENT speculative/MTP fallback visible: a draft-mtp regression that "
+            "disables speculation still produces correct text, just slower, so "
+            "presence/coherence checks stay green and only a throughput floor "
+            "catches it. Hardware- and model-specific; set per benchmark cell for "
+            "the target node, and keep it conservative (well below the measured "
+            "MTP rate, above the measured non-MTP rate)."
+        ),
+    )
 
 
 class ExpectedToolCall(HarnessBaseModel):
