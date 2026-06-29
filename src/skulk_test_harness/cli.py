@@ -275,6 +275,15 @@ def run(
     sharding: Annotated[str, typer.Option(help="Pipeline or Tensor")] = "Pipeline",
     instance_meta: Annotated[str, typer.Option(help="MlxRing or MlxJaccl")] = "MlxRing",
     min_nodes: Annotated[int | None, typer.Option(help="Minimum node count override")] = None,
+    fail_on_issue: Annotated[
+        bool,
+        typer.Option(
+            "--fail-on-issue/--no-fail-on-issue",
+            help="Exit non-zero when any test result fails or an error-severity "
+            "issue is recorded (execute mode only). On by default so a battery / "
+            "CI goes red on a regression instead of silently green.",
+        ),
+    ] = True,
 ) -> None:
     """Run or dry-run a named test set against a named model set."""
 
@@ -295,6 +304,21 @@ def run(
     report = runner.execute(spec) if execute else runner.plan(spec)
     run_dir = ReportWriter(cfg.output_dir).write(report)
     _print_report_summary(report, run_dir)
+
+    # The exit code is the gate: without this, `run` always exited 0 even when a
+    # result failed, so batteries (and the served-MTP correctness cell) looked
+    # green on a real regression. Only judge an executed run -- a dry-run plan has
+    # no results to fail on.
+    if execute and fail_on_issue:
+        result_failed = any(not r.passed for r in report.results)
+        run_errored = any(i.severity == "error" for i in report.issues)
+        if result_failed or run_errored:
+            failed = sum(1 for r in report.results if not r.passed)
+            console.print(
+                f"[bold red]FAIL[/]: {failed} test result(s) failed"
+                + (" + run-level error issue(s)" if run_errored else "")
+            )
+            raise typer.Exit(code=1)
 
 
 @app.command()
