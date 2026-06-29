@@ -46,6 +46,17 @@ class ChatExecution:
     # ``top_logprob_tokens`` counts those that also carried ranked alternatives.
     logprob_tokens: int = 0
     top_logprob_tokens: int = 0
+    canceled: bool = False
+
+
+@dataclass(frozen=True)
+class EmbeddingExecution:
+    """Embedding vectors and timing collected from one embeddings request."""
+
+    dimensions: list[int]
+    norms: list[float]
+    elapsed_s: float
+    raw_response: dict[str, object]
 
 
 class SkulkClient:
@@ -57,10 +68,12 @@ class SkulkClient:
         *,
         request_timeout_s: float = 30.0,
         generation_timeout_s: float = 1800.0,
+        stream_read_timeout_s: float = 120.0,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.request_timeout_s = request_timeout_s
         self.generation_timeout_s = generation_timeout_s
+        self.stream_read_timeout_s = stream_read_timeout_s
         self._client = httpx.Client(base_url=self.base_url, timeout=request_timeout_s)
 
     def close(self) -> None:
@@ -74,21 +87,27 @@ class SkulkClient:
     def __exit__(self, *_exc: object) -> None:
         self.close()
 
-    # Transport-level failures that are safe to retry: a long-lived client
-    # reusing a keep-alive connection the server has already closed surfaces as
-    # RemoteProtocolError ("Server disconnected without sending a response") on
-    # the next request, even though the server is healthy. Connect/read/pool
-    # timeouts under cluster load are likewise transient. These are NOT server
-    # responses (those come back as SkulkApiError), so retrying is correct; an
-    # uncaught one of these is exactly what crashed every cell of the last
-    # battery run.
-    _RETRYABLE_TRANSPORT_ERRORS = (
+    # Transport-level failures that are safe to retry for read-only calls: a
+    # long-lived client reusing a keep-alive connection the server has already
+    # closed surfaces as RemoteProtocolError ("Server disconnected without
+    # sending a response") on the next request, even though the server is
+    # healthy. Timeouts under cluster load are likewise transient for idempotent
+    # reads. Mutating calls use the narrower tuple below so a placement/download
+    # request that may already have reached Skulk is not replayed.
+    _READ_RETRYABLE_TRANSPORT_ERRORS = (
         httpx.RemoteProtocolError,
         httpx.ConnectError,
         httpx.ReadError,
         httpx.WriteError,
         httpx.PoolTimeout,
         httpx.ConnectTimeout,
+        httpx.ReadTimeout,
+        httpx.WriteTimeout,
+    )
+    _MUTATION_RETRYABLE_TRANSPORT_ERRORS = (
+        httpx.ConnectError,
+        httpx.ConnectTimeout,
+        httpx.PoolTimeout,
     )
     _MAX_TRANSPORT_RETRIES = 4
 
@@ -101,6 +120,12 @@ class SkulkClient:
         params: QueryParams | None = None,
         timeout_s: float | None = None,
     ) -> dict[str, object] | list[object] | str | None:
+        method_upper = method.upper()
+        retryable_errors = (
+            self._READ_RETRYABLE_TRANSPORT_ERRORS
+            if method_upper in {"GET", "HEAD", "OPTIONS"}
+            else self._MUTATION_RETRYABLE_TRANSPORT_ERRORS
+        )
         last_exc: Exception | None = None
         for attempt in range(self._MAX_TRANSPORT_RETRIES):
             try:
@@ -112,11 +137,9 @@ class SkulkClient:
                     timeout=timeout_s or self.request_timeout_s,
                 )
                 break
-            except self._RETRYABLE_TRANSPORT_ERRORS as exc:
-                # A stale-keepalive disconnect means the request never reached
-                # the server, so re-issuing is safe (idempotent for our GET /
-                # place / delete usage). Back off briefly and let httpx open a
-                # fresh connection.
+            except retryable_errors as exc:
+                # Back off briefly and let httpx open a fresh connection.
+                # Mutations only retry pre-request connection/pool failures.
                 last_exc = exc
                 if attempt == self._MAX_TRANSPORT_RETRIES - 1:
                     raise
@@ -281,14 +304,18 @@ class SkulkClient:
         payload = self._request_json("DELETE", f"/instance/{path_instance}")
         return payload if isinstance(payload, dict) else None
 
-    def delete_store_model(self, model_id: str) -> dict[str, object] | None:
+    def delete_store_model(
+        self, model_id: str, *, timeout_s: float | None = None
+    ) -> dict[str, object] | None:
         """Evict a model's staged weights from the model store (DELETE).
 
         Used to clean up staged GGUF/MLX weights after a benchmark run so test
         models do not accumulate on disk. Maps to ``DELETE /store/models/{id}``.
         """
         path_model = quote(model_id, safe="/")
-        payload = self._request_json("DELETE", f"/store/models/{path_model}")
+        payload = self._request_json(
+            "DELETE", f"/store/models/{path_model}", timeout_s=timeout_s
+        )
         return payload if isinstance(payload, dict) else None
 
     def find_placements_for_model(self, model_id: str) -> list[PlacementResult]:
@@ -409,6 +436,7 @@ class SkulkClient:
         tool_choice: str | dict[str, object] | None = None,
         parallel_tool_calls: bool | None = None,
         top_logprobs: int | None = None,
+        cancel_after_chunks: int | None = None,
     ) -> ChatExecution:
         """Run one streaming chat completion and measure wall-clock metrics."""
 
@@ -447,49 +475,67 @@ class SkulkClient:
         chunks = 0
         logprob_tokens = 0
         top_logprob_tokens = 0
+        canceled = False
 
-        with self._client.stream(
-            "POST",
-            "/v1/chat/completions",
-            json=payload,
-            timeout=self.generation_timeout_s,
-        ) as response:
-            if response.status_code >= 400:
-                body = response.read().decode("utf-8", errors="replace")
-                raise SkulkApiError(
-                    "POST", "/v1/chat/completions", response.status_code, body
-                )
-            for line in response.iter_lines():
-                if not line:
-                    continue
-                if line.startswith(": command_id"):
-                    command_id = line.rsplit(" ", 1)[-1].strip()
-                    continue
-                if not line.startswith("data:"):
-                    continue
-                data = line.removeprefix("data:").strip()
-                if data == "[DONE]":
-                    break
-                event = _safe_json_object(data)
-                if event is None:
-                    continue
-                raw_events.append(event)
-                event_logprobs, event_top_logprobs = _extract_stream_logprobs(event)
-                logprob_tokens += event_logprobs
-                top_logprob_tokens += event_top_logprobs
-                content, reasoning, event_tool_calls = _extract_stream_delta(event)
-                text_for_timing = content or reasoning
-                if text_for_timing:
-                    if first_token_at is None:
+        try:
+            with self._client.stream(
+                "POST",
+                "/v1/chat/completions",
+                json=payload,
+                timeout=httpx.Timeout(
+                    timeout=None,
+                    connect=self.request_timeout_s,
+                    read=self.stream_read_timeout_s,
+                    write=self.request_timeout_s,
+                    pool=self.request_timeout_s,
+                ),
+            ) as response:
+                if response.status_code >= 400:
+                    body = response.read().decode("utf-8", errors="replace")
+                    raise SkulkApiError(
+                        "POST", "/v1/chat/completions", response.status_code, body
+                    )
+                for line in response.iter_lines():
+                    if not line:
+                        continue
+                    if line.startswith(": command_id"):
+                        command_id = line.rsplit(" ", 1)[-1].strip()
+                        continue
+                    if not line.startswith("data:"):
+                        continue
+                    data = line.removeprefix("data:").strip()
+                    if data == "[DONE]":
+                        break
+                    event = _safe_json_object(data)
+                    if event is None:
+                        continue
+                    raw_events.append(event)
+                    event_logprobs, event_top_logprobs = _extract_stream_logprobs(event)
+                    logprob_tokens += event_logprobs
+                    top_logprob_tokens += event_top_logprobs
+                    content, reasoning, event_tool_calls = _extract_stream_delta(event)
+                    text_for_timing = content or reasoning
+                    if text_for_timing:
+                        if first_token_at is None:
+                            first_token_at = time.monotonic()
+                        chunks += 1
+                    if event_tool_calls and first_token_at is None:
                         first_token_at = time.monotonic()
-                    chunks += 1
-                if event_tool_calls and first_token_at is None:
-                    first_token_at = time.monotonic()
-                if content:
-                    output_parts.append(content)
-                if reasoning:
-                    reasoning_parts.append(reasoning)
-                tool_calls.extend(event_tool_calls)
+                    if content:
+                        output_parts.append(content)
+                    if reasoning:
+                        reasoning_parts.append(reasoning)
+                    tool_calls.extend(event_tool_calls)
+                    if cancel_after_chunks and chunks >= cancel_after_chunks:
+                        canceled = True
+                        break
+        except (httpx.TimeoutException, httpx.TransportError) as exc:
+            raise SkulkApiError(
+                "POST",
+                "/v1/chat/completions",
+                0,
+                f"{type(exc).__name__}: {exc}",
+            ) from exc
 
         elapsed = time.monotonic() - start
         text = "".join(output_parts)
@@ -517,6 +563,52 @@ class SkulkClient:
             raw_events=raw_events,
             logprob_tokens=logprob_tokens,
             top_logprob_tokens=top_logprob_tokens,
+            canceled=canceled,
+        )
+
+    def embeddings(
+        self,
+        *,
+        model_id: str,
+        input_text: str | list[str],
+        encoding_format: str = "float",
+    ) -> EmbeddingExecution:
+        """Run one OpenAI-compatible embeddings request and summarize vectors."""
+
+        start = time.monotonic()
+        payload = {
+            "model": model_id,
+            "input": input_text,
+            "encoding_format": encoding_format,
+        }
+        response = self._request_json(
+            "POST",
+            "/v1/embeddings",
+            json_body=payload,
+            timeout_s=self.generation_timeout_s,
+        )
+        elapsed = time.monotonic() - start
+        if not isinstance(response, dict):
+            raise TypeError(f"Unexpected /v1/embeddings payload: {response!r}")
+        data = response.get("data")
+        if not isinstance(data, list) or not data:
+            raise TypeError("Expected /v1/embeddings to return non-empty data")
+        dimensions: list[int] = []
+        norms: list[float] = []
+        for item in data:
+            if not isinstance(item, dict):
+                raise TypeError("Embedding data item was not an object")
+            embedding = item.get("embedding")
+            if not isinstance(embedding, list) or not embedding:
+                raise TypeError("Embedding vector was absent or empty")
+            values = [float(value) for value in embedding]
+            dimensions.append(len(values))
+            norms.append(sum(value * value for value in values) ** 0.5)
+        return EmbeddingExecution(
+            dimensions=dimensions,
+            norms=norms,
+            elapsed_s=elapsed,
+            raw_response=response,
         )
 
     def bench_chat(

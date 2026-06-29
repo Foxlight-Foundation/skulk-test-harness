@@ -66,6 +66,48 @@ model_sets:
       - source: store
         id_regex: ".*"
 
+  tensor-sharding:
+    name: tensor-sharding
+    description: Tensor-parallel smoke target for the kite TP pair.
+    models:
+      - mlx-community/Qwen3.5-9B-4bit
+
+  context-admission:
+    name: context-admission
+    description: Small text model used to verify oversized requests fail cleanly.
+    models:
+      - mlx-community/Qwen3.5-9B-4bit
+
+  embeddings:
+    name: embeddings
+    description: Embedding runner smoke target.
+    models:
+      - sentence-transformers/all-MiniLM-L6-v2
+
+  vision:
+    name: vision
+    description: Vision-capable text-generation model for image input coverage.
+    models:
+      - mlx-community/Qwen3-VL-4B-Instruct-4bit
+
+  served-spec-draft-simple:
+    name: served-spec-draft-simple
+    description: Models whose cards declare llama_server draft_simple speculation.
+    selectors:
+      - source: both
+        id_regex: ".*"
+        served_spec_types_any:
+          - draft_simple
+
+  served-spec-draft-eagle3:
+    name: served-spec-draft-eagle3
+    description: Models whose cards declare llama_server draft_eagle3 speculation.
+    selectors:
+      - source: both
+        id_regex: ".*"
+        served_spec_types_any:
+          - draft_eagle3
+
   # --- Curated e2e matrix (explicitly pinned to staged models, not regex, so
   # --- the matrix is reproducible and does not drift with the live catalog).
 

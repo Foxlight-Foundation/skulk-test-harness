@@ -214,6 +214,7 @@ def _place_multinode(
     report: StabilityReport,
     *,
     min_nodes: int,
+    excluded_node_ids: list[str] | None = None,
 ) -> PlacementResult | None:
     """Place ``model_id`` across at least ``min_nodes`` and wait for readiness.
 
@@ -221,7 +222,12 @@ def _place_multinode(
     an error issue and returns ``None`` if no usable placement can be made ready.
     """
 
-    existing = client.find_placements_for_model(model_id)
+    excluded = excluded_node_ids or []
+    existing = [
+        placement
+        for placement in client.find_placements_for_model(model_id)
+        if _placement_avoids_nodes(placement, excluded)
+    ]
     if existing:
         placement = existing[0]
         if placement.instance_id and not placement.ready:
@@ -234,7 +240,9 @@ def _place_multinode(
 
     previews = [
         preview
-        for preview in client.get_placement_previews(model_id)
+        for preview in client.get_placement_previews(
+            model_id, excluded_node_ids=excluded
+        )
         if preview.get("error") in (None, "")
     ]
     if not previews:
@@ -253,7 +261,7 @@ def _place_multinode(
             sharding=str(preview.get("sharding") or "Pipeline"),
             instance_meta=str(preview.get("instance_meta") or "MlxRing"),
             min_nodes=min_nodes,
-            excluded_nodes=[],
+            excluded_nodes=excluded,
         )
     except SkulkApiError as exc:
         report.add_issue(
@@ -266,13 +274,21 @@ def _place_multinode(
         )
         return None
 
-    deadline = time.monotonic() + config.placement_ready_timeout_s
-    while time.monotonic() < deadline:
-        placements = client.find_placements_for_model(model_id)
+    appear_deadline = time.monotonic() + min(
+        config.placement_appearance_timeout_s,
+        config.placement_ready_timeout_s,
+    )
+    while time.monotonic() < appear_deadline:
+        placements = [
+            placement
+            for placement in client.find_placements_for_model(model_id)
+            if _placement_avoids_nodes(placement, excluded)
+        ]
         if placements and placements[0].instance_id:
+            ready_deadline = time.monotonic() + config.placement_ready_timeout_s
             placement = client.wait_for_instance_ready(
                 placements[0].instance_id,
-                timeout_s=max(0.1, deadline - time.monotonic()),
+                timeout_s=max(0.1, ready_deadline - time.monotonic()),
                 poll_interval_s=config.poll_interval_s,
             )
             return placement.model_copy(update={"created_by_harness": True})
@@ -281,10 +297,21 @@ def _place_multinode(
         Issue(
             severity="error",
             model_id=model_id,
-            message="Timed out waiting for stability-suite placement to become ready",
+            message=(
+                "Timed out waiting for stability-suite placement to appear in "
+                "cluster state"
+            ),
         )
     )
     return None
+
+
+def _placement_avoids_nodes(
+    placement: PlacementResult, excluded_node_ids: list[str]
+) -> bool:
+    if not excluded_node_ids:
+        return True
+    return not set(placement.node_ids).intersection(excluded_node_ids)
 
 
 def _preview_node_count(preview: dict[str, object]) -> int:
@@ -351,15 +378,11 @@ def run_failover(
     will SURVIVE the crash (i.e. not the master).
     """
 
-    report = StabilityReport.start(_stability_run_id("failover", model_id), "failover", model_id)
-    placement = _place_multinode(client, config, model_id, report, min_nodes=min_nodes)
-    if placement is None or not placement.ready:
-        return report.finish()
-
     # Capture the full-cluster size before we crash anything. Rejoin is verified
     # by size, not by node_id: node_id is ephemeral (regenerated every process
     # start), so a relaunched node rejoins under a NEW id and the old one never
     # reappears.
+    report = StabilityReport.start(_stability_run_id("failover", model_id), "failover", model_id)
     baseline_nodes = _live_node_count(client)
     report.observations["baseline_node_count"] = baseline_nodes
 
@@ -371,7 +394,6 @@ def run_failover(
     }
     node = _require_cluster_node(config, master_friendly, report, model_id)
     if node is None:
-        _cleanup_instance(client, placement, report)
         return report.finish()
 
     if client.base_url.endswith(":52415") and master_friendly in client.base_url:
@@ -386,8 +408,19 @@ def run_failover(
                 evidence={"api_base_url": client.base_url, "master": master_friendly},
             )
         )
-        _cleanup_instance(client, placement, report)
         return report.finish()
+
+    placement = _place_multinode(
+        client,
+        config,
+        model_id,
+        report,
+        min_nodes=min_nodes,
+        excluded_node_ids=[master_id] if master_id else None,
+    )
+    if placement is None or not placement.ready:
+        return report.finish()
+    report.observations["placement_excluded_master"] = bool(master_id)
 
     # Kick off a stream, then crash the master while it is (intended to be) in
     # flight. The stream is best-effort: it may error when its serving rank dies,
