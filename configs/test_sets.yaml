@@ -136,6 +136,17 @@ test_sets:
             - "(?m)^[-*]\\s+"
           required_substrings:
             - tool
+          # gpt-oss reasons in the harmony format; the runner must parse those
+          # control tokens into the reasoning channel, not leak them into the
+          # visible answer (the class of regression fixed in Skulk #403, where
+          # detokenized harmony markers leaked into chat on llama.cpp). Forbid the
+          # markers in content AND reasoning (forbid_in_reasoning default on).
+          forbidden_substrings:
+            - "<|channel|>"
+            - "<|start|>"
+            - "<|message|>"
+            - "<|end|>"
+            - "<|return|>"
 
       - name: python-code-artifact
         kind: code
