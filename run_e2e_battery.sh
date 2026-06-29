@@ -32,6 +32,11 @@ say "BATTERY START on $(uv run skulk-harness doctor 2>/dev/null | grep -m1 API |
 cell dense-singles    chat-tests
 cell moe              chat-tests
 cell multinode-large  chat-tests
+cell tensor-sharding  chat-tests        "--sharding Tensor --min-nodes 2"
+cell smoke            cancellation
+cell context-admission context-admission
+cell embeddings       embeddings
+cell vision           vision
 
 # --- AMD / llama.cpp leg (kite4): GGUF coherence + the big models Bug A unlocked ---
 cell gguf-llama-cpp   llama-cpp

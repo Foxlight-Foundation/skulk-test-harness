@@ -24,8 +24,9 @@ test_sets:
         enable_thinking: false
         success:
           min_chars: 60
+          min_list_items: 3
           required_regexes:
-            - "(?m)^[-*]\\s+"
+            - "(?m)^\\s*(?:[-*]|\\d+[.)]|[a-z][.)])\\s+"
 
       # Output-coherence gate. Temperature > 0 so multi-node sampled speculative
       # decoding is exercised — the path a data-plane delivery reorder (Skulk
@@ -319,7 +320,9 @@ test_sets:
     description: >-
       Capability + coherence checks for the llama.cpp (GGUF) engine on a non-Mac
       GPU node. Pair with the gguf-llama-cpp model set. Covers basic generation,
-      streamed-order coherence, logprob parity, and the tool-calling code path.
+      streamed-order coherence, the tool-calling code path, and harmony marker
+      leak coverage. Logprob parity needs a dedicated logits_all-enabled
+      placement, not the default llama.cpp suite.
     tests:
       - name: concise-factual-answer
         kind: chat
@@ -379,6 +382,25 @@ test_sets:
         tool_choice: auto
         success:
           min_chars: 2
+
+      - name: harmony-marker-leak-guard
+        kind: chat
+        system: Keep final answers concise and never expose internal control tokens.
+        prompt: >
+          In one short sentence, explain why a model runner should hide parser
+          control markers from the visible answer.
+        max_tokens: 128
+        temperature: 0
+        enable_thinking: true
+        reasoning_effort: low
+        success:
+          min_chars: 20
+          forbidden_substrings:
+            - "<|channel|>"
+            - "<|start|>"
+            - "<|message|>"
+            - "<|end|>"
+            - "<|return|>"
 
   throughput:
     name: throughput
@@ -471,3 +493,113 @@ test_sets:
         success:
           min_chars: 800
           min_wall_tps: 16.0
+
+  cancellation:
+    name: cancellation
+    description: >
+      Streaming cancellation coverage. Starts a long generation, closes the
+      stream after a few chunks, then verifies the instance can still answer a
+      follow-up request.
+    tests:
+      - name: cancel-mid-stream-and-recover
+        kind: cancel
+        system: You are a verbose technical writer.
+        prompt: >
+          Write a long explanation of distributed inference scheduling, including
+          placement, backpressure, cancellation, and cleanup. Keep writing until
+          stopped.
+        max_tokens: 512
+        temperature: 0.7
+        enable_thinking: false
+        cancel_after_chunks: 3
+        followup_prompt: Reply with exactly this token and no other text colon CANCEL-HEALTHY
+        success:
+          min_chars: 14
+          required_substrings:
+            - CANCEL-HEALTHY
+
+  context-admission:
+    name: context-admission
+    description: >
+      Oversized request guard for Skulk's context-admission ceiling (#145).
+      Expects a clean context_length_exceeded 400 and then verifies the instance
+      remains healthy.
+    tests:
+      - name: max-tokens-over-context-limit
+        kind: error
+        system: You are a conformance test assistant.
+        prompt: This request intentionally asks for too many output tokens.
+        max_tokens: 1000000
+        temperature: 0
+        enable_thinking: false
+        expected_error_statuses:
+          - 400
+        expected_error_substrings:
+          - context_length_exceeded
+        followup_prompt: Reply with exactly this token and no other text colon CONTEXT-HEALTHY
+        success:
+          min_chars: 0
+
+  embeddings:
+    name: embeddings
+    description: >
+      Embeddings endpoint coverage. Calls /v1/embeddings and asserts a
+      well-formed, non-zero vector with the expected native dimensionality.
+    tests:
+      - name: sentence-transformer-vector-shape
+        kind: embedding
+        prompt: Skulk embeddings smoke test.
+        embedding_input: Skulk embeddings smoke test.
+        expected_embedding_dimensions: 384
+        min_embedding_norm: 0.01
+        success:
+          min_chars: 0
+
+  vision:
+    name: vision
+    description: >
+      Multimodal chat coverage. Sends an OpenAI-style image_url content part and
+      asserts the model answers coherently.
+    tests:
+      - name: image-caption-smoke
+        kind: chat
+        system: You are a careful vision assistant.
+        prompt: What is the dominant color in this image? Answer in one word.
+        max_tokens: 64
+        temperature: 0
+        enable_thinking: false
+        images:
+          - url: data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADUlEQVR42mP8z8BQDwAFgwJ/luzHmgAAAABJRU5ErkJggg==
+        success:
+          min_chars: 3
+          required_substrings:
+            - red
+
+  served-speculation:
+    name: served-speculation
+    description: >
+      Generic correctness gate for llama_server served speculation variants
+      beyond draft_mtp, such as draft_simple and draft_eagle3. Pair with model
+      sets selected by runtime.served_spec_type.
+    tests:
+      - name: served-spec-coherence
+        kind: chat
+        system: Follow the user's requested format exactly.
+        prompt: "Output the integers from 1 to 20 in order, separated by single spaces, and nothing else."
+        max_tokens: 192
+        temperature: 0.2
+        enable_thinking: false
+        success:
+          in_order_integers: 20
+
+      - name: served-spec-throughput-smoke
+        kind: chat
+        system: You are a concise technical writer.
+        prompt: >
+          Write two short paragraphs about why served speculative decoding needs
+          end-to-end harness coverage.
+        max_tokens: 256
+        temperature: 0.4
+        enable_thinking: false
+        success:
+          min_chars: 250

@@ -203,10 +203,9 @@ class HarnessRunner:
                 and placement.created_by_harness
                 and not spec.retain_instances
             ):
-                self._teardown_harness_instances(
+                instance_torn_down = self._teardown_harness_instances(
                     client, model.model_id, placement.instance_id, report
                 )
-                instance_torn_down = True
             # Evict staged weights ONLY after the harness actually tore down the
             # instance it created (opt-in via --delete-staged-models), so test
             # models do not accumulate on disk. Never evict out from under a
@@ -225,7 +224,9 @@ class HarnessRunner:
         and never abort the run; the next cell still proceeds.
         """
         try:
-            client.delete_store_model(model_id)
+            client.delete_store_model(
+                model_id, timeout_s=self.config.store_delete_timeout_s
+            )
         except SkulkApiError as exc:
             if exc.status_code != 404:
                 report.issues.append(
@@ -252,7 +253,7 @@ class HarnessRunner:
         model_id: str,
         primary_instance_id: str | None,
         report: RunReport,
-    ) -> None:
+    ) -> bool:
         """Delete every live instance the harness owns for ``model_id``.
 
         Teardown deletes by instance_id, but the cluster can re-place an
@@ -308,6 +309,7 @@ class HarnessRunner:
                         evidence={"error": str(exc), "instance_id": instance_id},
                     )
                 )
+        return bool(target_ids)
 
     def resolve_model_set(self, name: str, client: SkulkClient) -> list[ModelRef]:
         """Resolve explicit IDs and catalog selectors for one named model set."""
@@ -467,17 +469,21 @@ class HarnessRunner:
             )
             return None
 
-        deadline = time.monotonic() + self.config.placement_ready_timeout_s
-        while time.monotonic() < deadline:
+        appear_deadline = time.monotonic() + min(
+            self.config.placement_appearance_timeout_s,
+            self.config.placement_ready_timeout_s,
+        )
+        while time.monotonic() < appear_deadline:
             placements = client.find_placements_for_model(model_id)
             if placements:
                 placement = placements[0].model_copy(
                     update={"created_by_harness": True, "reused_existing": False}
                 )
                 if placement.instance_id and not placement.ready:
+                    ready_deadline = time.monotonic() + self.config.placement_ready_timeout_s
                     placement = client.wait_for_instance_ready(
                         placement.instance_id,
-                        timeout_s=max(0.1, deadline - time.monotonic()),
+                        timeout_s=max(0.1, ready_deadline - time.monotonic()),
                         poll_interval_s=self.config.poll_interval_s,
                     ).model_copy(update={"created_by_harness": True})
                 return placement
@@ -487,10 +493,13 @@ class HarnessRunner:
             Issue(
                 severity="error",
                 model_id=model_id,
-                message="Timed out waiting for placed model to appear in cluster state",
+                message=(
+                    "Timed out waiting for placed model to appear in cluster "
+                    "state; treating as a placement refusal/give-up"
+                ),
             )
         )
-        return None
+        return PlacementResult(model_id=model_id, created_by_harness=True, ready=False)
 
     def _ensure_model_card(
         self, client: SkulkClient, model_id: str, report: RunReport
@@ -566,10 +575,28 @@ class HarnessRunner:
         artifact_dir: Path,
         thinking_default: bool | None = None,
     ) -> TestResult:
-        messages = []
-        if test.system:
-            messages.append({"role": "system", "content": test.system})
-        messages.append({"role": "user", "content": test.prompt})
+        if test.kind == "cancel":
+            return self._run_cancel_test(
+                client,
+                model_id=model_id,
+                test=test,
+                repetition=repetition,
+                thinking_default=thinking_default,
+            )
+        if test.kind == "error":
+            return self._run_expected_error_test(
+                client,
+                model_id=model_id,
+                test=test,
+                repetition=repetition,
+                thinking_default=thinking_default,
+            )
+        if test.kind == "embedding":
+            return self._run_embedding_test(
+                client, model_id=model_id, test=test, repetition=repetition
+            )
+
+        messages = _messages_for_test(test)
         # An explicit per-test value always wins; otherwise fall back to the
         # model's resolved toggle default (OFF for toggle-capable models).
         enable_thinking = (
@@ -676,6 +703,337 @@ class HarnessRunner:
             self.config.api_base_url,
             request_timeout_s=self.config.request_timeout_s,
             generation_timeout_s=self.config.generation_timeout_s,
+            stream_read_timeout_s=self.config.stream_read_timeout_s,
+        )
+
+    def _run_cancel_test(
+        self,
+        client: SkulkClient,
+        *,
+        model_id: str,
+        test: PromptTest,
+        repetition: int,
+        thinking_default: bool | None = None,
+    ) -> TestResult:
+        issues: list[Issue] = []
+        cancel_after = max(1, test.cancel_after_chunks)
+        enable_thinking = (
+            test.enable_thinking
+            if test.enable_thinking is not None
+            else thinking_default
+        )
+        try:
+            canceled = client.stream_chat(
+                model_id=model_id,
+                messages=_messages_for_test(test),
+                max_tokens=test.max_tokens,
+                temperature=test.temperature,
+                top_p=test.top_p,
+                enable_thinking=enable_thinking,
+                reasoning_effort=test.reasoning_effort,
+                tools=test.tools,
+                tool_choice=test.tool_choice,
+                parallel_tool_calls=test.parallel_tool_calls,
+                cancel_after_chunks=cancel_after,
+            )
+        except SkulkApiError as exc:
+            issue = Issue(
+                severity="error",
+                model_id=model_id,
+                test_name=test.name,
+                message="Cancellable generation request failed before cancellation",
+                evidence={"error": str(exc)},
+            )
+            return TestResult(
+                model_id=model_id,
+                test_name=test.name,
+                repetition=repetition,
+                passed=False,
+                output_text="",
+                metrics=_empty_metrics(),
+                issues=[issue],
+            )
+        if not canceled.canceled:
+            issues.append(
+                Issue(
+                    severity="error",
+                    model_id=model_id,
+                    test_name=test.name,
+                    message="Stream completed before the harness could cancel it",
+                    evidence={"chunks": canceled.metrics.chunks},
+                )
+            )
+        if canceled.metrics.chunks < cancel_after:
+            issues.append(
+                Issue(
+                    severity="error",
+                    model_id=model_id,
+                    test_name=test.name,
+                    message=(
+                        "Stream produced fewer chunks than the configured "
+                        "cancellation point"
+                    ),
+                    evidence={
+                        "chunks": canceled.metrics.chunks,
+                        "cancel_after_chunks": cancel_after,
+                    },
+                )
+            )
+
+        followup_test = test.model_copy(
+            update={
+                "prompt": test.followup_prompt
+                or "Reply with exactly this token: CANCEL-HEALTHY",
+                "prompt_repetitions": 1,
+                "images": [],
+                "tools": [],
+                "tool_choice": None,
+                "parallel_tool_calls": None,
+            }
+        )
+        try:
+            followup = client.stream_chat(
+                model_id=model_id,
+                messages=_messages_for_test(followup_test),
+                max_tokens=min(test.max_tokens, 96),
+                temperature=0,
+                top_p=None,
+                enable_thinking=enable_thinking,
+                reasoning_effort=None,
+            )
+        except SkulkApiError as exc:
+            issues.append(
+                Issue(
+                    severity="error",
+                    model_id=model_id,
+                    test_name=test.name,
+                    message="Follow-up generation failed after cancellation",
+                    evidence={"error": str(exc)},
+                )
+            )
+            followup = ChatExecution(
+                text="",
+                reasoning_text="",
+                tool_calls=[],
+                metrics=_empty_metrics(),
+                command_id=None,
+                raw_events=[],
+            )
+        issues.extend(
+            _score_output(
+                model_id,
+                test.name,
+                followup.text,
+                test.success,
+                reasoning_text=followup.reasoning_text,
+                wall_tps=followup.metrics.wall_tps,
+            )
+        )
+        return TestResult(
+            model_id=model_id,
+            test_name=test.name,
+            repetition=repetition,
+            passed=not any(issue.severity == "error" for issue in issues),
+            output_text=followup.text,
+            reasoning_text=followup.reasoning_text,
+            metrics=followup.metrics,
+            issues=issues,
+        )
+
+    def _run_expected_error_test(
+        self,
+        client: SkulkClient,
+        *,
+        model_id: str,
+        test: PromptTest,
+        repetition: int,
+        thinking_default: bool | None = None,
+    ) -> TestResult:
+        issues: list[Issue] = []
+        error_text = ""
+        enable_thinking = (
+            test.enable_thinking
+            if test.enable_thinking is not None
+            else thinking_default
+        )
+        try:
+            execution = client.stream_chat(
+                model_id=model_id,
+                messages=_messages_for_test(test),
+                max_tokens=test.max_tokens,
+                temperature=test.temperature,
+                top_p=test.top_p,
+                enable_thinking=enable_thinking,
+                reasoning_effort=test.reasoning_effort,
+            )
+            issues.append(
+                Issue(
+                    severity="error",
+                    model_id=model_id,
+                    test_name=test.name,
+                    message="Expected generation request to fail, but it succeeded",
+                    evidence={"output_chars": execution.metrics.output_chars},
+                )
+            )
+        except SkulkApiError as exc:
+            error_text = exc.body
+            if (
+                test.expected_error_statuses
+                and exc.status_code not in test.expected_error_statuses
+            ):
+                issues.append(
+                    Issue(
+                        severity="error",
+                        model_id=model_id,
+                        test_name=test.name,
+                        message="Generation failed with unexpected HTTP status",
+                        evidence={
+                            "expected": test.expected_error_statuses,
+                            "actual": exc.status_code,
+                            "body": exc.body,
+                        },
+                    )
+                )
+            for substring in test.expected_error_substrings:
+                if substring.lower() not in exc.body.lower():
+                    issues.append(
+                        Issue(
+                            severity="error",
+                            model_id=model_id,
+                            test_name=test.name,
+                            message=(
+                                "Expected error body to contain substring "
+                                f"{substring!r}"
+                            ),
+                            evidence={"body": exc.body},
+                        )
+                    )
+
+        if test.followup_prompt:
+            followup_test = test.model_copy(
+                update={
+                    "prompt": test.followup_prompt,
+                    "prompt_repetitions": 1,
+                    "images": [],
+                }
+            )
+            try:
+                followup = client.stream_chat(
+                    model_id=model_id,
+                    messages=_messages_for_test(followup_test),
+                    max_tokens=96,
+                    temperature=0,
+                    top_p=None,
+                    enable_thinking=enable_thinking,
+                    reasoning_effort=None,
+                )
+            except SkulkApiError as exc:
+                issues.append(
+                    Issue(
+                        severity="error",
+                        model_id=model_id,
+                        test_name=test.name,
+                        message="Follow-up generation failed after expected error",
+                        evidence={"error": str(exc)},
+                    )
+                )
+            else:
+                if not followup.text.strip() and not followup.reasoning_text.strip():
+                    issues.append(
+                        Issue(
+                            severity="error",
+                            model_id=model_id,
+                            test_name=test.name,
+                            message=(
+                                "Follow-up generation after expected error was empty"
+                            ),
+                        )
+                    )
+
+        return TestResult(
+            model_id=model_id,
+            test_name=test.name,
+            repetition=repetition,
+            passed=not any(issue.severity == "error" for issue in issues),
+            output_text=error_text,
+            metrics=_empty_metrics(),
+            issues=issues,
+        )
+
+    def _run_embedding_test(
+        self,
+        client: SkulkClient,
+        *,
+        model_id: str,
+        test: PromptTest,
+        repetition: int,
+    ) -> TestResult:
+        issues: list[Issue] = []
+        try:
+            execution = client.embeddings(
+                model_id=model_id,
+                input_text=test.embedding_input or _expanded_prompt(test),
+            )
+        except (SkulkApiError, TypeError, ValueError) as exc:
+            issues.append(
+                Issue(
+                    severity="error",
+                    model_id=model_id,
+                    test_name=test.name,
+                    message="Embedding request failed",
+                    evidence={"error": str(exc)},
+                )
+            )
+            execution = None
+        if execution is not None:
+            if (
+                test.expected_embedding_dimensions is not None
+                and any(
+                    dim != test.expected_embedding_dimensions
+                    for dim in execution.dimensions
+                )
+            ):
+                issues.append(
+                    Issue(
+                        severity="error",
+                        model_id=model_id,
+                        test_name=test.name,
+                        message="Embedding vector dimensionality did not match",
+                        evidence={
+                            "expected": test.expected_embedding_dimensions,
+                            "actual": execution.dimensions,
+                        },
+                    )
+                )
+            if any(norm < test.min_embedding_norm for norm in execution.norms):
+                issues.append(
+                    Issue(
+                        severity="error",
+                        model_id=model_id,
+                        test_name=test.name,
+                        message="Embedding vector norm below required minimum",
+                        evidence={
+                            "min_embedding_norm": test.min_embedding_norm,
+                            "actual_norms": execution.norms,
+                        },
+                    )
+                )
+        output = ""
+        elapsed = 0.0
+        if execution is not None:
+            elapsed = execution.elapsed_s
+            output = (
+                f"dimensions={execution.dimensions} "
+                f"norms={[round(norm, 4) for norm in execution.norms]}"
+            )
+        return TestResult(
+            model_id=model_id,
+            test_name=test.name,
+            repetition=repetition,
+            passed=not any(issue.severity == "error" for issue in issues),
+            output_text=output,
+            metrics=GenerationMetrics(elapsed_s=elapsed, output_chars=len(output)),
+            issues=issues,
         )
 
     def _model_set(self, name: str) -> ModelSet:
@@ -720,10 +1078,46 @@ def _select_catalog_models(
             model.get("capabilities"), selector.capabilities_any
         ):
             continue
+        if selector.served_spec_types_any and _served_spec_type(model) not in {
+            value.lower() for value in selector.served_spec_types_any
+        }:
+            continue
         selected.append(model)
         if selector.max_models is not None and len(selected) >= selector.max_models:
             break
     return selected
+
+
+def _served_spec_type(model: dict[str, object]) -> str:
+    runtime = model.get("runtime")
+    if isinstance(runtime, dict):
+        value = runtime.get("served_spec_type")
+        if isinstance(value, str):
+            return value.lower()
+    value = model.get("served_spec_type")
+    return value.lower() if isinstance(value, str) else ""
+
+
+def _expanded_prompt(test: PromptTest) -> str:
+    return test.prompt * test.prompt_repetitions
+
+
+def _messages_for_test(test: PromptTest) -> list[dict[str, object]]:
+    messages: list[dict[str, object]] = []
+    if test.system:
+        messages.append({"role": "system", "content": test.system})
+    prompt = _expanded_prompt(test)
+    if not test.images:
+        messages.append({"role": "user", "content": prompt})
+        return messages
+    content: list[dict[str, object]] = [{"type": "text", "text": prompt}]
+    for image in test.images:
+        image_url: dict[str, object] = {"url": image.url}
+        if image.detail is not None:
+            image_url["detail"] = image.detail
+        content.append({"type": "image_url", "image_url": image_url})
+    messages.append({"role": "user", "content": content})
+    return messages
 
 
 def _model_id_from_catalog_entry(model: dict[str, object]) -> str:
@@ -842,6 +1236,18 @@ def _score_output(
                     message=f"Output missing required substring {substring!r}",
                 )
             )
+    if criteria.min_list_items and _list_item_count(text) < criteria.min_list_items:
+        issues.append(
+            Issue(
+                severity="error",
+                model_id=model_id,
+                test_name=test_name,
+                message=(
+                    "Output had too few structured list items "
+                    f"({_list_item_count(text)} < {criteria.min_list_items})"
+                ),
+            )
+        )
     # Forbidden substrings are checked against the visible content and, when
     # forbid_in_reasoning is set, the separated reasoning channel too -- a leaked
     # control marker (e.g. Gemma 4's literal '<|channel>') is a regression
@@ -991,6 +1397,13 @@ def _score_output(
         )
     )
     return issues
+
+
+def _list_item_count(text: str) -> int:
+    """Count common Markdown/plaintext list markers in model output."""
+
+    marker = re.compile(r"^\s*(?:[-*]|\d+[.)]|[a-z][.)])\s+", flags=re.IGNORECASE)
+    return sum(1 for line in text.splitlines() if marker.search(line))
 
 
 def _score_expected_tool_calls(

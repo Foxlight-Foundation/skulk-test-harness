@@ -18,6 +18,7 @@ code directly into the main Skulk repository.
 - Placement execution through `/place_instance`
 - Streaming chat execution with wall-clock TTFT and approximate TPS
 - OpenAI-style tool-call tests with expected function and argument checks
+- Expected-error, cancellation, image-input, and embedding test kinds
 - JSON, JSONL, Markdown reports under `runs/`
 - Deterministic local natural-language goal parser for agent use
 
@@ -63,6 +64,12 @@ Model sets:
 - `mtp-served`
 - `gpt-oss-20b`
 - `gguf-llama-cpp`
+- `tensor-sharding`
+- `context-admission`
+- `embeddings`
+- `vision`
+- `served-spec-draft-simple`
+- `served-spec-draft-eagle3`
 - `store-all`
 
 Test sets:
@@ -74,6 +81,11 @@ Test sets:
 - `llama-cpp`
 - `throughput`
 - `mtp-correctness`
+- `cancellation`
+- `context-admission`
+- `embeddings`
+- `vision`
+- `served-speculation`
 
 ### AMD / llama.cpp (GGUF) node
 
@@ -90,10 +102,10 @@ uv run skulk-harness run \
 ```
 
 The `llama-cpp` suite covers basic generation, streamed-order coherence
-(`in_order_integers`), logprob parity (`top_logprobs` + `require_logprobs` -- a
-CPU-only/degraded build that cannot serve logprobs fails this), and the
-tool-calling code path. Logprob coverage works for any engine; only this suite
-opts in.
+(`in_order_integers`), the tool-calling code path, and a harmony-marker leak
+guard for the GGUF gpt-oss path. Per-token logprob parity is intentionally not
+part of the default suite: llama.cpp requires a dedicated `logits_all`-enabled
+placement for that, and a normal GGUF placement correctly returns no logprobs.
 
 ### Native MTP (served / llama.cpp `draft-mtp`)
 
@@ -123,6 +135,41 @@ heads (the Qwen `draft_mtp` cards) and a separate draft assistant via
 
 These new `SuccessCriteria` keys (`min_reasoning_chars`, `forbid_in_reasoning`,
 `min_wall_tps`) are general and usable by any test set.
+
+## Coverage Suites
+
+- `tensor-sharding` + `chat-tests` with `--sharding Tensor --min-nodes 2`
+  exercises the TP placement path separately from the default Pipeline cells.
+- `smoke` + `cancellation` starts a streaming generation, closes the stream
+  after a few chunks, then verifies the instance can still serve a follow-up.
+- `context-admission` + `context-admission` sends an oversized request and
+  expects a clean `context_length_exceeded` 400 plus a healthy follow-up.
+- `embeddings` + `embeddings` calls `/v1/embeddings` and checks vector shape and
+  non-zero norm.
+- `vision` + `vision` sends an OpenAI-style `image_url` content part to a VLM
+  and checks the answer.
+- `served-spec-draft-simple` / `served-spec-draft-eagle3` + `served-speculation`
+  select live catalog/store models by `runtime.served_spec_type` when cards for
+  those llama_server modes are present.
+
+## Transport Matrix
+
+The data-plane transport matrix requires relaunching the Skulk fleet with
+different node env vars, so it is an operator procedure rather than a normal
+single-process harness flag. Run the same coherence cell twice:
+
+```bash
+# pass 1: gossipsub data plane
+SKULK_ZENOH_DATA_PLANE=0 uv run skulk   # on each node, or via your service manager
+uv run skulk-harness run -m multinode-large -t chat-tests --execute --delete-created-instances
+
+# pass 2: Zenoh data plane
+SKULK_ZENOH_DATA_PLANE=1 uv run skulk   # on each node with the normal Zenoh listen config
+uv run skulk-harness run -m multinode-large -t chat-tests --execute --delete-created-instances
+```
+
+The coherence gate is `ordered-integers-coherence`; it catches token/sub-word
+reordering on either transport path.
 
 ## Safety Notes
 

@@ -13,6 +13,7 @@ from skulk_test_harness.models import (
     HarnessConfig,
     ModelRef,
     PlacementResult,
+    PromptImage,
     PromptTest,
     RunReport,
     RunSpec,
@@ -25,8 +26,10 @@ from skulk_test_harness.models import (
 )
 from skulk_test_harness.orchestrator import (
     HarnessRunner,
+    _messages_for_test,
     _placement_from_preview,
     _score_output,
+    _select_catalog_models,
     _store_registry_entries,
     _tool_roundtrip_messages,
 )
@@ -143,6 +146,30 @@ def test_score_output_in_order_integers_ignores_absent_sequence() -> None:
     )
 
     assert issues == []
+
+
+def test_score_output_accepts_numbered_structured_list() -> None:
+    text = "1. first reason\n2. second reason\n3. third reason"
+    issues = _score_output(
+        "model",
+        "structured-list",
+        text,
+        SuccessCriteria(min_chars=0, min_list_items=3),
+    )
+
+    assert issues == []
+
+
+def test_score_output_flags_too_few_structured_list_items() -> None:
+    issues = _score_output(
+        "model",
+        "structured-list",
+        "1. one item\nplain continuation",
+        SuccessCriteria(min_chars=0, min_list_items=3),
+    )
+
+    assert len(issues) == 1
+    assert "too few structured list items" in issues[0].message
 
 
 def test_extract_stream_delta_captures_tool_calls() -> None:
@@ -307,6 +334,43 @@ def test_tool_roundtrip_messages_include_assistant_and_tool_results() -> None:
     }
 
 
+def test_messages_for_test_builds_multimodal_content() -> None:
+    test = PromptTest(
+        name="vision",
+        prompt="what color?",
+        images=[PromptImage(url="data:image/png;base64,AAAA")],
+    )
+
+    messages = _messages_for_test(test)
+
+    assert messages == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "what color?"},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,AAAA"},
+                },
+            ],
+        }
+    ]
+
+
+def test_served_spec_selector_matches_runtime_field() -> None:
+    selector = load_model_sets(
+        Path(__file__).parents[1] / "configs/model_sets.yaml"
+    ).model_sets["served-spec-draft-eagle3"].selectors[0]
+    catalog = [
+        {"id": "org/plain", "runtime": {"served_spec_type": "draft_mtp"}},
+        {"id": "org/eagle", "runtime": {"served_spec_type": "draft_eagle3"}},
+    ]
+
+    selected = _select_catalog_models(catalog, selector)
+
+    assert [item["id"] for item in selected] == ["org/eagle"]
+
+
 def test_gpt_oss_complete_suite_loads_tool_tests() -> None:
     root = Path(__file__).parents[1]
     model_sets = load_model_sets(root / "configs/model_sets.yaml").model_sets
@@ -387,7 +451,11 @@ def test_llama_cpp_suite_and_gguf_set_load() -> None:
     assert model_sets["gguf-llama-cpp"].models == ["unsloth/Llama-3.2-1B-Instruct-GGUF"]
     suite = test_sets["llama-cpp"]
     names = {test.name for test in suite.tests}
-    assert {"ordered-integers-coherence", "tool-call-path"} <= names
+    assert {
+        "ordered-integers-coherence",
+        "tool-call-path",
+        "harmony-marker-leak-guard",
+    } <= names
 
     # logprobs-parity was removed from the default llama.cpp suite: per-token
     # logprobs need a logits_all-enabled placement (opt-in), and a normal GGUF
@@ -433,7 +501,10 @@ class _FakeClient:
         if instance_id in self._not_found:
             raise SkulkApiError("DELETE", f"/instance/{instance_id}", 404, "missing")
 
-    def delete_store_model(self, model_id: str) -> None:
+    def delete_store_model(
+        self, model_id: str, *, timeout_s: float | None = None
+    ) -> None:
+        del timeout_s
         self.evicted.append(model_id)
 
     def list_models(self) -> list[dict[str, object]]:
@@ -537,6 +608,54 @@ def test_run_test_explicit_thinking_overrides_default(tmp_path: Path) -> None:
     assert client.thinking_seen == [True]
 
 
+def test_ensure_model_placed_fast_fails_when_instance_never_appears() -> None:
+    class _NoAppearanceClient(_FakeClient):
+        def get_store_registry(self) -> None:
+            return None
+
+        def get_placement_previews(
+            self, model_id: str, *, excluded_node_ids=None
+        ) -> list[dict[str, object]]:
+            del model_id, excluded_node_ids
+            return [
+                {
+                    "sharding": "Pipeline",
+                    "instance_meta": "MlxRing",
+                    "instance": {
+                        "MlxRingInstance": {
+                            "shardAssignments": {
+                                "modelId": "m/Foo",
+                                "nodeToRunner": {"node-a": "runner-a"},
+                                "runnerToShard": {"runner-a": {}},
+                            }
+                        }
+                    },
+                }
+            ]
+
+        def place_model(self, **_kwargs) -> None:
+            return None
+
+    client = _NoAppearanceClient(models=[{"id": "m/Foo"}])
+    runner = HarnessRunner(
+        config=HarnessConfig(
+            placement_appearance_timeout_s=0.01,
+            poll_interval_s=0.001,
+        ),
+        model_sets={},
+        test_sets={},
+    )
+    report = _report()
+    spec = RunSpec(model_set="m", test_set="t", mode="execute")
+
+    placement = runner._ensure_model_placed(client, "m/Foo", spec, report)  # type: ignore[arg-type]
+
+    assert placement is not None
+    assert placement.created_by_harness is True
+    assert placement.ready is False
+    assert any("placement refusal" in issue.message for issue in report.issues)
+
+
 # --- staged-model eviction gating (only after a real harness teardown) -----
 
 
@@ -621,3 +740,33 @@ def test_eviction_runs_after_harness_teardown(tmp_path: Path) -> None:
     )
     assert client.deleted == ["inst-1"]
     assert client.evicted == ["m/Foo"]
+
+
+def test_eviction_skipped_when_placement_never_appears(tmp_path: Path) -> None:
+    client = _FakeClient()
+    runner = _runner()
+    runner._ensure_model_placed = lambda *_a, **_k: PlacementResult(  # type: ignore[method-assign]
+        model_id="m/Foo",
+        created_by_harness=True,
+        ready=False,
+    )
+    spec = RunSpec(
+        model_set="m",
+        test_set="t",
+        mode="execute",
+        delete_staged_models=True,
+    )
+    report = RunReport.start("run-1", spec, [])
+
+    runner._run_model_lifecycle(
+        client,  # type: ignore[arg-type]
+        ModelRef(model_id="m/Foo", source="explicit"),
+        spec,
+        report,
+        HarnessTestSet(name="t", tests=[]),
+        ReportWriter(tmp_path),
+        {},
+    )
+
+    assert client.deleted == []
+    assert client.evicted == []

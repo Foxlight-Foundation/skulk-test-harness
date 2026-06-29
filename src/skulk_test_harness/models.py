@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 PlacementStrategy = Literal["minimum", "single", "exact"]
 ShardingMode = Literal["Pipeline", "Tensor"]
 InstanceMeta = Literal["MlxRing", "MlxJaccl"]
-TestKind = Literal["chat", "code", "artifact", "tool"]
+TestKind = Literal["chat", "code", "artifact", "tool", "cancel", "error", "embedding"]
 RunMode = Literal["plan", "execute"]
 IssueSeverity = Literal["info", "warning", "error"]
 
@@ -45,8 +45,35 @@ class HarnessConfig(HarnessBaseModel):
     api_base_url: str = "http://localhost:52415"
     request_timeout_s: float = 30.0
     generation_timeout_s: float = 1800.0
+    stream_read_timeout_s: float = Field(
+        default=120.0,
+        gt=0,
+        description=(
+            "Maximum seconds to wait for the next streaming response byte before "
+            "treating the request as stalled. This is intentionally separate "
+            "from generation_timeout_s, which bounds long healthy generations."
+        ),
+    )
     placement_ready_timeout_s: float = 1800.0
+    placement_appearance_timeout_s: float = Field(
+        default=120.0,
+        gt=0,
+        description=(
+            "Maximum seconds to wait for a newly requested placement to appear "
+            "in cluster state. Runner readiness can still take "
+            "placement_ready_timeout_s, but a placement that never appears is a "
+            "fast refusal/give-up signal."
+        ),
+    )
     store_download_timeout_s: float = 14400.0
+    store_delete_timeout_s: float = Field(
+        default=30.0,
+        gt=0,
+        description=(
+            "Maximum seconds to spend on best-effort staged-model eviction. "
+            "Eviction is hygiene, not correctness, so it must not wedge a run."
+        ),
+    )
     poll_interval_s: float = 2.0
     preview_settle_attempts: int = Field(
         default=8,
@@ -90,6 +117,13 @@ class ModelSelector(HarnessBaseModel):
     tags_any: list[str] = Field(default_factory=list)
     tasks_any: list[str] = Field(default_factory=list)
     capabilities_any: list[str] = Field(default_factory=list)
+    served_spec_types_any: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Optional runtime.served_spec_type values to match, such as "
+            "draft_mtp, draft_simple, or draft_eagle3."
+        ),
+    )
     max_models: int | None = Field(default=None, ge=1)
 
 
@@ -122,6 +156,15 @@ class SuccessCriteria(HarnessBaseModel):
 
     min_chars: int = Field(default=1, ge=0)
     min_code_block_chars: int = Field(default=0, ge=0)
+    min_list_items: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "When > 0, require at least this many structured list items. "
+            "Accepts Markdown bullets and numbered/lettered list markers so the "
+            "test checks structure instead of one exact glyph."
+        ),
+    )
     min_tool_calls: int = Field(default=0, ge=0)
     in_order_integers: int = Field(
         default=0,
@@ -203,6 +246,17 @@ class ToolMock(HarnessBaseModel):
     content: str
 
 
+class PromptImage(HarnessBaseModel):
+    """OpenAI-style image input attached to a chat prompt."""
+
+    url: str = Field(
+        description=(
+            "Image URL or data URL sent as an OpenAI `image_url` content part."
+        )
+    )
+    detail: Literal["auto", "low", "high"] | None = None
+
+
 class PromptTest(HarnessBaseModel):
     """One text-generation test case."""
 
@@ -216,10 +270,60 @@ class PromptTest(HarnessBaseModel):
     top_p: float | None = Field(default=None, ge=0, le=1)
     enable_thinking: bool | None = None
     reasoning_effort: Literal["none", "low", "medium", "high"] | None = None
+    prompt_repetitions: int = Field(
+        default=1,
+        ge=1,
+        description=(
+            "Repeat the prompt text before sending it. Used by admission tests "
+            "to build oversized requests without embedding huge YAML blobs."
+        ),
+    )
+    images: list[PromptImage] = Field(default_factory=list)
     tools: list[dict[str, object]] = Field(default_factory=list)
     tool_choice: str | dict[str, object] | None = None
     parallel_tool_calls: bool | None = None
     tool_mocks: list[ToolMock] = Field(default_factory=list)
+    cancel_after_chunks: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "For `kind: cancel`, close the stream after this many content or "
+            "reasoning chunks, then verify a follow-up request still succeeds."
+        ),
+    )
+    followup_prompt: str | None = Field(
+        default=None,
+        description=(
+            "Optional health-check prompt for cancellation and expected-error tests."
+        ),
+    )
+    expected_error_statuses: list[int] = Field(
+        default_factory=list,
+        description=(
+            "For `kind: error`, acceptable HTTP status codes. Empty means any "
+            "SkulkApiError is acceptable."
+        ),
+    )
+    expected_error_substrings: list[str] = Field(
+        default_factory=list,
+        description="For `kind: error`, substrings that must appear in the error body.",
+    )
+    embedding_input: str | list[str] | None = Field(
+        default=None,
+        description=(
+            "For `kind: embedding`, request input. Defaults to `prompt` when unset."
+        ),
+    )
+    expected_embedding_dimensions: int | None = Field(
+        default=None,
+        ge=1,
+        description="For `kind: embedding`, expected vector dimensionality.",
+    )
+    min_embedding_norm: float = Field(
+        default=0.0,
+        ge=0,
+        description="For `kind: embedding`, minimum L2 norm for every vector.",
+    )
     top_logprobs: int | None = Field(
         default=None,
         ge=0,
