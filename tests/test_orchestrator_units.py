@@ -211,6 +211,73 @@ def test_score_output_accepts_expected_tool_calls() -> None:
     assert issues == []
 
 
+def test_score_output_flags_marker_leak_in_reasoning_channel() -> None:
+    # The Gemma channel parser must strip <|channel> markers from BOTH channels;
+    # a marker surfacing in reasoning_content is a regression even when content
+    # is clean. forbid_in_reasoning is on by default.
+    issues = _score_output(
+        "gemma",
+        "reasoning-split",
+        "They meet at 11:00 am.",
+        SuccessCriteria(forbidden_substrings=["<|channel>", "<channel|>"]),
+        reasoning_text="<|channel>thought\nlet me compute the closing speed",
+    )
+
+    assert len(issues) == 1
+    assert "forbidden substring" in issues[0].message
+    assert "reasoning" in issues[0].message
+
+
+def test_score_output_marker_leak_ignored_when_forbid_in_reasoning_false() -> None:
+    issues = _score_output(
+        "gemma",
+        "reasoning-split",
+        "Clean visible answer.",
+        SuccessCriteria(
+            forbidden_substrings=["<|channel>"],
+            forbid_in_reasoning=False,
+        ),
+        reasoning_text="<|channel>thought\nstill thinking",
+    )
+
+    assert issues == []
+
+
+def test_score_output_requires_separated_reasoning_present() -> None:
+    criteria = SuccessCriteria(min_chars=0, min_reasoning_chars=40)
+    # Reasoning swallowed into content (empty reasoning channel) -> fail.
+    swallowed = _score_output(
+        "gemma", "reasoning-split", "long visible answer " * 10, criteria
+    )
+    assert len(swallowed) == 1
+    assert "reasoning not split" in swallowed[0].message
+    # Properly separated reasoning of sufficient length -> pass.
+    split = _score_output(
+        "gemma",
+        "reasoning-split",
+        "11:00 am.",
+        criteria,
+        reasoning_text="closing speed is 110 mph; remaining gap after 9:30 is 180 miles",
+    )
+    assert split == []
+
+
+def test_score_output_throughput_floor_catches_silent_mtp_fallback() -> None:
+    criteria = SuccessCriteria(min_chars=0, min_wall_tps=16.0)
+    # Below the floor (a silent draft-mtp fallback) -> RED.
+    slow = _score_output("served", "throughput", "ok", criteria, wall_tps=12.7)
+    assert len(slow) == 1
+    assert "below required floor" in slow[0].message
+    assert slow[0].evidence["wall_tps"] == 12.7
+    # At/above the floor (MTP active) -> pass.
+    fast = _score_output("served", "throughput", "ok", criteria, wall_tps=28.0)
+    assert fast == []
+    # No measurable rate (failed/empty generation) -> the floor is skipped; the
+    # content checks speak to that case instead.
+    no_rate = _score_output("served", "throughput", "ok", criteria, wall_tps=None)
+    assert no_rate == []
+
+
 def test_tool_roundtrip_messages_include_assistant_and_tool_results() -> None:
     issues = []
     messages = _tool_roundtrip_messages(

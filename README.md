@@ -60,6 +60,7 @@ Model sets:
 - `gemma4-family`
 - `moe-family`
 - `mtp-tests`
+- `mtp-served`
 - `gpt-oss-20b`
 - `gguf-llama-cpp`
 - `store-all`
@@ -71,6 +72,8 @@ Test sets:
 - `asteroids-challenge`
 - `gpt-oss-20b-complete`
 - `llama-cpp`
+- `throughput`
+- `mtp-correctness`
 
 ### AMD / llama.cpp (GGUF) node
 
@@ -91,6 +94,35 @@ The `llama-cpp` suite covers basic generation, streamed-order coherence
 CPU-only/degraded build that cannot serve logprobs fails this), and the
 tool-calling code path. Logprob coverage works for any engine; only this suite
 opts in.
+
+### Native MTP (served / llama.cpp `draft-mtp`)
+
+`mtp-served` is the GGUF set served via the `llama_server` engine with native
+multi-token prediction on a GPU node (kite4). It spans both MTP shapes: baked-in
+heads (the Qwen `draft_mtp` cards) and a separate draft assistant via
+`--model-draft` (Gemma 4 31B, which is also a reasoning model with a literal
+`<|channel>` parser). `run_mtp_battery.sh` runs two passes against it:
+
+```bash
+./run_mtp_battery.sh   # pass 1: mtp-correctness (gates), pass 2: throughput (benchmark)
+```
+
+- **`mtp-correctness`** asserts the two failure modes that presence/coherence
+  checks miss:
+  - *reasoning split + no marker leak* -- `min_reasoning_chars` proves the
+    thinking landed in its own channel, and `forbidden_substrings` (applied to
+    content **and** reasoning via `forbid_in_reasoning`) proves no `<|channel>`
+    control marker leaked into either. Guards the Gemma 4 served channel parser.
+  - *MTP-on throughput floor* -- `min_wall_tps` fails a run whose decode rate
+    dropped below a floor calibrated above the model's non-speculative rate, so a
+    **silent** `draft-mtp` fallback (correct text, just slower) shows red instead
+    of passing. Hardware/model-specific; the floor is kite4-Vulkan calibrated and
+    is a reliable MTP-off detector for the mid/large dense + Gemma cards (the 9B
+    is decode-bound-fast, the A3B MoE has less margin -- noted in the cell).
+- **`throughput`** then records steady-state `wall_tps` as the benchmark number.
+
+These new `SuccessCriteria` keys (`min_reasoning_chars`, `forbid_in_reasoning`,
+`min_wall_tps`) are general and usable by any test set.
 
 ## Safety Notes
 
