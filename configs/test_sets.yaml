@@ -28,9 +28,6 @@ test_sets:
           required_regexes:
             - "(?m)^\\s*(?:[-*•‣·–▪]|\\d+[.)]|[a-z][.)])\\s+"
 
-      # Output-coherence gate. Temperature > 0 so multi-node sampled speculative
-      # decoding is exercised — the path a data-plane delivery reorder (Skulk
-      # #297) silently transposed while every presence-only check stayed green.
       - name: ordered-integers-coherence
         kind: chat
         system: Follow the user's requested format exactly.
@@ -59,134 +56,10 @@ test_sets:
             - is_palindrome
             - bool
 
-  asteroids-challenge:
-    name: asteroids-challenge
-    description: Generate a playable single-file Asteroids-style HTML canvas game.
+  tool-tests:
+    name: tool-tests
+    description: OpenAI-style function-call coverage with static tool mocks.
     tests:
-      - name: single-file-asteroids
-        kind: artifact
-        system: You are an expert browser game programmer.
-        prompt: |
-          Create a complete playable Asteroids-style game as a single HTML file.
-          Requirements:
-          - Use a canvas element and plain JavaScript, no external assets or libraries.
-          - Include a player ship with rotation, thrust, inertia, shooting, asteroids,
-            collision, score, lives, restart, and keyboard controls.
-          - Return one fenced html code block and no explanatory prose outside it.
-        max_tokens: 4096
-        temperature: 0.3
-        enable_thinking: false
-        success:
-          min_code_block_chars: 2500
-          require_html_artifact: true
-          required_substrings:
-            - canvas
-            - Asteroids
-            - requestAnimationFrame
-            - addEventListener
-
-  gpt-oss-20b-complete:
-    name: gpt-oss-20b-complete
-    description: Broad GPT-OSS 20B suite covering chat, reasoning controls, code, artifacts, and OpenAI tool calls.
-    tests:
-      - name: direct-instruction-smoke
-        kind: chat
-        system: You are a precise conformance test assistant.
-        prompt: Reply with exactly this token and no other text colon SKULK-GPT-OSS-20B-OK
-        max_tokens: 48
-        temperature: 0
-        enable_thinking: false
-        success:
-          min_chars: 20
-          required_substrings:
-            - SKULK-GPT-OSS-20B-OK
-
-      - name: structured-json-contract
-        kind: chat
-        system: Return only valid compact JSON. Do not wrap it in markdown.
-        prompt: |
-          Return a JSON object with these exact keys:
-          "suite", "model_family", "checks".
-          Use "gpt-oss-20b-complete" as suite, "gpt-oss" as model_family,
-          and make checks an array containing "chat", "code", and "tools".
-        max_tokens: 220
-        temperature: 0
-        enable_thinking: false
-        success:
-          min_chars: 80
-          required_substrings:
-            - gpt-oss-20b-complete
-            - model_family
-            - tools
-          required_regexes:
-            - "\"checks\"\\s*:"
-
-      - name: reasoning-toggle-summary
-        kind: chat
-        system: You are testing a reasoning-capable model. Keep final answers concise.
-        prompt: |
-          Think through this internally, then answer in exactly two bullet points:
-          Why can cluster-wide inference tests pass while tool-call parsing still fails?
-        max_tokens: 260
-        temperature: 0.2
-        enable_thinking: true
-        reasoning_effort: low
-        success:
-          min_chars: 80
-          required_regexes:
-            - "(?m)^[-*]\\s+"
-          required_substrings:
-            - tool
-          # gpt-oss reasons in the harmony format; the runner must parse those
-          # control tokens into the reasoning channel, not leak them into the
-          # visible answer (the class of regression fixed in Skulk #403, where
-          # detokenized harmony markers leaked into chat on llama.cpp). Forbid the
-          # markers in content AND reasoning (forbid_in_reasoning default on).
-          forbidden_substrings:
-            - "<|channel|>"
-            - "<|start|>"
-            - "<|message|>"
-            - "<|end|>"
-            - "<|return|>"
-
-      - name: python-code-artifact
-        kind: code
-        prompt: |
-          Write one fenced python code block defining:
-          def summarize_latency(samples: list[float]) -> dict[str, float]
-          It must return count, min, max, mean, and p95. Use only the standard library.
-        max_tokens: 520
-        temperature: 0.1
-        enable_thinking: false
-        success:
-          min_code_block_chars: 260
-          required_substrings:
-            - summarize_latency
-            - p95
-            - statistics
-
-      - name: single-file-status-dashboard
-        kind: artifact
-        system: You are an expert frontend engineer.
-        prompt: |
-          Create a complete single-file HTML dashboard for a Skulk cluster test run.
-          Requirements:
-          - Include a canvas visualization of three nodes and active runners.
-          - Include a table of model, TTFT, TPS, pass/fail, and issue count.
-          - Use plain JavaScript and CSS, no external assets or libraries.
-          - Return one fenced html code block and no prose outside it.
-        max_tokens: 4096
-        temperature: 0.25
-        enable_thinking: false
-        success:
-          min_code_block_chars: 2500
-          require_html_artifact: true
-          required_substrings:
-            - canvas
-            - TTFT
-            - TPS
-            - requestAnimationFrame
-
       - name: forced-weather-tool-call
         kind: tool
         system: Use tools whenever the requested answer depends on live or external data.
@@ -285,7 +158,7 @@ test_sets:
       - name: parallel-node-diagnostic-tool-calls
         kind: tool
         system: Use available tools to inspect cluster nodes. Return tool calls only.
-        prompt: Check node diagnostics for kite1 and kite2.
+        prompt: Check node diagnostics for node-a and node-b.
         max_tokens: 360
         temperature: 0
         enable_thinking: false
@@ -310,104 +183,14 @@ test_sets:
           expected_tool_calls:
             - name: inspect_node
               argument_substrings:
-                hostname: kite1
+                hostname: node-a
             - name: inspect_node
               argument_substrings:
-                hostname: kite2
-
-  llama-cpp:
-    name: llama-cpp
-    description: >-
-      Capability + coherence checks for the llama.cpp (GGUF) engine on a non-Mac
-      GPU node. Pair with the gguf-llama-cpp model set. Covers basic generation,
-      streamed-order coherence, the tool-calling code path, and harmony marker
-      leak coverage. Logprob parity needs a dedicated logits_all-enabled
-      placement, not the default llama.cpp suite.
-    tests:
-      - name: concise-factual-answer
-        kind: chat
-        system: You are a careful assistant. Answer in as few words as possible.
-        prompt: What is the capital of France?
-        max_tokens: 256
-        temperature: 0
-        enable_thinking: false
-        success:
-          min_chars: 4
-          required_substrings:
-            - Paris
-
-      - name: ordered-integers-coherence
-        kind: chat
-        system: Follow the user's requested format exactly.
-        prompt: "Output the integers from 1 to 20 in order, separated by single spaces, and nothing else."
-        max_tokens: 192
-        temperature: 0.2
-        enable_thinking: false
-        success:
-          in_order_integers: 20
-
-      # NOTE: logprobs-parity was removed from the default llama.cpp set. Per-token
-      # logprobs require the runner to load with logits_all=True, which is OFF by
-      # default on llama.cpp (it pre-allocates a large logits buffer). A normal
-      # GGUF placement therefore correctly returns no logprobs, so requiring them
-      # here counted expected, default llama.cpp behavior as a failure. Testing
-      # logprobs needs a dedicated logits_all-enabled placement (opt-in), not the
-      # standard battery placement.
-
-      - name: tool-call-path
-        kind: tool
-        # The runner forwards `tools` and emits a ToolCallChunk when the model
-        # returns a structured tool call, else a normal terminal chunk. A small
-        # model often describes the call in prose rather than emitting a native
-        # tool_call, so this asserts the path completes coherently: either
-        # non-empty visible output or a native tool_call.
-        prompt: What is the weather in San Francisco?
-        max_tokens: 96
-        temperature: 0
-        enable_thinking: false
-        tools:
-          - type: function
-            function:
-              name: get_weather
-              description: Get the current weather for a city.
-              parameters:
-                type: object
-                properties:
-                  city:
-                    type: string
-                    description: City name.
-                required:
-                  - city
-        tool_choice: auto
-        success:
-          min_chars: 2
-
-      - name: harmony-marker-leak-guard
-        kind: chat
-        system: Keep final answers concise and never expose internal control tokens.
-        prompt: >
-          In one short sentence, explain why a model runner should hide parser
-          control markers from the visible answer.
-        max_tokens: 128
-        temperature: 0
-        enable_thinking: true
-        reasoning_effort: low
-        success:
-          min_chars: 20
-          forbidden_substrings:
-            - "<|channel|>"
-            - "<|start|>"
-            - "<|message|>"
-            - "<|end|>"
-            - "<|return|>"
+                hostname: node-b
 
   throughput:
     name: throughput
-    description: >
-      Sustained-generation decode throughput. Drives a long continuous output so
-      wall_tps (approx tokens / decode time, excluding TTFT) is a meaningful
-      steady-state tok/s rather than the noise of a few-token chat answer.
-      Averaged over repetitions. Pair with any model set; tear down between cells.
+    description: Sustained-generation decode throughput smoke benchmark.
     tests:
       - name: sustained-decode-512
         kind: chat
@@ -425,73 +208,9 @@ test_sets:
         success:
           min_chars: 800
 
-  mtp-correctness:
-    name: mtp-correctness
-    description: >
-      Correctness gates for the served MTP path (the mtp-served model set on the
-      GPU node). These checks tolerate reasoning models that spend the response
-      budget in reasoning_content: presence and throughput are scored across
-      visible content plus separated reasoning, while channel-marker checks still
-      guard parser regressions.
-    tests:
-      # Reasoning split + no marker leak. Gemma 4 emits its thinking as literal
-      # <|channel>thought ... <channel|> markers that the served runner re-parses
-      # into reasoning_content (output_parser=gemma4); a parser regression either
-      # drops the split (reasoning_content empty) or leaks the markers into the
-      # answer. min_generated_chars accepts a healthy reasoning-only response;
-      # min_reasoning_chars asserts the split happened; forbidden_substrings
-      # (checked against content AND reasoning via forbid_in_reasoning) asserts no
-      # marker leaks in either channel.
-      - name: reasoning-split-no-marker-leak
-        kind: chat
-        system: You are a careful reasoner. Think step by step, then answer.
-        prompt: >
-          A train leaves city A at 9:00 am traveling 60 mph toward city B, 210
-          miles away. A second train leaves city B at 9:30 am traveling 50 mph
-          toward city A on the same line. At what clock time do they meet? Show
-          your reasoning, then give the final clock time.
-        max_tokens: 2048
-        temperature: 0
-        enable_thinking: true
-        repetitions: 2
-        success:
-          min_chars: 0
-          min_generated_chars: 200
-          min_reasoning_chars: 40
-          forbid_in_reasoning: true
-          forbidden_substrings:
-            - "<|channel>"
-            - "<channel|>"
-            - "<|channel"
-            - "channel|>"
-      # Total generated throughput floor. wall_tps is computed from visible
-      # content + separated reasoning, so a reasoning-only response no longer
-      # reads as 0 tok/s. 16 tok/s is kite4-calibrated and still conservative;
-      # retune the floor when the target node or model set changes.
-      - name: mtp-throughput-floor
-        kind: chat
-        system: You are a thorough technical writer. Write continuous prose.
-        prompt: >
-          Write a detailed, self-contained explanation (around 700 words) of how a
-          distributed inference system shards a large language model across several
-          machines: pipeline vs tensor parallelism, how the KV cache is managed,
-          how tokens stream back to the client, and the main failure modes and how
-          a cluster recovers from them. Use flowing paragraphs, no lists.
-        max_tokens: 2048
-        temperature: 0.7
-        enable_thinking: false
-        repetitions: 3
-        success:
-          min_chars: 0
-          min_generated_chars: 800
-          min_wall_tps: 16.0
-
   cancellation:
     name: cancellation
-    description: >
-      Streaming cancellation coverage. Starts a long generation, closes the
-      stream after a few chunks, then verifies the instance can still answer a
-      follow-up request.
+    description: Streaming cancellation coverage with a healthy follow-up request.
     tests:
       - name: cancel-mid-stream-and-recover
         kind: cancel
@@ -512,10 +231,7 @@ test_sets:
 
   context-admission:
     name: context-admission
-    description: >
-      Oversized request guard for Skulk's context-admission ceiling (#145).
-      Expects a clean context_length_exceeded 400 and then verifies the instance
-      remains healthy.
+    description: Oversized request guard for Skulk's context-admission ceiling.
     tests:
       - name: max-tokens-over-context-limit
         kind: error
@@ -534,9 +250,7 @@ test_sets:
 
   embeddings:
     name: embeddings
-    description: >
-      Embeddings endpoint coverage. Calls /v1/embeddings and asserts a
-      well-formed, non-zero vector with the expected native dimensionality.
+    description: Embeddings endpoint coverage with vector shape and norm checks.
     tests:
       - name: sentence-transformer-vector-shape
         kind: embedding
@@ -549,9 +263,7 @@ test_sets:
 
   vision:
     name: vision
-    description: >
-      Multimodal chat coverage. Sends an OpenAI-style image_url content part and
-      asserts the model answers coherently.
+    description: Multimodal chat coverage using an OpenAI-style image_url part.
     tests:
       - name: image-caption-smoke
         kind: chat
@@ -569,10 +281,7 @@ test_sets:
 
   served-speculation:
     name: served-speculation
-    description: >
-      Generic correctness gate for llama_server served speculation variants
-      beyond draft_mtp, such as draft_simple and draft_eagle3. Pair with model
-      sets selected by runtime.served_spec_type.
+    description: Generic correctness gate for llama_server served speculation variants.
     tests:
       - name: served-spec-coherence
         kind: chat

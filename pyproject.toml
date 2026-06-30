@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Agent-controlled end-to-end test and benchmark harness for Skulk clusters"
 readme = "README.md"
 requires-python = ">=3.13"
+license = "MIT"
 dependencies = [
   "httpx>=0.28.1",
   "pydantic>=2.11.7",
@@ -43,4 +44,3 @@ include = ["src", "tests"]
 pythonVersion = "3.13"
 typeCheckingMode = "standard"
 reportMissingTypeStubs = "none"
-

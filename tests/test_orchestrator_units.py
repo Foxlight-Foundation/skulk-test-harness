@@ -36,7 +36,7 @@ from skulk_test_harness.orchestrator import (
     _tool_roundtrip_messages,
 )
 from skulk_test_harness.reporting import ReportWriter
-from skulk_test_harness.specs import load_model_sets, load_test_sets
+from skulk_test_harness.specs import load_config, load_model_sets, load_test_sets
 
 
 def test_store_registry_entries_supports_live_entries_shape() -> None:
@@ -52,6 +52,28 @@ def test_store_registry_entries_supports_live_entries_shape() -> None:
         {"model_id": "mlx-community/Foo-4bit"},
         {"model_id": "mlx-community/Bar-8bit"},
     ]
+
+
+def test_public_and_foxlight_example_configs_load() -> None:
+    root = Path(__file__).parents[1]
+
+    public_config = load_config(root / "skulk-harness.example.yaml")
+    foxlight_config = load_config(root / "examples/foxlight/skulk-harness.yaml")
+    stability_config = load_config(
+        root / "examples/foxlight/skulk-harness.stability.example.yaml"
+    )
+
+    assert public_config.api_base_url == "http://localhost:52415"
+    assert public_config.model_sets_path == Path("configs/model_sets.yaml")
+    assert public_config.cluster_nodes == {}
+    assert foxlight_config.api_base_url == "http://kite1:52415"
+    assert foxlight_config.model_sets_path == Path("examples/foxlight/model_sets.yaml")
+    assert foxlight_config.cluster_nodes == {}
+    assert sorted(stability_config.cluster_nodes) == ["node-a", "node-b"]
+    assert all(
+        node.relaunch_command is not None
+        for node in stability_config.cluster_nodes.values()
+    )
 
 
 def test_placement_from_preview_extracts_nodes_and_runners() -> None:
@@ -424,10 +446,52 @@ def test_served_spec_selector_matches_runtime_field() -> None:
     assert [item["id"] for item in selected] == ["org/eagle"]
 
 
-def test_gpt_oss_complete_suite_loads_tool_tests() -> None:
+def test_public_default_sets_are_cluster_neutral() -> None:
     root = Path(__file__).parents[1]
     model_sets = load_model_sets(root / "configs/model_sets.yaml").model_sets
     test_sets = load_test_sets(root / "configs/test_sets.yaml").test_sets
+
+    assert {
+        "store-smoke",
+        "store-all",
+        "catalog-small-text",
+        "embeddings",
+        "vision",
+        "served-spec-draft-simple",
+        "served-spec-draft-eagle3",
+    } <= set(model_sets)
+    assert {
+        "chat-tests",
+        "code-tests",
+        "tool-tests",
+        "throughput",
+        "cancellation",
+        "context-admission",
+        "embeddings",
+        "vision",
+        "served-speculation",
+    } <= set(test_sets)
+    assert "gpt-oss-20b" not in model_sets
+
+    tool_suite = test_sets["tool-tests"]
+    node_test = next(
+        test
+        for test in tool_suite.tests
+        if test.name == "parallel-node-diagnostic-tool-calls"
+    )
+    expected_hosts = [
+        call.argument_substrings["hostname"]
+        for call in node_test.success.expected_tool_calls
+    ]
+    assert expected_hosts == ["node-a", "node-b"]
+
+
+def test_foxlight_gpt_oss_complete_suite_loads_tool_tests() -> None:
+    root = Path(__file__).parents[1]
+    model_sets = load_model_sets(
+        root / "examples/foxlight/model_sets.yaml"
+    ).model_sets
+    test_sets = load_test_sets(root / "examples/foxlight/test_sets.yaml").test_sets
 
     assert "gpt-oss-20b" in model_sets
     suite = test_sets["gpt-oss-20b-complete"]
@@ -498,8 +562,10 @@ def test_extract_stream_logprobs_zero_without_logprobs() -> None:
 
 def test_llama_cpp_suite_and_gguf_set_load() -> None:
     root = Path(__file__).parents[1]
-    model_sets = load_model_sets(root / "configs/model_sets.yaml").model_sets
-    test_sets = load_test_sets(root / "configs/test_sets.yaml").test_sets
+    model_sets = load_model_sets(
+        root / "examples/foxlight/model_sets.yaml"
+    ).model_sets
+    test_sets = load_test_sets(root / "examples/foxlight/test_sets.yaml").test_sets
 
     assert model_sets["gguf-llama-cpp"].models == ["unsloth/Llama-3.2-1B-Instruct-GGUF"]
     suite = test_sets["llama-cpp"]
@@ -519,9 +585,13 @@ def test_llama_cpp_suite_and_gguf_set_load() -> None:
 
 def test_chat_and_llama_concise_tests_have_reasoning_budget() -> None:
     root = Path(__file__).parents[1]
-    test_sets = load_test_sets(root / "configs/test_sets.yaml").test_sets
+    public_sets = load_test_sets(root / "configs/test_sets.yaml").test_sets
+    foxlight_sets = load_test_sets(root / "examples/foxlight/test_sets.yaml").test_sets
 
-    for set_name in ("chat-tests", "llama-cpp"):
+    for test_sets, set_name in (
+        (public_sets, "chat-tests"),
+        (foxlight_sets, "llama-cpp"),
+    ):
         concise = next(
             test
             for test in test_sets[set_name].tests

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from skulk_test_harness import cli
@@ -75,3 +76,23 @@ def test_dry_run_does_not_gate(monkeypatch, tmp_path) -> None:
     _patch(monkeypatch, tmp_path, passed=False)
     result = runner_cli.invoke(cli.app, ["run", "-m", "s", "-t", "t", "--dry-run"])
     assert result.exit_code == 0
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["stability", "failover"],
+        ["stability", "churn"],
+        ["stability", "refusal"],
+    ],
+)
+def test_destructive_stability_commands_require_explicit_opt_in(monkeypatch, args) -> None:
+    def fail_if_loaded(_config: Path) -> HarnessConfig:
+        raise AssertionError("config should not load before destructive opt-in")
+
+    monkeypatch.setattr(cli, "load_config", fail_if_loaded)
+
+    result = runner_cli.invoke(cli.app, args)
+
+    assert result.exit_code == 2
+    assert "Refusing destructive stability command" in result.output

@@ -437,7 +437,7 @@ def run_failover(
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
         future = pool.submit(_drive_stream)
         time.sleep(0.5)  # let the stream begin before we pull the rug
-        killed = chaos.kill_skulk(node.ssh_host)
+        killed = chaos.kill_skulk(node)
         report.observations["master_kill_issued"] = killed
         future.result(timeout=config.generation_timeout_s)
     report.observations["in_flight_stream"] = stream_outcome
@@ -591,7 +591,7 @@ def run_churn(
             "target_node_id": target_node_id,
         }
 
-        killed = chaos.kill_skulk(node.ssh_host)
+        killed = chaos.kill_skulk(node)
         round_log["kill_issued"] = killed
         if target_node_id is not None:
             round_log["went_absent"] = chaos.wait_for_node_absent(

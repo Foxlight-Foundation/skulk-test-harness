@@ -1,6 +1,6 @@
 # AGENTS.md
 
-This repository is a sibling of `/Users/thomastupper/projects/foxlight/Skulk`.
+This repository contains Skulk test harness tooling and example profiles.
 
 ## Purpose
 

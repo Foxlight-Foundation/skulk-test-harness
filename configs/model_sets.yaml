@@ -1,63 +1,11 @@
 model_sets:
-  smoke:
-    name: smoke
-    description: Store-backed default for harness validation on the Kite cluster.
-    models:
-      - mlx-community/Qwen3.5-9B-MLX-4bit
-
-  qwen35-small:
-    name: qwen35-small
-    description: Qwen 3.5 small models useful for MTP and fast loop checks.
-    models:
-      - mlx-community/Qwen3.5-9B-4bit
-      - mlx-community/Qwen3.5-9B-MLX-4bit
-      - mlx-community/Qwen3.5-27B-4bit
-
-  gemma4-family:
-    name: gemma4-family
-    description: Gemma 4 family models discovered from the live Skulk catalog plus known seeds.
+  store-smoke:
+    name: store-smoke
+    description: First model currently present in the configured Skulk model store.
     selectors:
-      - source: both
-        id_regex: "gemma[-_]?4"
-        max_models: 20
-    huggingface_seeds:
-      - model_id: mlx-community/gemma-4-e2b-it-8bit
-        reason: Small Gemma 4 smoke candidate.
-      - model_id: mlx-community/gemma-4-e4b-it-8bit
-        reason: Gemma 4 E4B candidate.
-      - model_id: mlx-community/gemma-4-12B-it-4bit
-        reason: Gemma 4 12B candidate.
-      - model_id: mlx-community/gemma-4-26b-a4b-it-4bit
-        reason: Gemma 4 A4B candidate.
-
-  moe-family:
-    name: moe-family
-    description: Mixture-of-experts style models from common Skulk families.
-    selectors:
-      - source: both
-        id_regex: "(A3B|A4B|A10B|A17B|A22B|A35B|MoE|Mixtral|DeepSeek|Kimi|MiniMax)"
-        max_models: 40
-
-  mtp-tests:
-    name: mtp-tests
-    description: Models expected to exercise speculative decoding paths.
-    selectors:
-      - source: both
-        id_regex: "(Qwen3\\.5|DeepSeek|gemma[-_]?4)"
-        max_models: 30
-
-  gpt-oss-20b:
-    name: gpt-oss-20b
-    description: GPT-OSS 20B target for broad harness and tool-calling coverage.
-    models:
-      - mlx-community/gpt-oss-20b-MXFP4-Q8
-    selectors:
-      - source: both
-        id_regex: "gpt[-_]?oss[-_]?20b"
-        max_models: 5
-    huggingface_seeds:
-      - model_id: mlx-community/gpt-oss-20b-MXFP4-Q8
-        reason: Store-backed GPT-OSS 20B Q8 candidate used on the Kite cluster.
+      - source: store
+        id_regex: ".*"
+        max_models: 1
 
   store-all:
     name: store-all
@@ -66,29 +14,27 @@ model_sets:
       - source: store
         id_regex: ".*"
 
-  tensor-sharding:
-    name: tensor-sharding
-    description: Tensor-parallel smoke target for the kite TP pair.
-    models:
-      - mlx-community/Qwen3.5-9B-4bit
-
-  context-admission:
-    name: context-admission
-    description: Small text model used to verify oversized requests fail cleanly.
-    models:
-      - mlx-community/Qwen3.5-9B-4bit
+  catalog-small-text:
+    name: catalog-small-text
+    description: Small text-generation candidates discovered from catalog/store metadata.
+    selectors:
+      - source: both
+        id_regex: "(instruct|chat|qwen|llama|gemma|mistral|phi)"
+        max_models: 5
 
   embeddings:
     name: embeddings
-    description: Embedding runner smoke target.
+    description: Common sentence-transformer embedding smoke target.
     models:
       - sentence-transformers/all-MiniLM-L6-v2
 
   vision:
     name: vision
-    description: Vision-capable text-generation model for image input coverage.
-    models:
-      - mlx-community/Qwen3-VL-4B-Instruct-4bit
+    description: Vision-capable models discovered from catalog/store metadata.
+    selectors:
+      - source: both
+        id_regex: "(vision|vl|multimodal)"
+        max_models: 5
 
   served-spec-draft-simple:
     name: served-spec-draft-simple
@@ -107,91 +53,3 @@ model_sets:
         id_regex: ".*"
         served_spec_types_any:
           - draft_eagle3
-
-  # --- Curated e2e matrix (explicitly pinned to staged models, not regex, so
-  # --- the matrix is reproducible and does not drift with the live catalog).
-
-  dense-singles:
-    name: dense-singles
-    description: Dense models that fit a single node. The single-node leg of the matrix.
-    models:
-      - mlx-community/Qwen3.5-9B-4bit
-      - mlx-community/gemma-4-12B-it-4bit
-      - mlx-community/NVIDIA-Nemotron-Nano-9B-v2-4bits
-      - mlx-community/Meta-Llama-3.1-8B-Instruct-4bit
-      - mlx-community/GLM-4.7-Flash-4bit
-
-  moe:
-    name: moe
-    description: Mixture-of-experts models. Larger ones widen to multi-node automatically.
-    models:
-      - mlx-community/Qwen3-30B-A3B-4bit
-      - mlx-community/gemma-4-26b-a4b-it-4bit
-      - mlx-community/gpt-oss-20b-MXFP4-Q8
-      - mlx-community/Moonlight-16B-A3B-Instruct-4-bit
-      - mlx-community/Qwen3.5-35B-A3B-4bit
-      # NVFP4 is not a supported Skulk runtime format: the runner connects but the
-      # model never loads (stuck "LOADING / Connecting"), so it only burns the
-      # placement-ready timeout. Removed from the battery.
-      # - mlx-community/Qwen3.6-35B-A3B-nvfp4
-
-  multinode-large:
-    name: multinode-large
-    description: Large dense + MTP-capable models forced across nodes. The coherence-critical leg (the #297 garble path runs here under sampled multi-node MTP).
-    models:
-      - mlx-community/Qwen3.5-27B-4bit
-      - mlx-community/Qwen3.6-27B-4bit
-      - mlx-community/gemma-4-31b-it-4bit
-      - mlx-community/Qwen3.5-35B-A3B-4bit
-
-  gguf-llama-cpp:
-    name: gguf-llama-cpp
-    description: >-
-      GGUF models served by the llama.cpp engine on a non-Mac GPU node (e.g. an
-      AMD Strix Halo box, kite4). The card's compatible_backends are llama.cpp
-      tags, so Skulk's placement filter routes these only to a llama_cpp node --
-      no harness-side node pinning needed. Small + already staged so the run is
-      fast and self-contained.
-    models:
-      - unsloth/Llama-3.2-1B-Instruct-GGUF
-
-  gguf-big:
-    name: gguf-big
-    description: >-
-      Large GGUF models that exceed Mac-mini VRAM and run on the 128GB AMD node
-      (kite4) via llama.cpp -- the capacity half of the heterogeneous story (a
-      class of models the minis cannot hold at all, independent of engine). Pair
-      with the llama-cpp test set. Single-node llama.cpp; placement routes here by
-      the GGUF cards' llama.cpp compatible_backends.
-    models:
-      - Qwen/Qwen2.5-7B-Instruct-GGUF
-      - unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF
-      - unsloth/gemma-4-31B-it-GGUF
-      - bartowski/Llama-3.3-70B-Instruct-GGUF
-      - bartowski/openai_gpt-oss-120b-GGUF
-
-  mtp-served:
-    name: mtp-served
-    description: >-
-      Native multi-token-prediction GGUFs served via the llama_server engine
-      (llama.cpp --spec-type draft-mtp) on a GPU node (kite4). The cards declare
-      compatible_backends=llama_server-* so placement routes them to a node with
-      a llama-server binary; runtime.served_spec_type=draft_mtp turns on the
-      built-in MTP heads. Spread across family/size to benchmark draft-mtp:
-      small dense, mid dense, and MoE; plus Gemma 4 31B, which is the OTHER MTP
-      shape (a separate draft assistant GGUF via --model-draft) and a reasoning
-      model with a custom channel parser. (A non-Qwen baked-in-heads MTP GGUF is
-      still a follow-up; the GLM-4.7-Flash MTP upload tested was missing its MTP
-      tensors.) Run with --ensure-store-downloads --delete-created-instances
-      --delete-staged-models so weights stage from the store and are evicted after.
-    models:
-      - unsloth/Qwen3.5-9B-MTP-GGUF
-      - froggeric/Qwen3.6-27B-MTP-GGUF
-      - unsloth/Qwen3.6-35B-A3B-MTP-GGUF
-      # Gemma 4 = the DRAFT-MODEL MTP shape (a separate assistant GGUF via
-      # --model-draft), not baked-in heads like the Qwen cards above, AND a
-      # reasoning model whose thinking arrives as literal <|channel> markers the
-      # served runner re-parses (output_parser=gemma4). The built-in card
-      # co-fetches the base + our published FoxlightAI draft through the store, so
-      # this exercises the draft-model path + channel parser end to end.
-      - google/gemma-4-31B-it-qat-q4_0-gguf
