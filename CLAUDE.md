@@ -58,10 +58,12 @@ Use the Skulk-family review process from `AGENTS.md`.
   comment lists can miss inline thread state.
 - Score actionable comments on the severity rubric before changing code.
 - Fix only severity 4 or 5 comments in the active PR.
-- Note severity 3 comments for follow-up.
-- Ignore severity 1 or 2 comments unless a maintainer explicitly asks for them.
-- Reply with the concrete fix or deferral rationale after validation.
-- Resolve only threads actually addressed by code and validation.
+- Defer severity 1, 2, or 3 comments unless a maintainer explicitly asks for
+  them in the current PR.
+- Reply with either the concrete fix and validation evidence, or the rubric
+  rationale for electing not to fix the issue in this PR.
+- Resolve every handled thread after replying, including threads fixed by code
+  and threads explicitly deferred per the rubric.
 - Repeat until no unresolved severity 4 or 5 comments remain.
 
 Draft PRs do not receive the normal review flow. When a PR is ready for review
