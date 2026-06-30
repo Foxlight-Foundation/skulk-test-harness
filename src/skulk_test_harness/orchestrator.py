@@ -504,6 +504,12 @@ class HarnessRunner:
                     "Timed out waiting for placed model to appear in cluster "
                     "state; treating as a placement refusal/give-up"
                 ),
+                evidence={
+                    "placement_appearance_timeout_s": (
+                        self.config.placement_appearance_timeout_s
+                    ),
+                    "placement_ready_timeout_s": self.config.placement_ready_timeout_s,
+                },
             )
         )
         return PlacementResult(model_id=model_id, created_by_harness=True, ready=False)
@@ -1143,11 +1149,11 @@ def _model_id_from_catalog_entry(model: dict[str, object]) -> str:
     return ""
 
 
-_DEFERRED_PLACEMENT_MESSAGES = {
+_DEFERRED_PLACEMENT_MESSAGE_PREFIXES = (
     "No usable placement preview found before execution",
     "Placement request failed",
     "Timed out waiting for placed model to appear in cluster state",
-}
+)
 
 
 def _clear_deferred_placement_issues(report: RunReport, model_id: str) -> None:
@@ -1159,7 +1165,7 @@ def _clear_deferred_placement_issues(report: RunReport, model_id: str) -> None:
         if not (
             issue.model_id == model_id
             and issue.severity == "error"
-            and issue.message in _DEFERRED_PLACEMENT_MESSAGES
+            and issue.message.startswith(_DEFERRED_PLACEMENT_MESSAGE_PREFIXES)
         )
     ]
 
@@ -1254,7 +1260,10 @@ def _score_output(
                 ),
             )
         )
-    if len(text) < criteria.min_chars:
+    # A native OpenAI tool_call is a coherent assistant completion even when the
+    # visible content field is intentionally empty. Other content-specific gates
+    # (required substrings, regexes, list counts) still check visible text.
+    if len(text) < criteria.min_chars and not tool_calls:
         issues.append(
             Issue(
                 severity="error",
@@ -1456,7 +1465,10 @@ def _score_output(
 def _list_item_count(text: str) -> int:
     """Count common Markdown/plaintext list markers in model output."""
 
-    marker = re.compile(r"^\s*(?:[-*]|\d+[.)]|[a-z][.)])\s+", flags=re.IGNORECASE)
+    marker = re.compile(
+        r"^\s*(?:[-*•‣·–▪]|\d+[.)]|[a-z][.)])\s+",
+        flags=re.IGNORECASE,
+    )
     return sum(1 for line in text.splitlines() if marker.search(line))
 
 

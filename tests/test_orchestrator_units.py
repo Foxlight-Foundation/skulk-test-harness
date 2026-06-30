@@ -162,6 +162,18 @@ def test_score_output_accepts_numbered_structured_list() -> None:
     assert issues == []
 
 
+def test_score_output_accepts_unicode_bullet_structured_list() -> None:
+    text = "• first reason\n• second reason\n• third reason"
+    issues = _score_output(
+        "model",
+        "structured-list",
+        text,
+        SuccessCriteria(min_chars=0, min_list_items=3),
+    )
+
+    assert issues == []
+
+
 def test_score_output_flags_too_few_structured_list_items() -> None:
     issues = _score_output(
         "model",
@@ -232,6 +244,26 @@ def test_score_output_accepts_expected_tool_calls() -> None:
                 name="calculate",
                 arguments_text='{"expression": "187 * 493"}',
                 arguments={"expression": "187 * 493"},
+                index=0,
+            )
+        ],
+    )
+
+    assert issues == []
+
+
+def test_score_output_treats_tool_call_as_coherent_completion() -> None:
+    issues = _score_output(
+        "model",
+        "tool-call-path",
+        "",
+        SuccessCriteria(min_chars=2),
+        tool_calls=[
+            ToolCallRecord(
+                id="call-weather",
+                name="get_weather",
+                arguments_text='{"city": "San Francisco"}',
+                arguments={"city": "San Francisco"},
                 index=0,
             )
         ],
@@ -485,6 +517,32 @@ def test_llama_cpp_suite_and_gguf_set_load() -> None:
     assert "logprobs-parity" not in names
 
 
+def test_chat_and_llama_concise_tests_have_reasoning_budget() -> None:
+    root = Path(__file__).parents[1]
+    test_sets = load_test_sets(root / "configs/test_sets.yaml").test_sets
+
+    for set_name in ("chat-tests", "llama-cpp"):
+        concise = next(
+            test
+            for test in test_sets[set_name].tests
+            if test.name == "concise-factual-answer"
+        )
+        assert concise.max_tokens >= 256
+
+
+def test_vision_smoke_fixture_expects_blue_square() -> None:
+    root = Path(__file__).parents[1]
+    test_sets = load_test_sets(root / "configs/test_sets.yaml").test_sets
+    vision = test_sets["vision"].tests[0]
+
+    assert vision.success.required_substrings == ["blue"]
+    assert "ABAAAAAQ" in vision.images[0].url
+
+
+def test_default_placement_appearance_timeout_handles_large_cached_models() -> None:
+    assert HarnessConfig().placement_appearance_timeout_s >= 300
+
+
 # --- teardown sweep + thinking-default regression tests -------------------
 
 
@@ -692,6 +750,14 @@ def test_clear_deferred_placement_issues_keeps_real_run_errors() -> None:
                 severity="error",
                 model_id="m/Foo",
                 message="Placement request failed",
+            ),
+            Issue(
+                severity="error",
+                model_id="m/Foo",
+                message=(
+                    "Timed out waiting for placed model to appear in cluster "
+                    "state; treating as a placement refusal/give-up"
+                ),
             ),
             Issue(
                 severity="error",
