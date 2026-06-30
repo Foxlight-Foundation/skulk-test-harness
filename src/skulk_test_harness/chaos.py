@@ -4,9 +4,8 @@ These functions deliberately keep the *decision* logic (friendly-name mapping,
 master identification, SSH command construction) pure and unit-testable, while
 isolating the side-effecting parts (``subprocess.run`` over SSH, polling the
 live cluster) behind thin wrappers. The crash/relaunch model is faithful: nodes
-are killed with ``pkill -9`` and relaunched exactly as an operator would
-(``nohup uv run skulk -v``), so the suites observe real failover, not a graceful
-shutdown the system could special-case.
+can be killed and relaunched exactly as an operator would, so the suites observe
+real failover, not a graceful shutdown the system could special-case.
 """
 
 from __future__ import annotations
@@ -142,15 +141,29 @@ def _present_node_ids(state: dict[str, object]) -> set[str]:
     return {str(node_id) for node_id in last_seen}
 
 
-def kill_skulk(ssh_host: str) -> bool:
-    """Hard-kill the skulk process on ``ssh_host`` (faithful crash).
+def _kill_command_for_node(node: ClusterNode) -> str:
+    return node.kill_command or KILL_COMMAND
+
+
+def _relaunch_command_for_node(node: ClusterNode) -> str | None:
+    if node.relaunch_command:
+        return node.relaunch_command
+    if node.repo_path:
+        return _relaunch_command(node.repo_path)
+    return None
+
+
+def kill_skulk(target: ClusterNode | str) -> bool:
+    """Hard-kill the skulk process on ``target`` (faithful crash).
 
     Returns ``True`` when the kill command ran successfully. Note ``pkill``
     exits 1 when it matched nothing, so a ``False`` here can also mean skulk was
     already down; callers verify the effect via :func:`wait_for_node_absent`.
     """
 
-    return _run_ssh(ssh_host, KILL_COMMAND)
+    if isinstance(target, ClusterNode):
+        return _run_ssh(target.ssh_host, _kill_command_for_node(target))
+    return _run_ssh(target, KILL_COMMAND)
 
 
 def relaunch_skulk(node: ClusterNode) -> bool:
@@ -160,7 +173,10 @@ def relaunch_skulk(node: ClusterNode) -> bool:
     Process readiness is confirmed separately via :func:`wait_for_node_present`.
     """
 
-    return _run_ssh(node.ssh_host, _relaunch_command(node.repo_path))
+    command = _relaunch_command_for_node(node)
+    if command is None:
+        return False
+    return _run_ssh(node.ssh_host, command)
 
 
 def _safe_present_node_ids(client: SkulkClient) -> set[str] | None:

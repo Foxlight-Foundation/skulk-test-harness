@@ -88,7 +88,7 @@ def completion_is_coherent(execution: ChatExecution) -> bool:
     a tight ``max_tokens`` is consumed mid-think), so checking ``text`` alone
     would wrongly fail a perfectly-serving model. An empty/zero-chunk result
     indicates a wedged or aborted generation even if the HTTP request returned
-    200 — which is what the stability suites care about (is the cluster serving),
+    200, which is what the stability suites care about (is the cluster serving),
     not answer correctness.
     """
 
@@ -109,12 +109,12 @@ def classify_placement_outcome(
     instances currently placed for ``model_id`` and returns one of:
 
     - ``"refused"``: no instance exists for the model (the cluster cleanly
-      declined an impossible request) — the desired #290 behavior.
+      declined an impossible request), the desired #290 behavior.
     - ``"replaced_wider"``: an instance exists spanning enough nodes to be
-      serviceable (>= 1 and <= ``live_node_count``) and is ready — the cluster
+      serviceable (>= 1 and <= ``live_node_count``) and is ready, so the cluster
       re-placed onto a viable, narrower set instead of the impossible request.
     - ``"partial"``: an instance exists but is NOT ready or claims more nodes
-      than are live — a wedged/half-placed instance, which is the failure #290
+      than are live, a wedged/half-placed instance, which is the failure #290
       hardened against.
 
     Returns the verdict and the matched placements for evidence.
@@ -437,7 +437,7 @@ def run_failover(
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
         future = pool.submit(_drive_stream)
         time.sleep(0.5)  # let the stream begin before we pull the rug
-        killed = chaos.kill_skulk(node.ssh_host)
+        killed = chaos.kill_skulk(node)
         report.observations["master_kill_issued"] = killed
         future.result(timeout=config.generation_timeout_s)
     report.observations["in_flight_stream"] = stream_outcome
@@ -591,7 +591,7 @@ def run_churn(
             "target_node_id": target_node_id,
         }
 
-        killed = chaos.kill_skulk(node.ssh_host)
+        killed = chaos.kill_skulk(node)
         round_log["kill_issued"] = killed
         if target_node_id is not None:
             round_log["went_absent"] = chaos.wait_for_node_absent(
@@ -658,7 +658,7 @@ def _pick_non_master_friendly(
 ) -> str | None:
     """Return a configured friendly name that is neither master nor the client node.
 
-    Skips the master (we churn workers, not the leader — failover covers leader
+    Skips the master (we churn workers, not the leader, since failover covers leader
     death) and skips the node the harness API client is talking to: killing that
     node would blind the harness mid-round, the same hazard the failover suite
     guards against.

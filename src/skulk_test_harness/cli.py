@@ -33,8 +33,8 @@ app.add_typer(stability_app, name="stability")
 
 console = Console()
 
-# A small model that can shard across the kite TP pair, used as the default
-# target for the stability suites.
+# A small public model that can shard across multiple nodes, used as the default
+# target for the stability suites when the operator does not pass --model.
 DEFAULT_STABILITY_MODEL = "mlx-community/Qwen3.5-9B-4bit"
 
 
@@ -363,14 +363,32 @@ def _write_stability(cfg: HarnessConfig, report: StabilityReport) -> None:
     _print_stability_summary(report, run_dir)
 
 
+def _require_destructive_opt_in(execute_destructive: bool) -> None:
+    if execute_destructive:
+        return
+    console.print(
+        "[bold red]Refusing destructive stability command.[/] "
+        "Pass --execute-destructive to allow SSH kill/relaunch operations."
+    )
+    raise typer.Exit(code=2)
+
+
 @stability_app.command("failover")
 def stability_failover(
     model: ModelOption = DEFAULT_STABILITY_MODEL,
     config: ConfigPath = Path("skulk-harness.yaml"),
     min_nodes: Annotated[int, typer.Option(help="Minimum nodes to place across.")] = 2,
+    execute_destructive: Annotated[
+        bool,
+        typer.Option(
+            "--execute-destructive",
+            help="Allow this command to kill/relaunch Skulk over SSH.",
+        ),
+    ] = False,
 ) -> None:
     """Crash the master mid-stream and assert the cluster survives (#273)."""
 
+    _require_destructive_opt_in(execute_destructive)
     cfg = load_config(config)
     with _stability_client(cfg) as client:
         report = stability.run_failover(client, cfg, model, min_nodes=min_nodes)
@@ -382,9 +400,17 @@ def stability_churn(
     model: ModelOption = DEFAULT_STABILITY_MODEL,
     config: ConfigPath = Path("skulk-harness.yaml"),
     rounds: Annotated[int, typer.Option(help="Kill/relaunch rounds to run.")] = 3,
+    execute_destructive: Annotated[
+        bool,
+        typer.Option(
+            "--execute-destructive",
+            help="Allow this command to kill/relaunch Skulk over SSH.",
+        ),
+    ] = False,
 ) -> None:
     """Repeatedly crash and relaunch a non-master node, asserting recovery."""
 
+    _require_destructive_opt_in(execute_destructive)
     cfg = load_config(config)
     with _stability_client(cfg) as client:
         report = stability.run_churn(client, cfg, model, rounds=rounds)
@@ -412,9 +438,17 @@ def stability_soak(
 def stability_refusal(
     model: ModelOption = DEFAULT_STABILITY_MODEL,
     config: ConfigPath = Path("skulk-harness.yaml"),
+    execute_destructive: Annotated[
+        bool,
+        typer.Option(
+            "--execute-destructive",
+            help="Allow this command to run a destructive placement-refusal suite.",
+        ),
+    ] = False,
 ) -> None:
     """Assert an impossible placement is refused or re-placed, not wedged (#290)."""
 
+    _require_destructive_opt_in(execute_destructive)
     cfg = load_config(config)
     with _stability_client(cfg) as client:
         report = stability.run_placement_refusal(client, cfg, model)

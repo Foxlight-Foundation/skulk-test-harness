@@ -1,6 +1,6 @@
 # AGENTS.md
 
-This repository is a sibling of `/Users/thomastupper/projects/foxlight/Skulk`.
+This repository contains Skulk test harness tooling and example profiles.
 
 ## Purpose
 
@@ -14,6 +14,34 @@ source tree.
   architecture.
 - Prefer small, reproducible harnesses over ad hoc scripts.
 - Keep generated logs, caches, and local run artifacts out of git.
+- Always branch and use a pull request. Never push directly to `main`.
+- Do not merge a pull request unless the user explicitly asks for a merge.
+
+## Validation Commands
+
+Run these before committing code or docs changes:
+
+```bash
+uv run pytest
+uv run ruff check .
+uv run basedpyright
+git diff --check
+```
+
+For shell wrapper changes, also run:
+
+```bash
+bash -n run_e2e_battery.sh run_mtp_battery.sh run_throughput_battery.sh
+bash -n examples/foxlight/run_e2e_battery.sh examples/foxlight/run_mtp_battery.sh examples/foxlight/run_throughput_battery.sh
+```
+
+For documentation site changes, also run:
+
+```bash
+cd website
+npm ci
+npm run build
+```
 
 ## Review Comment Rubric
 
@@ -40,10 +68,10 @@ Scoring:
 5. Map `> 4.5` to severity 5, `> 3.5` to severity 4, `> 2.5` to severity 3,
    `> 1.7` to severity 2, and the rest to severity 1.
 
-Only fix review comments rated severity 4 or 5 in the active PR. Ignore severity
-1-2 comments, note severity 3 comments for follow-up, and do not iterate on
-minor wording, style, or speculative automated-review suggestions unless a
-maintainer explicitly asks for them in the current PR.
+Only fix review comments rated severity 4 or 5 in the active PR. Defer severity
+1-3 comments unless a maintainer explicitly asks for them in the current PR, and
+do not iterate on minor wording, style, or speculative automated-review
+suggestions by default.
 
 When watching a PR:
 
@@ -52,6 +80,15 @@ When watching a PR:
 3. Fix severity 4-5 comments with the smallest correct change.
 4. Add or update focused tests for critical-path correctness fixes.
 5. Run focused validation before replying.
-6. Reply with the concrete fix or deferral rationale.
-7. Resolve only threads actually addressed by code and validation.
+6. Reply with either the concrete fix and validation evidence, or the rubric
+   rationale for electing not to fix the issue in this PR.
+7. Resolve every handled thread after replying, including threads fixed by code
+   and threads explicitly deferred per the rubric.
 8. Repeat until no unresolved severity 4-5 comments remain.
+
+Use thread-aware review reads for GitHub PRs. Flat review/comment lists can miss
+unresolved inline threads, so prefer GraphQL `reviewThreads` data when deciding
+whether feedback remains open.
+
+Draft PRs do not receive the normal review flow. When a PR is ready for review
+and the user wants review activity to begin, mark it ready before monitoring.

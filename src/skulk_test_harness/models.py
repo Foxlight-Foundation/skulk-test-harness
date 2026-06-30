@@ -34,8 +34,20 @@ class ClusterNode(HarnessBaseModel):
     ssh_host: str = Field(
         description="SSH host or alias used to reach this node (passed to `ssh`)."
     )
-    repo_path: str = Field(
-        description="Absolute path to the Skulk checkout on the node, used to relaunch."
+    repo_path: str | None = Field(
+        default=None,
+        description=(
+            "Backward-compatible Skulk checkout path used to build a default "
+            "relaunch command when relaunch_command is not set."
+        ),
+    )
+    kill_command: str | None = Field(
+        default=None,
+        description="Optional shell command used to stop Skulk on this node.",
+    )
+    relaunch_command: str | None = Field(
+        default=None,
+        description="Optional shell command used to relaunch Skulk on this node.",
     )
 
 

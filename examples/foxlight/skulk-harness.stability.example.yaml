@@ -1,0 +1,20 @@
+api_base_url: http://node-a:52415
+request_timeout_s: 30
+generation_timeout_s: 1800
+stream_read_timeout_s: 120
+placement_ready_timeout_s: 1800
+placement_appearance_timeout_s: 300
+store_download_timeout_s: 14400
+poll_interval_s: 2
+output_dir: runs
+model_sets_path: examples/foxlight/model_sets.yaml
+test_sets_path: examples/foxlight/test_sets.yaml
+cluster_nodes:
+  node-a:
+    ssh_host: node-a
+    kill_command: 'pkill -9 -f "uv run skulk"'
+    relaunch_command: 'cd /path/to/Skulk && nohup uv run skulk -v > ~/skulk-e2e.log 2>&1 & disown'
+  node-b:
+    ssh_host: node-b
+    kill_command: 'pkill -9 -f "uv run skulk"'
+    relaunch_command: 'cd /path/to/Skulk && nohup uv run skulk -v > ~/skulk-e2e.log 2>&1 & disown'
