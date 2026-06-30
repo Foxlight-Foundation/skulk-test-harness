@@ -56,18 +56,24 @@ def test_store_registry_entries_supports_live_entries_shape() -> None:
 
 def test_public_and_foxlight_example_configs_load() -> None:
     root = Path(__file__).parents[1]
+    public_path = root / "skulk-harness.example.yaml"
+    foxlight_path = root / "examples/foxlight/skulk-harness.yaml"
+    stability_path = root / "examples/foxlight/skulk-harness.stability.example.yaml"
 
-    public_config = load_config(root / "skulk-harness.example.yaml")
-    foxlight_config = load_config(root / "examples/foxlight/skulk-harness.yaml")
-    stability_config = load_config(
-        root / "examples/foxlight/skulk-harness.stability.example.yaml"
-    )
+    assert public_path.exists()
+    assert foxlight_path.exists()
+    assert stability_path.exists()
+
+    public_config = load_config(public_path)
+    foxlight_config = load_config(foxlight_path)
+    stability_config = load_config(stability_path)
 
     assert public_config.api_base_url == "http://localhost:52415"
     assert public_config.model_sets_path == Path("configs/model_sets.yaml")
     assert public_config.cluster_nodes == {}
     assert foxlight_config.api_base_url == "http://kite1:52415"
     assert foxlight_config.model_sets_path == Path("examples/foxlight/model_sets.yaml")
+    assert foxlight_config.test_sets_path == Path("examples/foxlight/test_sets.yaml")
     assert foxlight_config.cluster_nodes == {}
     assert sorted(stability_config.cluster_nodes) == ["node-a", "node-b"]
     assert all(

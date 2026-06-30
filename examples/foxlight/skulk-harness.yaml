@@ -1,0 +1,14 @@
+api_base_url: http://kite1:52415
+request_timeout_s: 30
+generation_timeout_s: 1800
+stream_read_timeout_s: 120
+placement_ready_timeout_s: 1800
+placement_appearance_timeout_s: 300
+store_download_timeout_s: 14400
+store_delete_timeout_s: 30
+poll_interval_s: 2
+preview_settle_attempts: 8
+output_dir: runs
+model_sets_path: examples/foxlight/model_sets.yaml
+test_sets_path: examples/foxlight/test_sets.yaml
+cluster_nodes: {}

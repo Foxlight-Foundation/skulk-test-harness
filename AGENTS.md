@@ -14,6 +14,34 @@ source tree.
   architecture.
 - Prefer small, reproducible harnesses over ad hoc scripts.
 - Keep generated logs, caches, and local run artifacts out of git.
+- Always branch and use a pull request. Never push directly to `main`.
+- Do not merge a pull request unless the user explicitly asks for a merge.
+
+## Validation Commands
+
+Run these before committing code or docs changes:
+
+```bash
+uv run pytest
+uv run ruff check .
+uv run basedpyright
+git diff --check
+```
+
+For shell wrapper changes, also run:
+
+```bash
+bash -n run_e2e_battery.sh run_mtp_battery.sh run_throughput_battery.sh
+bash -n examples/foxlight/run_e2e_battery.sh examples/foxlight/run_mtp_battery.sh examples/foxlight/run_throughput_battery.sh
+```
+
+For documentation site changes, also run:
+
+```bash
+cd website
+npm ci
+npm run build
+```
 
 ## Review Comment Rubric
 
@@ -55,3 +83,10 @@ When watching a PR:
 6. Reply with the concrete fix or deferral rationale.
 7. Resolve only threads actually addressed by code and validation.
 8. Repeat until no unresolved severity 4-5 comments remain.
+
+Use thread-aware review reads for GitHub PRs. Flat review/comment lists can miss
+unresolved inline threads, so prefer GraphQL `reviewThreads` data when deciding
+whether feedback remains open.
+
+Draft PRs do not receive the normal review flow. When a PR is ready for review
+and the user wants review activity to begin, mark it ready before monitoring.
