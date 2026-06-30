@@ -14,7 +14,13 @@ logs/
 runs/
 tmp/
 skulk-harness.yaml
-!examples/foxlight/skulk-harness.yaml
 
 # Local per-node harness configs (e.g. failover routed at a surviving node)
 skulk-harness-*.yaml
+
+# Local profile variants (e.g. skulk-harness.stability.yaml copied from examples)
+skulk-harness.*.yaml
+
+!skulk-harness.example.yaml
+!examples/foxlight/skulk-harness.yaml
+!examples/foxlight/skulk-harness.stability.example.yaml
