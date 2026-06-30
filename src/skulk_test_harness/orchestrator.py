@@ -1419,7 +1419,7 @@ def _score_output(
         ]
         if len(emitted) < target // 2:
             # The model never really produced the sequence (e.g. it refused or
-            # answered something else) — that is a content failure, not a
+            # answered something else), which is a content failure, not a
             # reorder, and the other criteria/min_chars already speak to it.
             pass
         elif any(

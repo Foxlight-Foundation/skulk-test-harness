@@ -17,6 +17,15 @@ uv run skulk-harness tests sets
 uv run skulk-harness plan --model-set store-smoke --test-set chat-tests
 ```
 
+For a more careful walkthrough, see the Docusaurus docs in `website/docs/`.
+To preview them locally:
+
+```bash
+cd website
+npm ci
+npm run start
+```
+
 `run` defaults to dry-run. Pass `--execute` only when you want the harness to
 place models and issue live requests:
 
@@ -94,6 +103,18 @@ uv run skulk-harness models sets --config examples/foxlight/skulk-harness.yaml
 The Foxlight stability example is intentionally separate at
 `examples/foxlight/skulk-harness.stability.example.yaml` because it contains
 destructive SSH process-control settings that each operator must adapt.
+
+## Documentation Site
+
+The user-facing documentation site lives under `website/` and is built with
+Docusaurus. Pull requests build the site and upload an artifact. Pushes publish
+to the `gh-pages` branch, with branch previews for non-main pushes.
+
+```bash
+cd website
+npm ci
+npm run build
+```
 
 ## License
 

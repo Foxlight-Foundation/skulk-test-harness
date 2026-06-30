@@ -1,0 +1,33 @@
+/* Copyright 2026 Foxlight Foundation */
+
+:root {
+  --ifm-color-primary: #4f46e5;
+  --ifm-color-primary-dark: #4338ca;
+  --ifm-color-primary-darker: #3730a3;
+  --ifm-color-primary-darkest: #312e81;
+  --ifm-color-primary-light: #6366f1;
+  --ifm-color-primary-lighter: #818cf8;
+  --ifm-color-primary-lightest: #c7d2fe;
+  --ifm-code-font-size: 95%;
+  --docusaurus-highlighted-code-line-bg: rgba(79, 70, 229, 0.12);
+}
+
+[data-theme="dark"] {
+  --ifm-color-primary: #a5b4fc;
+  --ifm-color-primary-dark: #818cf8;
+  --ifm-color-primary-darker: #6366f1;
+  --ifm-color-primary-darkest: #4f46e5;
+  --ifm-color-primary-light: #c7d2fe;
+  --ifm-color-primary-lighter: #ddd6fe;
+  --ifm-color-primary-lightest: #eef2ff;
+  --docusaurus-highlighted-code-line-bg: rgba(165, 180, 252, 0.18);
+}
+
+.theme-code-block {
+  border: 1px solid var(--ifm-color-emphasis-200);
+}
+
+table {
+  display: table;
+  width: 100%;
+}

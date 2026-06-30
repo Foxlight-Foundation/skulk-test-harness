@@ -29,7 +29,7 @@ test_sets:
             - "(?m)^\\s*(?:[-*•‣·–▪]|\\d+[.)]|[a-z][.)])\\s+"
 
       # Output-coherence gate. Temperature > 0 so multi-node sampled speculative
-      # decoding is exercised — the path a data-plane delivery reorder (Skulk
+      # decoding is exercised, which is the path a data-plane delivery reorder (Skulk
       # #297) silently transposed while every presence-only check stayed green.
       - name: ordered-integers-coherence
         kind: chat

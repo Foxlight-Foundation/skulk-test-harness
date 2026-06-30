@@ -1,0 +1,32 @@
+{
+  "name": "skulk-test-harness-docs",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "docusaurus build",
+    "clear": "docusaurus clear",
+    "serve": "docusaurus serve",
+    "start": "docusaurus start --host 0.0.0.0"
+  },
+  "dependencies": {
+    "@docusaurus/core": "^3.10.1",
+    "@docusaurus/preset-classic": "^3.10.1",
+    "@docusaurus/theme-mermaid": "^3.10.1",
+    "@mdx-js/react": "^3.1.0",
+    "@mermaid-js/layout-elk": "^0.1.9",
+    "clsx": "^2.1.1",
+    "prism-react-renderer": "^2.4.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@docusaurus/module-type-aliases": "^3.10.1"
+  },
+  "overrides": {
+    "serialize-javascript": "^7.0.5",
+    "uuid": "^11.1.1"
+  },
+  "engines": {
+    "node": ">=20.0"
+  }
+}

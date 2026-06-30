@@ -1,0 +1,110 @@
+name: Build docs
+
+on:
+  pull_request:
+  push:
+    branches-ignore:
+      - gh-pages
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-docs:
+    name: Build Docusaurus site
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Resolve documentation deployment path
+        id: docs-path
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_EVENT_NAME}" = "push" ] && [ "${GITHUB_REF_NAME}" != "main" ]; then
+            safe_ref="$(
+              printf '%s' "${GITHUB_REF_NAME}" \
+                | tr '[:upper:]' '[:lower:]' \
+                | tr '/ ' '--' \
+                | tr -cd 'a-z0-9._-'
+            )"
+            if [ -z "${safe_ref}" ]; then
+              safe_ref="branch"
+            fi
+            echo "base_url=/skulk-test-harness/previews/${safe_ref}/" >> "$GITHUB_OUTPUT"
+            echo "target_dir=previews/${safe_ref}" >> "$GITHUB_OUTPUT"
+          else
+            echo "base_url=/skulk-test-harness/" >> "$GITHUB_OUTPUT"
+            echo "target_dir=." >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+
+      - name: Install documentation dependencies
+        working-directory: website
+        run: npm ci
+
+      - name: Build documentation
+        working-directory: website
+        env:
+          DOCUSAURUS_BASE_URL: ${{ steps.docs-path.outputs.base_url }}
+        run: npm run build
+
+      - name: Upload docs build artifact
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: skulk-test-harness-docs
+          path: website/build
+
+      - name: Publish documentation to GitHub Pages branch
+        if: github.event_name == 'push'
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TARGET_DIR: ${{ steps.docs-path.outputs.target_dir }}
+        run: |
+          set -euo pipefail
+          deploy_root="$(mktemp -d)"
+          remote_url="https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          if git ls-remote --exit-code --heads origin gh-pages >/dev/null 2>&1; then
+            git clone --depth 1 --branch gh-pages "${remote_url}" "${deploy_root}"
+          else
+            git init "${deploy_root}"
+            git -C "${deploy_root}" checkout -b gh-pages
+            git -C "${deploy_root}" remote add origin "${remote_url}"
+          fi
+
+          if [ "${TARGET_DIR}" = "." ]; then
+            find "${deploy_root}" -mindepth 1 -maxdepth 1 \
+              ! -name .git \
+              ! -name previews \
+              -exec rm -rf {} +
+            cp -R website/build/. "${deploy_root}/"
+          else
+            rm -rf "${deploy_root}/${TARGET_DIR}"
+            mkdir -p "${deploy_root}/${TARGET_DIR}"
+            cp -R website/build/. "${deploy_root}/${TARGET_DIR}/"
+          fi
+
+          touch "${deploy_root}/.nojekyll"
+          git -C "${deploy_root}" config user.name "github-actions[bot]"
+          git -C "${deploy_root}" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C "${deploy_root}" add .
+          if git -C "${deploy_root}" diff --cached --quiet; then
+            echo "No documentation changes to publish."
+            exit 0
+          fi
+          git -C "${deploy_root}" commit -m "Deploy docs for ${GITHUB_REF_NAME}"
+          git -C "${deploy_root}" push origin gh-pages

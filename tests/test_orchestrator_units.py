@@ -139,7 +139,7 @@ def test_score_output_accepts_in_order_integer_sequence() -> None:
 
 
 def test_score_output_flags_transposed_integer_sequence() -> None:
-    # 8 and 12 swapped — exactly what a per-token delivery reorder produces.
+    # 8 and 12 swapped, exactly what a per-token delivery reorder produces.
     order = list(range(1, 31))
     order[7], order[11] = order[11], order[7]
     text = " ".join(str(n) for n in order)
