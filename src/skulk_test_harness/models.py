@@ -56,13 +56,14 @@ class HarnessConfig(HarnessBaseModel):
     )
     placement_ready_timeout_s: float = 1800.0
     placement_appearance_timeout_s: float = Field(
-        default=120.0,
+        default=300.0,
         gt=0,
         description=(
             "Maximum seconds to wait for a newly requested placement to appear "
             "in cluster state. Runner readiness can still take "
             "placement_ready_timeout_s, but a placement that never appears is a "
-            "fast refusal/give-up signal."
+            "refusal/give-up signal. Keep this long enough for large cached "
+            "models to surface under placement/teardown contention."
         ),
     )
     store_download_timeout_s: float = 14400.0
@@ -161,8 +162,9 @@ class SuccessCriteria(HarnessBaseModel):
         ge=0,
         description=(
             "When > 0, require at least this many structured list items. "
-            "Accepts Markdown bullets and numbered/lettered list markers so the "
-            "test checks structure instead of one exact glyph."
+            "Accepts Markdown bullets, common unicode bullets/dashes, and "
+            "numbered/lettered list markers so the test checks structure instead "
+            "of one exact glyph."
         ),
     )
     min_generated_chars: int = Field(

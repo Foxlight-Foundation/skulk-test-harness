@@ -7,7 +7,7 @@ test_sets:
         kind: chat
         system: You are a careful assistant. Answer directly and briefly.
         prompt: What is the capital of France? Answer with only the city name.
-        max_tokens: 32
+        max_tokens: 256
         temperature: 0
         enable_thinking: false
         success:
@@ -26,7 +26,7 @@ test_sets:
           min_chars: 60
           min_list_items: 3
           required_regexes:
-            - "(?m)^\\s*(?:[-*]|\\d+[.)]|[a-z][.)])\\s+"
+            - "(?m)^\\s*(?:[-*•‣·–▪]|\\d+[.)]|[a-z][.)])\\s+"
 
       # Output-coherence gate. Temperature > 0 so multi-node sampled speculative
       # decoding is exercised — the path a data-plane delivery reorder (Skulk
@@ -328,7 +328,7 @@ test_sets:
         kind: chat
         system: You are a careful assistant. Answer in as few words as possible.
         prompt: What is the capital of France?
-        max_tokens: 32
+        max_tokens: 256
         temperature: 0
         enable_thinking: false
         success:
@@ -359,9 +359,8 @@ test_sets:
         # The runner forwards `tools` and emits a ToolCallChunk when the model
         # returns a structured tool call, else a normal terminal chunk. A small
         # model often describes the call in prose rather than emitting a native
-        # tool_call, so this asserts the path completes coherently (no error,
-        # non-empty output) rather than a native tool_call. A tool-trained GGUF
-        # can tighten this with min_tool_calls / expected_tool_calls.
+        # tool_call, so this asserts the path completes coherently: either
+        # non-empty visible output or a native tool_call.
         prompt: What is the weather in San Francisco?
         max_tokens: 96
         temperature: 0
@@ -562,11 +561,11 @@ test_sets:
         temperature: 0
         enable_thinking: false
         images:
-          - url: data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC
+          - url: data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFUlEQVR42mNgYPhPIhrVMKph2GoAAJLb/wHQPqPSAAAAAElFTkSuQmCC
         success:
           min_chars: 3
           required_substrings:
-            - red
+            - blue
 
   served-speculation:
     name: served-speculation

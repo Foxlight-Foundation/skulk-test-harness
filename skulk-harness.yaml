@@ -2,6 +2,7 @@ api_base_url: http://kite1:52415
 request_timeout_s: 30
 generation_timeout_s: 1800
 placement_ready_timeout_s: 1800
+placement_appearance_timeout_s: 300
 store_download_timeout_s: 14400
 poll_interval_s: 2
 output_dir: runs
@@ -11,4 +12,3 @@ cluster_nodes:
   kite1: { ssh_host: kite1, repo_path: /Users/thomastupper/projects/foxlight/Skulk }
   kite2: { ssh_host: kite2, repo_path: /Users/thomastupper/projects/foxlight/Skulk }
   kite3: { ssh_host: kite3, repo_path: /Users/kite3/projects/foxlight/Skulk }
-
