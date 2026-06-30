@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: docs-${{ github.ref }}
@@ -18,6 +18,10 @@ jobs:
   build-docs:
     name: Build Docusaurus site
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      target_dir: ${{ steps.docs-path.outputs.target_dir }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -62,23 +66,36 @@ jobs:
         run: npm run build
 
       - name: Upload docs build artifact
-        if: github.event_name == 'pull_request'
         uses: actions/upload-artifact@v4
         with:
           name: skulk-test-harness-docs
           path: website/build
 
+  publish-docs:
+    name: Publish Docusaurus site
+    if: github.event_name == 'push'
+    needs: build-docs
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Download docs build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: skulk-test-harness-docs
+          path: docs-build
+
       - name: Publish documentation to GitHub Pages branch
-        if: github.event_name == 'push'
         shell: bash
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          TARGET_DIR: ${{ steps.docs-path.outputs.target_dir }}
+          TARGET_DIR: ${{ needs.build-docs.outputs.target_dir }}
         run: |
           set -euo pipefail
           deploy_root="$(mktemp -d)"
           remote_url="https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-          if git ls-remote --exit-code --heads origin gh-pages >/dev/null 2>&1; then
+          if git ls-remote --exit-code --heads "${remote_url}" gh-pages >/dev/null 2>&1; then
             git clone --depth 1 --branch gh-pages "${remote_url}" "${deploy_root}"
           else
             git init "${deploy_root}"
@@ -91,11 +108,11 @@ jobs:
               ! -name .git \
               ! -name previews \
               -exec rm -rf {} +
-            cp -R website/build/. "${deploy_root}/"
+            cp -R docs-build/. "${deploy_root}/"
           else
             rm -rf "${deploy_root}/${TARGET_DIR}"
             mkdir -p "${deploy_root}/${TARGET_DIR}"
-            cp -R website/build/. "${deploy_root}/${TARGET_DIR}/"
+            cp -R docs-build/. "${deploy_root}/${TARGET_DIR}/"
           fi
 
           touch "${deploy_root}/.nojekyll"
