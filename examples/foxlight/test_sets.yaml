@@ -19,7 +19,13 @@ test_sets:
         kind: chat
         system: Follow the user's requested format exactly.
         prompt: "Return exactly three bullet points about why cluster-level testing matters."
-        max_tokens: 160
+        # enable_thinking is a no-op for always-reasoning models (gpt-oss's card
+        # is supports_toggle=false; harmony always emits an analysis channel), so
+        # the budget must cover the reasoning tokens PLUS the three bullets or the
+        # list is truncated mid-generation (finish=length) and min_list_items
+        # spuriously fails. 512 leaves ample room for medium-effort reasoning +
+        # the list; non-reasoning models still stop early.
+        max_tokens: 512
         temperature: 0.2
         enable_thinking: false
         success:
