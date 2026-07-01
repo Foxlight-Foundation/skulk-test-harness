@@ -492,6 +492,37 @@ test_sets:
           min_generated_chars: 800
           min_wall_tps: 16.0
 
+  mtp-benchmark:
+    name: mtp-benchmark
+    description: >
+      MTP on-vs-off throughput benchmark for the served (llama_server) engine,
+      matching the MLX speculative-decoding protocol so the two engines' tables
+      are directly comparable: a 200-token greedy (temperature 0) completion,
+      reasoning off, three repetitions, wall_tps measured through the production
+      API. Run the SAME model set twice on the SAME node build, differing only by
+      the node env SKULK_LLAMA_SERVER_FORCE_NO_SPEC: unset gives MTP on, =1 forces
+      speculation off (plain decode) for the identical GGUF. The two runs'
+      report.json files diff into a Plain / With-MTP / Gain table (see
+      run_mtp_onoff_benchmark.sh and combine_mtp_onoff.py). Pair with the
+      mtp-served model set.
+    tests:
+      - name: greedy-200
+        kind: chat
+        system: You are a thorough technical writer. Write continuous prose.
+        prompt: >
+          Write a detailed, self-contained explanation (around 700 words) of how a
+          distributed inference system shards a large language model across several
+          machines: pipeline vs tensor parallelism, how the KV cache is managed,
+          how tokens stream back to the client, and the main failure modes and how
+          a cluster recovers from them. Use flowing paragraphs, no lists.
+        max_tokens: 200
+        temperature: 0
+        enable_thinking: false
+        repetitions: 3
+        success:
+          min_chars: 0
+          min_generated_chars: 100
+
   cancellation:
     name: cancellation
     description: >
