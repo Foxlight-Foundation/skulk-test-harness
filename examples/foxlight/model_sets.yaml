@@ -195,3 +195,25 @@ model_sets:
       # co-fetches the base + our published FoxlightAI draft through the store, so
       # this exercises the draft-model path + channel parser end to end.
       - google/gemma-4-31B-it-qat-q4_0-gguf
+
+  perf-check:
+    name: perf-check
+    description: >
+      Lean post-deploy performance regression, one model per engine on a single
+      node so the planner routes each by backend: an MLX dense model and an MLX
+      MoE model land on the Apple Silicon nodes, and a served-MTP GGUF lands on
+      the AMD node. Pair with the throughput test set. For the multi-node MLX
+      path use perf-multi (below).
+    models:
+      - mlx-community/Qwen3.5-9B-4bit        # MLX dense single-node (+ MTP)
+      - mlx-community/gpt-oss-20b-MXFP4-Q8   # MLX MoE single-node
+      - unsloth/Qwen3.5-9B-MTP-GGUF          # served MTP on the AMD node
+
+  perf-multi:
+    name: perf-multi
+    description: >
+      Multi-node MLX performance check: a dense model forced across a 2-node
+      pipeline (run with --min-nodes 2) so the post-deploy check exercises the
+      sharded ring and multi-node speculative decoding, not just single-node.
+    models:
+      - mlx-community/Qwen3.5-27B-4bit
