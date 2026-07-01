@@ -89,8 +89,9 @@ default. That directory is ignored by git.
 ## Foxlight Profile
 
 Foxlight's production e2e matrix lives under `examples/foxlight/`. The root
-`run_e2e_battery.sh`, `run_mtp_battery.sh`, and `run_throughput_battery.sh`
-entrypoints are compatibility wrappers for existing Foxlight automation.
+`run_e2e_battery.sh`, `run_mtp_battery.sh`, `run_throughput_battery.sh`, and
+`run_stability_battery.sh` entrypoints are compatibility wrappers for existing
+Foxlight automation.
 
 Foxlight operators can also invoke the profile directly:
 
@@ -98,7 +99,18 @@ Foxlight operators can also invoke the profile directly:
 uv run skulk-harness tests sets --config examples/foxlight/skulk-harness.yaml
 uv run skulk-harness models sets --config examples/foxlight/skulk-harness.yaml
 ./run_e2e_battery.sh
+./run_stability_battery.sh              # soaks (MLX + AMD engines), non-destructive
+./run_stability_battery.sh --destructive  # + failover/churn/refusal
 ```
+
+`run_stability_battery.sh` orchestrates the stability suites where
+`run_e2e_battery.sh` proves each model works once: it soaks the MLX engine, the
+AMD llama.cpp engine, and the AMD served-MTP engine under sustained concurrent
+load, then (with `--destructive`) runs failover/churn/refusal. The AMD soaks are
+the point for AMD Strix Halo deployments, whose single GPU node takes the load a
+Mac cluster spreads across many. It pre-stages each model into the store first,
+so a soak spends its window on load, not a first download. See
+[Stability Suites](website/docs/guides/stability-suites.md).
 
 The Foxlight stability example is intentionally separate at
 `examples/foxlight/skulk-harness.stability.example.yaml` because it contains

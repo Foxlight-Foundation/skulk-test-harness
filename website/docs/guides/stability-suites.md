@@ -14,6 +14,41 @@ operators who understand the cluster they are testing.
 | Churn | `stability churn` | Repeatedly crashes and relaunches a non-master node | Yes |
 | Refusal | `stability refusal` | Exercises impossible placement behavior | Yes |
 
+## The Stability Battery
+
+`run_stability_battery.sh` orchestrates these suites the way
+`run_e2e_battery.sh` orchestrates the model matrix. Where the e2e battery proves
+each model works *once*, the stability battery proves the cluster holds up under
+*sustained* load and node loss.
+
+```bash
+./run_stability_battery.sh                # soaks only, non-destructive, safe
+./run_stability_battery.sh --destructive  # + failover, churn, refusal
+```
+
+It runs three soak cells by default:
+
+| Cell | Engine | Why it matters |
+| --- | --- | --- |
+| `mlx-baseline` | MLX (in-process) | Regression anchor: the mature engine under load |
+| `amd-llama-cpp` | llama.cpp (in-process, GPU node) | Sustained GGUF decode on the AMD node |
+| `amd-served-mtp` | llama-server `--spec-type draft-mtp` (GPU node) | The headline AMD path under load |
+
+The **AMD cells are the point**. On an AMD Strix Halo deployment a single GPU
+node carries the whole serving load a Mac cluster would spread across many, and
+that audience has no MLX-style fallback. So the battery soaks the AMD llama.cpp
+and served-MTP engines under concurrency and watches for a wedge, memory creep,
+or an orphaned `llama-server` subprocess, not just a single happy-path request.
+Each cell pre-stages its model into the store first, so the soak spends its
+window on load rather than a first download.
+
+The three soaks are non-destructive and run by default. The destructive trio
+(failover, churn, refusal) runs only with `--destructive` and needs a stability
+config whose `cluster_nodes` carry real `ssh_host` / `kill_command` /
+`relaunch_command` values (see [Configure Nodes](#configure-nodes)); point the
+`STABILITY_CONFIG` environment variable at it. Other knobs: `SOAK_CONCURRENCY`,
+`MLX_SOAK_S`, `AMD_SOAK_S`, and `SKULK_STORE_URL`.
+
 ## Safety Flag
 
 The destructive suites require an explicit opt-in:
