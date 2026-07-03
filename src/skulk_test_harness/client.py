@@ -169,6 +169,45 @@ class SkulkClient:
             raise TypeError("Expected /state to return an object")
         return payload
 
+    def resolve_node_ids(self, names: list[str]) -> list[str]:
+        """Resolve friendly node names (e.g. ``kite5``) to live libp2p node IDs.
+
+        Placement exclusion/pinning is by node ID, but a node's libp2p ID is
+        ephemeral (regenerated every process start), so a battery cell can only
+        refer to a node by its stable friendly name. This maps each name through
+        the current ``/state`` ``nodeIdentities`` (``friendlyName`` -> node id).
+        An entry that is already a known node ID passes through unchanged. Raises
+        ``ValueError`` listing any name that matches no live node, so a cell that
+        asks to exclude a node that is not in the cluster fails loudly rather than
+        silently placing on it.
+        """
+        if not names:
+            return []
+        identities = self.get_state().get("nodeIdentities")
+        if not isinstance(identities, dict):
+            identities = {}
+        friendly_to_id: dict[str, str] = {}
+        for node_id, info in identities.items():
+            if isinstance(info, dict):
+                friendly = info.get("friendlyName")
+                if isinstance(friendly, str):
+                    friendly_to_id[friendly] = node_id
+        resolved: list[str] = []
+        unknown: list[str] = []
+        for name in names:
+            if name in friendly_to_id:
+                resolved.append(friendly_to_id[name])
+            elif name in identities:
+                resolved.append(name)
+            else:
+                unknown.append(name)
+        if unknown:
+            raise ValueError(
+                f"Unknown node name(s) {unknown!r}; live nodes are "
+                f"{sorted(friendly_to_id)}"
+            )
+        return resolved
+
     def get_diagnostics_node(self) -> dict[str, object]:
         """Return this API node's diagnostics payload.
 

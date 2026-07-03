@@ -275,6 +275,16 @@ def run(
     sharding: Annotated[str, typer.Option(help="Pipeline or Tensor")] = "Pipeline",
     instance_meta: Annotated[str, typer.Option(help="MlxRing or MlxJaccl")] = "MlxRing",
     min_nodes: Annotated[int | None, typer.Option(help="Minimum node count override")] = None,
+    exclude_nodes: Annotated[
+        str | None,
+        typer.Option(
+            "--exclude-nodes",
+            help="Comma-separated friendly node names (e.g. 'kite4') to exclude "
+            "from placement. Used to force a model onto a specific node the "
+            "planner would not otherwise pick -- e.g. exclude the larger AMD "
+            "node so a GGUF/served cell lands on the smaller one for coverage.",
+        ),
+    ] = None,
     fail_on_issue: Annotated[
         bool,
         typer.Option(
@@ -288,6 +298,16 @@ def run(
     """Run or dry-run a named test set against a named model set."""
 
     cfg, runner = _load_runner(config)
+    # Resolve friendly names (kite4) to live libp2p node IDs before building the
+    # spec: placement exclusion is by node ID, but node IDs are ephemeral so a
+    # battery cell can only name a node by its stable friendly name.
+    excluded_node_ids: list[str] = []
+    requested = [n.strip() for n in (exclude_nodes or "").split(",") if n.strip()]
+    if requested:
+        with SkulkClient(
+            cfg.api_base_url, request_timeout_s=cfg.request_timeout_s
+        ) as client:
+            excluded_node_ids = client.resolve_node_ids(requested)
     spec = RunSpec(
         model_set=model_set,
         test_set=test_set,
@@ -299,6 +319,7 @@ def run(
             sharding=sharding,  # type: ignore[arg-type]
             instance_meta=instance_meta,  # type: ignore[arg-type]
             min_nodes=min_nodes,
+            excluded_nodes=excluded_node_ids,
         ),
     )
     report = runner.execute(spec) if execute else runner.plan(spec)

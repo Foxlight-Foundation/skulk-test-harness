@@ -57,5 +57,14 @@ cell gguf-big         llama-cpp
 # run_mtp_battery.sh.
 cell mtp-served       mtp-correctness  --delete-staged-models
 
+# --- 2nd AMD node coverage (kite5): the planner prefers the larger AMD node
+# (kite4, 128GB) for every GGUF/served placement, so without excluding it the
+# smaller Strix (kite5, 32GB VRAM) never serves inference and its llama.cpp +
+# served-MTP paths go untested. --exclude-nodes kite4 forces these small cells
+# onto kite5. If kite5 is absent, placement finds no viable node and the cell
+# fails (visible, not silently skipped). ---
+cell gguf-llama-cpp   llama-cpp        "--exclude-nodes kite4"
+cell mtp-served-9b    mtp-correctness  "--exclude-nodes kite4 --delete-staged-models"
+
 say "BATTERY COMPLETE (rc=$battery_rc)"
 exit "$battery_rc"
