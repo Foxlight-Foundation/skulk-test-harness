@@ -105,3 +105,43 @@ def test_stream_chat_counts_reasoning_for_generated_throughput(
     assert execution.metrics.approx_output_tokens == round(len(reasoning) / 4)
     assert execution.metrics.wall_tps is not None
     assert execution.metrics.wall_tps > 0
+
+
+def _state_response(_method: str, _path: str, **_kwargs: object) -> httpx.Response:
+    return httpx.Response(
+        200,
+        json={
+            "nodeIdentities": {
+                "12D3KooAAA": {"friendlyName": "kite4"},
+                "12D3KooBBB": {"friendlyName": "kite5"},
+            }
+        },
+    )
+
+
+def test_resolve_node_ids_maps_friendly_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = SkulkClient("http://skulk.test")
+    monkeypatch.setattr(client._client, "request", _state_response)
+    try:
+        # friendly name -> node id; an already-resolved node id passes through.
+        assert client.resolve_node_ids(["kite4"]) == ["12D3KooAAA"]
+        assert client.resolve_node_ids(["12D3KooBBB"]) == ["12D3KooBBB"]
+        assert client.resolve_node_ids([]) == []
+    finally:
+        client.close()
+
+
+def test_resolve_node_ids_raises_on_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = SkulkClient("http://skulk.test")
+    monkeypatch.setattr(client._client, "request", _state_response)
+    try:
+        # An unknown node name must fail loudly, not silently drop the exclusion
+        # (which would place on the node the cell meant to avoid).
+        with pytest.raises(ValueError, match="kite9"):
+            client.resolve_node_ids(["kite9"])
+    finally:
+        client.close()

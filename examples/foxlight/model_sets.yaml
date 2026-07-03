@@ -196,6 +196,19 @@ model_sets:
       # this exercises the draft-model path + channel parser end to end.
       - google/gemma-4-31B-it-qat-q4_0-gguf
 
+  mtp-served-9b:
+    name: mtp-served-9b
+    description: >-
+      A single small native-MTP GGUF (Qwen3.5 9B, draft-mtp) to exercise the
+      served engine on the SMALLER AMD node (kite5, 32 GB VRAM). The planner
+      prefers the larger AMD node (kite4, 128 GB) for every GGUF/served
+      placement, so kite5's llama_server + draft-mtp path is never hit by the
+      main mtp-served set; pair this with the mtp-correctness test set and
+      `--exclude-nodes kite4` to force placement onto kite5. Kept to one small
+      model so it fits kite5's VRAM without a large GTT spill and stays fast.
+    models:
+      - unsloth/Qwen3.5-9B-MTP-GGUF
+
   perf-check:
     name: perf-check
     description: >

@@ -432,6 +432,12 @@ class HarnessRunner:
             self._ensure_store_download(client, model_id, report)
 
         existing = client.find_placements_for_model(model_id)
+        # An excluded node must not be reused: without this, a cell that asks to
+        # exclude kite4 (to force a GGUF onto kite5) would silently reuse a prior
+        # kite4 placement and never exercise the target node.
+        if spec.placement.excluded_nodes:
+            excluded = set(spec.placement.excluded_nodes)
+            existing = [p for p in existing if not excluded.intersection(p.node_ids)]
         if existing and spec.reuse_existing_instances:
             placement = existing[0]
             if placement.instance_id and not placement.ready:
