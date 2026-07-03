@@ -186,7 +186,7 @@ model_sets:
       --delete-staged-models so weights stage from the store and are evicted after.
     models:
       - unsloth/Qwen3.5-9B-MTP-GGUF
-      - froggeric/Qwen3.6-27B-MTP-GGUF
+      - unsloth/Qwen3.6-27B-MTP-GGUF
       - unsloth/Qwen3.6-35B-A3B-MTP-GGUF
       # Gemma 4 = the DRAFT-MODEL MTP shape (a separate assistant GGUF via
       # --model-draft), not baked-in heads like the Qwen cards above, AND a

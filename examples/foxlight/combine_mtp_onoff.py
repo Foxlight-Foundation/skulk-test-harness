@@ -33,7 +33,7 @@ from pathlib import Path
 # an empty class cell rather than failing.
 _MODEL_CLASS: dict[str, str] = {
     "unsloth/Qwen3.5-9B-MTP-GGUF": "dense, small",
-    "froggeric/Qwen3.6-27B-MTP-GGUF": "dense, mid",
+    "unsloth/Qwen3.6-27B-MTP-GGUF": "dense, mid",
     "unsloth/Qwen3.6-35B-A3B-MTP-GGUF": "MoE (A3B)",
     "google/gemma-4-31B-it-qat-q4_0-gguf": "dense, draft-model",
     "unsloth/Qwen3.5-122B-A10B-MTP-GGUF": "MoE (A10B), large",
