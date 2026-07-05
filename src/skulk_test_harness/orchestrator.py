@@ -168,7 +168,30 @@ class HarnessRunner:
                     writer.write(report)
                 return False
             if not placement.ready:
-                return not _is_retryable_placement_giveup(placement)
+                # NEVER silent: an instance that was placed but did not become
+                # ready is either a cluster-side teardown (recovery killed it;
+                # the 30-minute ready-wait then polls a vanished instance) or
+                # a genuine load failure. The first pooled-rpc runs dropped
+                # this on the floor (no issue, no placement recorded) and read
+                # as empty green runs. A retryable give-up defers with a
+                # visible warning; a final failure is an error issue.
+                retryable = _is_retryable_placement_giveup(placement)
+                report.issues.append(
+                    Issue(
+                        severity=(
+                            "warning" if retryable and not deferred_retry else "error"
+                        ),
+                        model_id=model.model_id,
+                        message=(
+                            "Instance was placed but never became ready (torn "
+                            "down by cluster recovery, or load failed); see "
+                            "master logs"
+                        ),
+                        evidence={"instance_id": placement.instance_id or ""},
+                    )
+                )
+                writer.write(report)
+                return not retryable
             report.placements.append(placement)
             # Dashboard parity: when the model exposes a thinking toggle and the
             # test does not pin enable_thinking, default it OFF so the model

@@ -340,6 +340,17 @@ def run(
                 + (" + run-level error issue(s)" if run_errored else "")
             )
             raise typer.Exit(code=1)
+        # An executed run that placed NOTHING is a silent skip, not a pass:
+        # the first pooled-rpc cell run no-opped (0 placements, 0 results,
+        # rc=0) because no preview matched during the telemetry warm-up
+        # window, and the battery read green. Zero placements with models
+        # resolved means the cell never tested anything; fail loud.
+        if report.results == [] and not report.placements:
+            console.print(
+                "[bold red]FAIL[/]: run placed no instances and produced no "
+                "results (silent skip -- check placement previews/telemetry)"
+            )
+            raise typer.Exit(code=1)
 
 
 @app.command()
