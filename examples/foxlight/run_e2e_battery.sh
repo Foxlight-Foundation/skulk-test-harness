@@ -57,6 +57,15 @@ cell gguf-big         llama-cpp
 # run_mtp_battery.sh.
 cell mtp-served       mtp-correctness  --delete-staged-models
 
+# --- Multi-node GGUF pooling (kite4 driver + kite5 donor, Skulk #328): the
+# pooled 120B is forced onto the RPC shape with min_nodes 2 + LlamaRpc meta
+# (smallest-cycle preference would otherwise single-node it on kite4). Needs
+# BOTH AMD nodes present; with either absent, placement fails loudly and the
+# cell reports red rather than silently skipping. Store re-download of the
+# 60GB model is expected after a fleet cold restart (staging-orphan
+# reconciliation), so this cell can take ~10 minutes on first run.
+cell pooled-rpc       llama-cpp        "--min-nodes 2 --instance-meta LlamaRpc"
+
 # --- 2nd AMD node coverage (kite5): the planner prefers the larger AMD node
 # (kite4, 128GB) for every GGUF/served placement, so without excluding it the
 # smaller Strix (kite5, 32GB VRAM) never serves inference and its llama.cpp +

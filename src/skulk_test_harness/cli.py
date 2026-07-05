@@ -224,7 +224,7 @@ def plan(
     test_set: Annotated[str, typer.Option("--test-set", "-t")],
     config: ConfigPath = Path("skulk-harness.yaml"),
     sharding: Annotated[str, typer.Option(help="Pipeline or Tensor")] = "Pipeline",
-    instance_meta: Annotated[str, typer.Option(help="MlxRing or MlxJaccl")] = "MlxRing",
+    instance_meta: Annotated[str, typer.Option(help="MlxRing, MlxJaccl, or LlamaRpc")] = "MlxRing",
     min_nodes: Annotated[int | None, typer.Option(help="Minimum node count override")] = None,
 ) -> None:
     """Plan a harness run without mutating the cluster."""
@@ -273,7 +273,7 @@ def run(
         ),
     ] = False,
     sharding: Annotated[str, typer.Option(help="Pipeline or Tensor")] = "Pipeline",
-    instance_meta: Annotated[str, typer.Option(help="MlxRing or MlxJaccl")] = "MlxRing",
+    instance_meta: Annotated[str, typer.Option(help="MlxRing, MlxJaccl, or LlamaRpc")] = "MlxRing",
     min_nodes: Annotated[int | None, typer.Option(help="Minimum node count override")] = None,
     exclude_nodes: Annotated[
         str | None,
