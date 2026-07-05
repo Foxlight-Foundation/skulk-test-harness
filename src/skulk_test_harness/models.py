@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 PlacementStrategy = Literal["minimum", "single", "exact"]
 ShardingMode = Literal["Pipeline", "Tensor"]
-InstanceMeta = Literal["MlxRing", "MlxJaccl"]
+InstanceMeta = Literal["MlxRing", "MlxJaccl", "LlamaRpc"]
 TestKind = Literal["chat", "code", "artifact", "tool", "cancel", "error", "embedding"]
 RunMode = Literal["plan", "execute"]
 IssueSeverity = Literal["info", "warning", "error"]

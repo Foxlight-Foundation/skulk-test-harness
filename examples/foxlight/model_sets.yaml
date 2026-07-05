@@ -155,6 +155,17 @@ model_sets:
     models:
       - unsloth/Llama-3.2-1B-Instruct-GGUF
 
+  pooled-rpc:
+    name: pooled-rpc
+    description: >-
+      Multi-node GGUF memory pooling over llama.cpp RPC (Skulk #328): one
+      driver node runs llama-server --rpc against donor rpc-servers. Pair with
+      the llama-cpp test set and force min_nodes 2 + instance_meta LlamaRpc so
+      the placement pools the AMD pair (driver kite4, donor kite5) instead of
+      taking the single-node path. Uses the 120B MoE the pair validated live.
+    models:
+      - bartowski/openai_gpt-oss-120b-GGUF
+
   gguf-big:
     name: gguf-big
     description: >-
