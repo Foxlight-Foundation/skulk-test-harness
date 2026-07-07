@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from skulk_test_harness.client import ChatExecution, SkulkApiError, SkulkClient
+from skulk_test_harness.fingerprint import gather_fingerprint
 from skulk_test_harness.models import (
     ExpectedToolCall,
     GenerationMetrics,
@@ -75,6 +76,9 @@ class HarnessRunner:
                     report.placements.append(
                         _placement_from_preview(model.model_id, preview)
                     )
+            fingerprint, fp_issues = gather_fingerprint(client, spec, run_reason=spec.mode)
+            report.issues.extend(fp_issues)
+            report.fingerprint = fingerprint
             return report.finish()
 
     def execute(self, spec: RunSpec) -> RunReport:
@@ -120,6 +124,9 @@ class HarnessRunner:
                 )
                 if placed_after_retry:
                     _clear_deferred_placement_issues(report, model.model_id)
+            fingerprint, fp_issues = gather_fingerprint(client, spec, run_reason=spec.mode)
+            report.issues.extend(fp_issues)
+            report.fingerprint = fingerprint
             finished = report.finish()
             writer.write(finished)
             return finished

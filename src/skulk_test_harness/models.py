@@ -481,6 +481,92 @@ class TestResult(HarnessBaseModel):
     artifact_path: Path | None = None
 
 
+class RepoRef(HarnessBaseModel):
+    """Git provenance for one repository involved in a run."""
+
+    name: str
+    path: str | None = None
+    branch: str | None = None
+    commit: str | None = None
+    dirty: bool | None = None
+
+
+class SourceContext(HarnessBaseModel):
+    """Why the run happened and from which code."""
+
+    run_reason: str = "unspecified"
+    visibility: Literal["private", "public"] = "private"
+    operator_note: str | None = None
+    repositories: list[RepoRef] = Field(default_factory=list)
+
+
+class RuntimeFingerprint(HarnessBaseModel):
+    """The harness process's own runtime, plus the cluster's Skulk version.
+
+    Package versions here are the HARNESS process's (it is an HTTP client, so
+    mlx / skulk run on the nodes). ``skulk_version`` / ``skulk_commit`` are
+    read from the API node's diagnostics. Any probe that fails is recorded as
+    ``"unknown"`` (with an issue), never a report-write failure.
+    """
+
+    python: str | None = None
+    platform: str | None = None
+    harness_packages: dict[str, str] = Field(default_factory=dict)
+    skulk_version: str | None = None
+    skulk_commit: str | None = None
+
+
+class ClusterNodeFingerprint(HarnessBaseModel):
+    """One node as seen in ``/state`` at run time."""
+
+    node_id: str
+    friendly_name: str | None = None
+    ram_total_bytes: int | None = None
+    # Accelerator vendor ("apple", "amd", ...) from nodeSystem telemetry. This
+    # is the only per-node heterogeneity marker an HTTP client can observe:
+    # nodeResources (participation backends) is deliberately NOT merged into
+    # /state, so vendor is our proxy for "MLX node vs llama.cpp node".
+    accelerator_vendor: str | None = None
+    skulk_version: str | None = None
+    system_telemetry_present: bool = False
+    memory_telemetry_present: bool = False
+
+
+class ClusterFingerprint(HarnessBaseModel):
+    """The cluster the run executed against."""
+
+    api_base_url: str | None = None
+    api_node_id: str | None = None
+    master_node_id: str | None = None
+    node_count: int = 0
+    nodes: list[ClusterNodeFingerprint] = Field(default_factory=list)
+    topology_label: str | None = None
+
+
+class CacheState(HarnessBaseModel):
+    """Store/instance cache conditions, from the run spec's own flags.
+
+    Approximate by nature: distinguishes what the spec REQUESTED from any
+    claim of controlled warm/cold conditions.
+    """
+
+    ensure_store_downloads: bool = False
+    reuse_existing_instances: bool = True
+    retain_instances: bool = True
+    delete_staged_models: bool = False
+    classification: Literal["unknown", "cold", "warm", "mixed"] = "unknown"
+
+
+class ReportFingerprint(HarnessBaseModel):
+    """Durable self-description of a run (results-ledger schema 2.0)."""
+
+    schema_version: str = "2.0"
+    source_context: SourceContext = Field(default_factory=SourceContext)
+    runtime: RuntimeFingerprint = Field(default_factory=RuntimeFingerprint)
+    cluster: ClusterFingerprint = Field(default_factory=ClusterFingerprint)
+    cache_state: CacheState = Field(default_factory=CacheState)
+
+
 class RunReport(HarnessBaseModel):
     """Complete machine-readable report for one harness run."""
 
@@ -492,6 +578,7 @@ class RunReport(HarnessBaseModel):
     placements: list[PlacementResult] = Field(default_factory=list)
     results: list[TestResult] = Field(default_factory=list)
     issues: list[Issue] = Field(default_factory=list)
+    fingerprint: ReportFingerprint | None = None
 
     @classmethod
     def start(cls, run_id: str, spec: RunSpec, models: list[ModelRef]) -> "RunReport":
