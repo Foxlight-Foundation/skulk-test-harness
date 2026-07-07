@@ -241,3 +241,22 @@ model_sets:
       sharded ring and multi-node speculative decoding, not just single-node.
     models:
       - mlx-community/Qwen3.5-27B-4bit
+
+  multinode-cost:
+    name: multinode-cost
+    description: >-
+      GGUF models that all fit kite4 (128GB Strix Halo) alone, spanning a size
+      ladder (1B -> 120B). Used by run_multinode_cost_benchmark.sh to measure
+      the cost of RPC memory pooling: each model runs single-node on kite4 and
+      forced across kite4+kite5, so the throughput delta is pure interconnect +
+      split overhead (the model never NEEDS the second node). Small models are
+      the worst case for pooling (interconnect dominates); large ones amortize
+      it. Ordered small -> large so the published table reads as a curve.
+    models:
+      - unsloth/Llama-3.2-1B-Instruct-GGUF
+      - Qwen/Qwen2.5-7B-Instruct-GGUF
+      - bartowski/openai_gpt-oss-20b-GGUF
+      - unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF
+      - unsloth/gemma-4-31B-it-GGUF
+      - bartowski/Llama-3.3-70B-Instruct-GGUF
+      - bartowski/openai_gpt-oss-120b-GGUF

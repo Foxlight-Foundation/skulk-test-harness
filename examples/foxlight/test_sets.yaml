@@ -635,3 +635,26 @@ test_sets:
         enable_thinking: false
         success:
           min_chars: 250
+
+  multinode-cost:
+    name: multinode-cost
+    description: >-
+      One neutral sustained-generation test for the multi-node cost benchmark.
+      Greedy (temp 0) so decode throughput is deterministic; 300 tokens for a
+      stable wall_tps; median of 3 reps so a cold cache or GC pause does not
+      skew the number. The prompt is family-neutral (works for chat, coder, and
+      reasoning GGUFs alike) and success is a low character floor so the number
+      is captured even from a terse model.
+    tests:
+      - name: sustained-300
+        kind: chat
+        prompt: >-
+          Write a clear, detailed explanation of how a modern computer boots
+          from power-on to a running operating system. Cover firmware, the
+          bootloader, the kernel, and user space, in order, with a short
+          paragraph on each stage.
+        max_tokens: 300
+        temperature: 0.0
+        repetitions: 3
+        success:
+          min_generated_chars: 200
