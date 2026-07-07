@@ -597,6 +597,90 @@ class RunReport(HarnessBaseModel):
         return self.model_copy(update={"finished_at": datetime.now(tz=UTC)})
 
 
+ComparisonGuardKind = Literal[
+    "node_set_mismatch",
+    "cache_mismatch",
+    "low_sample",
+    "short_output_dominant",
+    "issue_marked",
+    "decode_tps_unavailable",
+    "missing_fingerprint",
+    "model_only_one_side",
+]
+
+
+class MetricAggregate(HarnessBaseModel):
+    """One metric aggregated over a population of like results for a model.
+
+    Median is the headline (robust to the short-output outliers that make raw
+    wall throughput meaningless). ``sample_count`` counts the substantive
+    samples the median is built from; ``short_sample_count`` counts the
+    outputs excluded as too short to time honestly. Both travel with the number
+    so a reader can never mistake a 1-sample median for a measured result.
+    """
+
+    metric: str
+    unit: str
+    median: float | None = None
+    minimum: float | None = None
+    maximum: float | None = None
+    sample_count: int = 0
+    short_sample_count: int = 0
+
+
+class ModelMetricSummary(HarnessBaseModel):
+    """All headline metrics for one model within one run set."""
+
+    model_id: str
+    run_ids: list[str] = Field(default_factory=list)
+    pass_count: int = 0
+    fail_count: int = 0
+    issue_count: int = 0
+    node_count_observed: list[int] = Field(default_factory=list)
+    topology_labels: list[str] = Field(default_factory=list)
+    metrics: dict[str, MetricAggregate] = Field(default_factory=dict)
+
+
+class MetricDelta(HarnessBaseModel):
+    """Candidate-vs-baseline change for one metric of one model."""
+
+    metric: str
+    unit: str
+    baseline: float | None = None
+    candidate: float | None = None
+    absolute_delta: float | None = None
+    percent_delta: float | None = None
+    higher_is_better: bool = True
+
+
+class ModelComparison(HarnessBaseModel):
+    """Like-for-like comparison of one model across two run sets."""
+
+    model_id: str
+    deltas: list[MetricDelta] = Field(default_factory=list)
+    guards: list[ComparisonGuardKind] = Field(default_factory=list)
+    baseline_summary: ModelMetricSummary | None = None
+    candidate_summary: ModelMetricSummary | None = None
+
+
+class ComparisonRecord(HarnessBaseModel):
+    """A full baseline-vs-candidate comparison over matched run sets.
+
+    Deliberately records the guards that make a comparison NOT like-for-like
+    (differing node set, cache warmth, low sample count, short-output noise,
+    issue-marked runs) rather than hiding them. A downstream reader or the
+    results site must be able to see why a delta may not be trustworthy.
+    """
+
+    schema_version: str = "1.0"
+    baseline_label: str
+    candidate_label: str
+    baseline_run_ids: list[str] = Field(default_factory=list)
+    candidate_run_ids: list[str] = Field(default_factory=list)
+    models: list[ModelComparison] = Field(default_factory=list)
+    guards: list[ComparisonGuardKind] = Field(default_factory=list)
+
+
 StabilitySuite = Literal["failover", "churn", "soak", "refusal"]
 
 

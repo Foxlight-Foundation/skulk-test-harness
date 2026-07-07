@@ -12,8 +12,10 @@ from rich.table import Table
 
 from skulk_test_harness import stability
 from skulk_test_harness.client import SkulkClient
+from skulk_test_harness.compare import compare, load_reports, select_run_dirs
 from skulk_test_harness.goal_parser import parse_goal
 from skulk_test_harness.models import (
+    ComparisonRecord,
     HarnessConfig,
     PlacementPolicy,
     RunSpec,
@@ -376,6 +378,67 @@ def goal(
     _print_report_summary(report, run_dir)
 
 
+@app.command("compare")
+def compare_runs(
+    baseline: Annotated[
+        str,
+        typer.Option(
+            "--baseline",
+            "-b",
+            help="Baseline run selector: a run directory, or a substring matched "
+            "against run-dir names (e.g. 'dense-singles' or a run-id prefix).",
+        ),
+    ],
+    candidate: Annotated[
+        str,
+        typer.Option(
+            "--candidate",
+            "-n",
+            help="Candidate run selector (same matching rules as --baseline).",
+        ),
+    ],
+    config: ConfigPath = Path("skulk-harness.yaml"),
+    out: Annotated[
+        Path | None,
+        typer.Option(
+            "--out",
+            help="Write the machine-readable ComparisonRecord JSON here.",
+        ),
+    ] = None,
+) -> None:
+    """Compare two run sets like-for-like and surface trust guards.
+
+    Aggregates each side's results per model (median decode tok/s and TTFT over
+    substantive samples, short outputs excluded but counted) and prints the
+    candidate-vs-baseline deltas together with the guards that make a delta
+    untrustworthy (node-set/cache mismatch, low sample count, short-output
+    noise, issue-marked runs, missing fingerprint). This is the reproducible
+    form of a "is the new branch actually faster?" investigation.
+    """
+
+    cfg = load_config(config)
+    runs_root = cfg.output_dir
+    baseline_dirs = select_run_dirs(runs_root, baseline)
+    candidate_dirs = select_run_dirs(runs_root, candidate)
+    if not baseline_dirs:
+        console.print(f"[red]No runs matched baseline selector[/red]: {baseline!r}")
+        raise typer.Exit(code=2)
+    if not candidate_dirs:
+        console.print(f"[red]No runs matched candidate selector[/red]: {candidate!r}")
+        raise typer.Exit(code=2)
+
+    record = compare(
+        load_reports(baseline_dirs),
+        load_reports(candidate_dirs),
+        baseline_label=baseline,
+        candidate_label=candidate,
+    )
+    _print_comparison(record)
+    if out is not None:
+        out.write_text(record.model_dump_json(indent=2, by_alias=True))
+        console.print(f"\nWrote comparison record -> [cyan]{out}[/cyan]")
+
+
 ModelOption = Annotated[
     str,
     typer.Option("--model", "-m", help="Model ID to exercise (multinode-capable)."),
@@ -527,6 +590,47 @@ def _print_report_summary(report, run_dir: Path) -> None:  # noqa: ANN001
     )
     table.add_row("Report dir", str(run_dir))
     console.print(table)
+
+
+def _print_comparison(record: ComparisonRecord) -> None:
+    """Render a ComparisonRecord: decode-tps deltas per model plus guards."""
+    title = f"{record.candidate_label}  vs  {record.baseline_label}  (decode tok/s)"
+    table = Table(title=title)
+    table.add_column("Model")
+    table.add_column("Baseline", justify="right")
+    table.add_column("Candidate", justify="right")
+    table.add_column("Δ", justify="right")
+    table.add_column("Guards")
+
+    for model in record.models:
+        decode = next((d for d in model.deltas if d.metric == "decode_tps"), None)
+        base = f"{decode.baseline:.1f}" if decode and decode.baseline is not None else "-"
+        cand = (
+            f"{decode.candidate:.1f}"
+            if decode and decode.candidate is not None
+            else "-"
+        )
+        if decode is not None and decode.percent_delta is not None:
+            pct = decode.percent_delta
+            # Higher decode tok/s is better; green for a real gain, red for loss.
+            color = "green" if pct >= 0 else "red"
+            delta = f"[{color}]{pct:+.1f}%[/{color}]"
+        else:
+            delta = "-"
+        guards = ", ".join(g.replace("_", " ") for g in model.guards) or ""
+        guard_text = f"[yellow]{guards}[/yellow]" if guards else ""
+        table.add_row(model.model_id.split("/")[-1], base, cand, delta, guard_text)
+
+    console.print(table)
+    if record.guards:
+        console.print(
+            "\n[yellow]run-set guards[/yellow]: "
+            + ", ".join(g.replace("_", " ") for g in record.guards)
+        )
+    console.print(
+        f"[dim]baseline: {len(record.baseline_run_ids)} run(s) · "
+        f"candidate: {len(record.candidate_run_ids)} run(s)[/dim]"
+    )
 
 
 def _dict_field(payload: dict[str, object], key: str) -> dict[str, object]:
