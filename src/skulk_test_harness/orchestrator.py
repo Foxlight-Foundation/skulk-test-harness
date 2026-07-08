@@ -1137,7 +1137,7 @@ class HarnessRunner:
                 voice=test.speech_voice,
                 speed=test.speech_speed,
             )
-        except (SkulkApiError, TypeError, ValueError) as exc:
+        except (SkulkApiError, httpx.HTTPError, TypeError, ValueError) as exc:
             issues.append(
                 Issue(
                     severity="error",
@@ -1352,7 +1352,7 @@ class HarnessRunner:
                     test.success,
                 )
             )
-        except (SkulkApiError, TypeError, ValueError) as exc:
+        except (SkulkApiError, httpx.HTTPError, TypeError, ValueError) as exc:
             issues.append(
                 Issue(
                     severity="error",
@@ -1613,7 +1613,7 @@ def _catalog_entry_supports_stt(model: dict[str, object]) -> bool:
         return True
     return (
         _has_any(model.get("tags"), ["stt"])
-        or _has_any(model.get("capabilities"), ["stt"])
+        or _has_any_capability(model, ["stt"])
         or _has_any(model.get("tasks"), ["SpeechToText", "SpeechTranslation"])
     )
 
@@ -1674,9 +1674,14 @@ def _has_any(raw: object, needles: list[str]) -> bool:
 def _has_any_capability(model: dict[str, object], needles: list[str]) -> bool:
     """Match capability selectors across legacy lists and resolved API flags."""
 
-    if _has_any(model.get("capabilities"), needles):
-        return True
+    capabilities = _normalized_string_set(model.get("capabilities"))
     wanted = {_normalized_capability(needle) for needle in needles}
+    if capabilities & wanted:
+        return True
+    if capabilities & _TTS_CAPABILITY_ALIASES and wanted & _TTS_CAPABILITY_ALIASES:
+        return True
+    if capabilities & _STT_CAPABILITY_ALIASES and wanted & _STT_CAPABILITY_ALIASES:
+        return True
     audio_kind = _audio_kind(model)
     if audio_kind in _TTS_CAPABILITY_ALIASES and wanted & _TTS_CAPABILITY_ALIASES:
         return True
@@ -1707,6 +1712,12 @@ def _audio_kind(model: dict[str, object]) -> str:
 
 def _normalized_capability(value: str) -> str:
     return re.sub(r"[^a-z0-9]", "", value.lower())
+
+
+def _normalized_string_set(raw: object) -> set[str]:
+    if not isinstance(raw, list):
+        return set()
+    return {_normalized_capability(str(item)) for item in raw}
 
 
 _TTS_CAPABILITY_ALIASES = frozenset(

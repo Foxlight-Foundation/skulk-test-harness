@@ -510,6 +510,26 @@ def test_capability_selector_matches_resolved_speech_flags() -> None:
     assert [item["id"] for item in selected] == ["org/tts"]
 
 
+def test_capability_selector_matches_raw_speech_aliases() -> None:
+    model_sets = load_model_sets(Path(__file__).parents[1] / "configs/model_sets.yaml")
+    tts_selector = model_sets.model_sets["speech-tts"].selectors[0]
+    stt_selector = model_sets.model_sets["speech-stt"].selectors[0]
+    catalog = [
+        {"id": "org/text-to-speech", "capabilities": ["TextToSpeech"]},
+        {"id": "org/speech-synthesis", "capabilities": ["speech_synthesis"]},
+        {"id": "org/speech-to-text", "capabilities": ["SpeechToText"]},
+    ]
+
+    selected_tts = _select_catalog_models(catalog, tts_selector)
+    selected_stt = _select_catalog_models(catalog, stt_selector)
+
+    assert [item["id"] for item in selected_tts] == [
+        "org/text-to-speech",
+        "org/speech-synthesis",
+    ]
+    assert [item["id"] for item in selected_stt] == ["org/speech-to-text"]
+
+
 def test_first_stt_model_id_reads_speech_metadata() -> None:
     catalog = [
         {"id": "org/TTS", "tags": ["tts"]},
@@ -974,6 +994,41 @@ def test_audio_transcription_infers_fixture_media_type(tmp_path: Path) -> None:
 
     assert result.passed is True
     assert client.transcription_requests[0]["media_type"] == "audio/mpeg"
+
+
+def test_speech_roundtrip_records_secondary_placement_transport_error(
+    tmp_path: Path,
+) -> None:
+    client = _FakeClient()
+    runner = _runner()
+
+    def _raise_timeout(*_args: object, **_kwargs: object) -> None:
+        raise httpx.ReadTimeout("preview timed out")
+
+    runner._ensure_model_placed = _raise_timeout  # type: ignore[method-assign]
+    test = PromptTest(
+        name="roundtrip",
+        kind="speech_roundtrip",
+        prompt="hello",
+        transcription_model_id="org/STT",
+    )
+    spec = RunSpec(model_set="m", test_set="t", mode="execute")
+    report = _report()
+
+    result = runner._run_test(
+        client,  # type: ignore[arg-type]
+        model_id="org/TTS",
+        test=test,
+        repetition=1,
+        artifact_dir=tmp_path,
+        spec=spec,
+        report=report,
+    )
+
+    assert result.passed is False
+    assert result.issues[0].message == "Speech roundtrip request failed"
+    assert "preview timed out" in str(result.issues[0].evidence["error"])
+    assert result.issues[0].evidence["transcription_model_id"] == "org/STT"
 
 
 def test_ensure_model_placed_fast_fails_when_instance_never_appears() -> None:
