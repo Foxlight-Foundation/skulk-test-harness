@@ -951,6 +951,31 @@ def test_run_test_dispatches_audio_transcription(tmp_path: Path) -> None:
     assert client.transcription_requests[0]["filename"] == "sample.wav"
 
 
+def test_audio_transcription_infers_fixture_media_type(tmp_path: Path) -> None:
+    audio_path = tmp_path / "sample.mp3"
+    audio_path.write_bytes(b"ID3" + (b"\x00" * 32))
+    client = _FakeClient()
+    runner = _runner()
+    test = PromptTest(
+        name="stt",
+        kind="audio_transcription",
+        prompt="transcribe this",
+        input_audio_path=audio_path,
+        success=SuccessCriteria(min_chars=5, required_substrings=["hello"]),
+    )
+
+    result = runner._run_test(
+        client,  # type: ignore[arg-type]
+        model_id="org/STT",
+        test=test,
+        repetition=1,
+        artifact_dir=tmp_path,
+    )
+
+    assert result.passed is True
+    assert client.transcription_requests[0]["media_type"] == "audio/mpeg"
+
+
 def test_ensure_model_placed_fast_fails_when_instance_never_appears() -> None:
     class _NoAppearanceClient(_FakeClient):
         def get_store_registry(self) -> None:

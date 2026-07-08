@@ -388,9 +388,12 @@ class PromptTest(HarnessBaseModel):
             "paths resolve from the current harness working directory."
         ),
     )
-    input_audio_mime_type: str = Field(
-        default="audio/wav",
-        description="MIME type sent for `input_audio_path` multipart uploads.",
+    input_audio_mime_type: str | None = Field(
+        default=None,
+        description=(
+            "Optional MIME type sent for `input_audio_path` multipart uploads. "
+            "When omitted, the harness infers it from the fixture extension."
+        ),
     )
     transcription_model_id: str | None = Field(
         default=None,

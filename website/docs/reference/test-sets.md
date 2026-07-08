@@ -71,7 +71,7 @@ Each map key must match the test set's `name`.
 | `speech_voice` | Optional voice name for TTS |
 | `speech_speed` | Optional speech speed multiplier for TTS |
 | `input_audio_path` | Local fixture path for `kind: audio_transcription` |
-| `input_audio_mime_type` | MIME type for transcription fixture upload |
+| `input_audio_mime_type` | Optional MIME type for transcription fixture upload; inferred from the fixture extension when omitted |
 | `transcription_model_id` | Optional STT model used by `kind: speech_roundtrip` |
 | `transcription_response_format` | STT response format, such as `json` or `text` |
 | `transcription_language` | Optional STT language hint |
