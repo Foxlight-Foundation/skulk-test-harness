@@ -272,6 +272,7 @@ test_sets:
         prompt: Hello world.
         audio_response_format: wav
         transcription_response_format: json
+        transcription_model_id: mlx-community/whisper-large-v3-asr-fp16
         transcription_language: en
         success:
           min_chars: 5

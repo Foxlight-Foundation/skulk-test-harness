@@ -696,11 +696,19 @@ class SkulkClient:
             payload["speed"] = speed
 
         start = time.monotonic()
-        response = self._client.post(
-            "/v1/audio/speech",
-            json=payload,
-            timeout=self.generation_timeout_s,
-        )
+        try:
+            response = self._client.post(
+                "/v1/audio/speech",
+                json=payload,
+                timeout=self.generation_timeout_s,
+            )
+        except (httpx.TimeoutException, httpx.TransportError) as exc:
+            raise SkulkApiError(
+                "POST",
+                "/v1/audio/speech",
+                0,
+                f"{type(exc).__name__}: {exc}",
+            ) from exc
         elapsed = time.monotonic() - start
         if response.status_code >= 400:
             raise SkulkApiError(
@@ -735,12 +743,20 @@ class SkulkClient:
         if prompt:
             data["prompt"] = prompt
         start = time.monotonic()
-        response = self._client.post(
-            "/v1/audio/transcriptions",
-            data=data,
-            files={"file": (filename, audio, media_type)},
-            timeout=self.generation_timeout_s,
-        )
+        try:
+            response = self._client.post(
+                "/v1/audio/transcriptions",
+                data=data,
+                files={"file": (filename, audio, media_type)},
+                timeout=self.generation_timeout_s,
+            )
+        except (httpx.TimeoutException, httpx.TransportError) as exc:
+            raise SkulkApiError(
+                "POST",
+                "/v1/audio/transcriptions",
+                0,
+                f"{type(exc).__name__}: {exc}",
+            ) from exc
         elapsed = time.monotonic() - start
         if response.status_code >= 400:
             raise SkulkApiError(

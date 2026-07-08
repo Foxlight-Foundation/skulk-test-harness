@@ -3,7 +3,7 @@ import json
 import httpx
 import pytest
 
-from skulk_test_harness.client import SkulkClient
+from skulk_test_harness.client import SkulkApiError, SkulkClient
 
 
 def test_request_json_retries_read_timeout_for_get(
@@ -95,6 +95,30 @@ def test_audio_speech_posts_openai_payload_and_returns_bytes(
     assert execution.response_format == "wav"
 
 
+def test_audio_speech_wraps_transport_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = SkulkClient("http://skulk.test")
+
+    def post(_path: str, **_kwargs: object) -> httpx.Response:
+        raise httpx.ReadTimeout("speech stalled")
+
+    monkeypatch.setattr(client._client, "post", post)
+    try:
+        with pytest.raises(SkulkApiError) as exc_info:
+            client.audio_speech(
+                model_id="org/TTS",
+                input_text="hello",
+                response_format="wav",
+            )
+    finally:
+        client.close()
+
+    assert exc_info.value.status_code == 0
+    assert exc_info.value.path == "/v1/audio/speech"
+    assert "ReadTimeout: speech stalled" in exc_info.value.body
+
+
 def test_audio_transcription_posts_multipart_and_extracts_json_text(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -135,6 +159,31 @@ def test_audio_transcription_posts_multipart_and_extracts_json_text(
     assert seen["files"] == {"file": ("sample.wav", b"RIFF....WAVE", "audio/wav")}
     assert execution.text == "hello world"
     assert execution.media_type == "application/json"
+
+
+def test_audio_transcription_wraps_transport_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = SkulkClient("http://skulk.test")
+
+    def post(_path: str, **_kwargs: object) -> httpx.Response:
+        raise httpx.RemoteProtocolError("server disconnected")
+
+    monkeypatch.setattr(client._client, "post", post)
+    try:
+        with pytest.raises(SkulkApiError) as exc_info:
+            client.audio_transcription(
+                model_id="org/STT",
+                audio=b"RIFF....WAVE",
+                filename="sample.wav",
+                media_type="audio/wav",
+            )
+    finally:
+        client.close()
+
+    assert exc_info.value.status_code == 0
+    assert exc_info.value.path == "/v1/audio/transcriptions"
+    assert "RemoteProtocolError: server disconnected" in exc_info.value.body
 
 
 def test_audio_transcription_extracts_ndjson_text(
