@@ -1280,22 +1280,24 @@ class HarnessRunner:
                 model_id, test.name, repetition, output, elapsed, issues
             )
 
-        transcription_model_id = test.transcription_model_id or _first_stt_model_id(
-            client.list_models(), exclude_model_id=model_id
-        )
-        if transcription_model_id is None:
-            issues.append(
-                Issue(
-                    severity="error",
-                    model_id=model_id,
-                    test_name=test.name,
-                    message="No STT model found for speech roundtrip",
-                )
-            )
-            return _speech_result(model_id, test.name, repetition, output, elapsed, issues)
-
+        transcription_model_id: str | None = None
         stt_placement: PlacementResult | None = None
         try:
+            transcription_model_id = test.transcription_model_id or _first_stt_model_id(
+                client.list_models(), exclude_model_id=model_id
+            )
+            if transcription_model_id is None:
+                issues.append(
+                    Issue(
+                        severity="error",
+                        model_id=model_id,
+                        test_name=test.name,
+                        message="No STT model found for speech roundtrip",
+                    )
+                )
+                return _speech_result(
+                    model_id, test.name, repetition, output, elapsed, issues
+                )
             stt_placement = self._ensure_model_placed(
                 client, transcription_model_id, spec, report
             )
@@ -1368,6 +1370,7 @@ class HarnessRunner:
         finally:
             if (
                 stt_placement is not None
+                and transcription_model_id is not None
                 and stt_placement.created_by_harness
                 and transcription_model_id != model_id
                 and not spec.retain_instances

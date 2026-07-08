@@ -1031,6 +1031,38 @@ def test_speech_roundtrip_records_secondary_placement_transport_error(
     assert result.issues[0].evidence["transcription_model_id"] == "org/STT"
 
 
+def test_speech_roundtrip_records_stt_discovery_transport_error(
+    tmp_path: Path,
+) -> None:
+    class _TimeoutListModelsClient(_FakeClient):
+        def list_models(self) -> list[dict[str, object]]:
+            raise httpx.ReadTimeout("models timed out")
+
+    runner = _runner()
+    test = PromptTest(
+        name="roundtrip",
+        kind="speech_roundtrip",
+        prompt="hello",
+    )
+    spec = RunSpec(model_set="m", test_set="t", mode="execute")
+    report = _report()
+
+    result = runner._run_test(
+        _TimeoutListModelsClient(),  # type: ignore[arg-type]
+        model_id="org/TTS",
+        test=test,
+        repetition=1,
+        artifact_dir=tmp_path,
+        spec=spec,
+        report=report,
+    )
+
+    assert result.passed is False
+    assert result.issues[0].message == "Speech roundtrip request failed"
+    assert "models timed out" in str(result.issues[0].evidence["error"])
+    assert result.issues[0].evidence["transcription_model_id"] is None
+
+
 def test_ensure_model_placed_fast_fails_when_instance_never_appears() -> None:
     class _NoAppearanceClient(_FakeClient):
         def get_store_registry(self) -> None:
