@@ -36,6 +36,9 @@ Each map key must match the test set's `name`.
 | `cancel` | Streaming cancellation and follow-up health |
 | `error` | Expected API error behavior |
 | `embedding` | Embeddings endpoint behavior |
+| `audio_speech` | Text-to-speech endpoint behavior |
+| `audio_transcription` | Speech-to-text endpoint behavior with an audio fixture |
+| `speech_roundtrip` | TTS output piped into a mounted STT model |
 
 ## Prompt Test Fields
 
@@ -64,6 +67,14 @@ Each map key must match the test set's `name`.
 | `embedding_input` | Embedding request input |
 | `expected_embedding_dimensions` | Required vector dimensionality |
 | `min_embedding_norm` | Minimum L2 norm for embedding vectors |
+| `audio_response_format` | TTS audio response format, such as `wav` |
+| `speech_voice` | Optional voice name for TTS |
+| `speech_speed` | Optional speech speed multiplier for TTS |
+| `input_audio_path` | Local fixture path for `kind: audio_transcription` |
+| `input_audio_mime_type` | Optional MIME type for transcription fixture upload; inferred from the fixture extension when omitted |
+| `transcription_model_id` | Optional STT model used by `kind: speech_roundtrip` |
+| `transcription_response_format` | STT response format, such as `json` or `text` |
+| `transcription_language` | Optional STT language hint |
 | `top_logprobs` | Request ranked logprob alternatives |
 | `repetitions` | Number of times to repeat the test |
 | `success` | Scoring rules |
@@ -87,6 +98,7 @@ Each map key must match the test set's `name`.
 | `min_reasoning_chars` | Minimum separated reasoning characters |
 | `forbid_in_reasoning` | Apply forbidden strings to reasoning too |
 | `min_wall_tps` | Minimum wall-clock decode tokens per second |
+| `min_audio_bytes` | Minimum encoded audio bytes for speech synthesis |
 
 ## Public Built-In Sets
 
@@ -99,6 +111,8 @@ Each map key must match the test set's `name`.
 | `cancellation` | Streaming cancellation coverage |
 | `context-admission` | Oversized request guard |
 | `embeddings` | Embeddings endpoint coverage |
+| `speech-synthesis` | Text-to-speech endpoint coverage |
+| `speech-roundtrip` | TTS-to-STT endpoint coverage |
 | `vision` | Multimodal image input coverage |
 | `served-speculation` | Served speculation correctness and throughput |
 

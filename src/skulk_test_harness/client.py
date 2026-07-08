@@ -59,6 +59,27 @@ class EmbeddingExecution:
     raw_response: dict[str, object]
 
 
+@dataclass(frozen=True)
+class AudioSpeechExecution:
+    """Encoded audio and timing collected from one speech synthesis request."""
+
+    audio: bytes
+    media_type: str
+    elapsed_s: float
+    response_format: str
+
+
+@dataclass(frozen=True)
+class AudioTranscriptionExecution:
+    """Transcript text and timing collected from one audio transcription request."""
+
+    text: str
+    media_type: str
+    elapsed_s: float
+    response_format: str
+    raw_response: dict[str, object] | str
+
+
 class SkulkClient:
     """Small synchronous Skulk API client."""
 
@@ -653,6 +674,106 @@ class SkulkClient:
             raw_response=response,
         )
 
+    def audio_speech(
+        self,
+        *,
+        model_id: str,
+        input_text: str,
+        response_format: str = "wav",
+        voice: str | None = None,
+        speed: float | None = None,
+    ) -> AudioSpeechExecution:
+        """Generate non-streaming speech audio with OpenAI's speech endpoint."""
+
+        payload: dict[str, object] = {
+            "model": model_id,
+            "input": input_text,
+            "response_format": response_format,
+        }
+        if voice is not None:
+            payload["voice"] = voice
+        if speed is not None:
+            payload["speed"] = speed
+
+        start = time.monotonic()
+        try:
+            response = self._client.post(
+                "/v1/audio/speech",
+                json=payload,
+                timeout=self.generation_timeout_s,
+            )
+        except (httpx.TimeoutException, httpx.TransportError) as exc:
+            raise SkulkApiError(
+                "POST",
+                "/v1/audio/speech",
+                0,
+                f"{type(exc).__name__}: {exc}",
+            ) from exc
+        elapsed = time.monotonic() - start
+        if response.status_code >= 400:
+            raise SkulkApiError(
+                "POST", "/v1/audio/speech", response.status_code, response.text
+            )
+        return AudioSpeechExecution(
+            audio=response.content,
+            media_type=_base_media_type(response.headers.get("content-type", "")),
+            elapsed_s=elapsed,
+            response_format=response_format,
+        )
+
+    def audio_transcription(
+        self,
+        *,
+        model_id: str,
+        audio: bytes,
+        filename: str,
+        media_type: str,
+        response_format: str = "json",
+        language: str | None = None,
+        prompt: str | None = None,
+    ) -> AudioTranscriptionExecution:
+        """Transcribe one audio payload with OpenAI's transcriptions endpoint."""
+
+        data: dict[str, str] = {
+            "model": model_id,
+            "response_format": response_format,
+        }
+        if language is not None:
+            data["language"] = language
+        if prompt:
+            data["prompt"] = prompt
+        start = time.monotonic()
+        try:
+            response = self._client.post(
+                "/v1/audio/transcriptions",
+                data=data,
+                files={"file": (filename, audio, media_type)},
+                timeout=self.generation_timeout_s,
+            )
+        except (httpx.TimeoutException, httpx.TransportError) as exc:
+            raise SkulkApiError(
+                "POST",
+                "/v1/audio/transcriptions",
+                0,
+                f"{type(exc).__name__}: {exc}",
+            ) from exc
+        elapsed = time.monotonic() - start
+        if response.status_code >= 400:
+            raise SkulkApiError(
+                "POST",
+                "/v1/audio/transcriptions",
+                response.status_code,
+                response.text,
+            )
+        raw, text = _transcription_payload_text(response, response_format)
+        return AudioTranscriptionExecution(
+            text=text,
+            media_type=_base_media_type(response.headers.get("content-type", "")),
+            elapsed_s=elapsed,
+            response_format=response_format,
+            raw_response=raw,
+        )
+
     def bench_chat(
         self,
         *,
@@ -801,6 +922,36 @@ def _safe_json_object(data: str) -> dict[str, object] | None:
     except json.JSONDecodeError:
         return None
     return value if isinstance(value, dict) else None
+
+
+def _base_media_type(value: str) -> str:
+    """Return only the MIME type portion of a Content-Type header."""
+
+    return value.split(";", 1)[0].strip().lower()
+
+
+def _transcription_payload_text(
+    response: httpx.Response, response_format: str
+) -> tuple[dict[str, object] | str, str]:
+    """Normalize the many transcription response formats to text for scoring."""
+
+    if response_format in {"json", "verbose_json"}:
+        raw = response.json()
+        if not isinstance(raw, dict):
+            raise TypeError(f"Unexpected transcription JSON payload: {raw!r}")
+        text = raw.get("text")
+        return raw, text if isinstance(text, str) else ""
+    if response_format == "ndjson":
+        parts: list[str] = []
+        for line in response.text.splitlines():
+            item = _safe_json_object(line)
+            if item is None:
+                continue
+            text = item.get("text")
+            if isinstance(text, str):
+                parts.append(text)
+        return response.text, " ".join(parts).strip()
+    return response.text, response.text
 
 
 def _extract_stream_delta(

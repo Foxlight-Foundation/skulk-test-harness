@@ -11,7 +11,22 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 PlacementStrategy = Literal["minimum", "single", "exact"]
 ShardingMode = Literal["Pipeline", "Tensor"]
 InstanceMeta = Literal["MlxRing", "MlxJaccl", "LlamaRpc"]
-TestKind = Literal["chat", "code", "artifact", "tool", "cancel", "error", "embedding"]
+AudioResponseFormat = Literal["mp3", "wav", "flac", "ogg", "opus"]
+TranscriptionResponseFormat = Literal[
+    "json", "text", "verbose_json", "srt", "vtt", "ndjson"
+]
+TestKind = Literal[
+    "chat",
+    "code",
+    "artifact",
+    "tool",
+    "cancel",
+    "error",
+    "embedding",
+    "audio_speech",
+    "audio_transcription",
+    "speech_roundtrip",
+]
 RunMode = Literal["plan", "execute"]
 IssueSeverity = Literal["info", "warning", "error"]
 
@@ -249,6 +264,14 @@ class SuccessCriteria(HarnessBaseModel):
             "set per benchmark cell for the target node, and keep it conservative."
         ),
     )
+    min_audio_bytes: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "For speech synthesis tests, require at least this many encoded "
+            "audio bytes. Use this instead of min_chars for binary audio output."
+        ),
+    )
 
 
 class ExpectedToolCall(HarnessBaseModel):
@@ -279,7 +302,7 @@ class PromptImage(HarnessBaseModel):
 
 
 class PromptTest(HarnessBaseModel):
-    """One text-generation test case."""
+    """One prompt-style test case."""
 
     name: str
     kind: TestKind = "chat"
@@ -344,6 +367,49 @@ class PromptTest(HarnessBaseModel):
         default=0.0,
         ge=0,
         description="For `kind: embedding`, minimum L2 norm for every vector.",
+    )
+    audio_response_format: AudioResponseFormat = Field(
+        default="wav",
+        description="For speech tests, encoded audio format requested from TTS.",
+    )
+    speech_voice: str | None = Field(
+        default=None,
+        description="Optional TTS voice name passed to `/v1/audio/speech`.",
+    )
+    speech_speed: float | None = Field(
+        default=None,
+        gt=0,
+        description="Optional TTS speed multiplier passed to `/v1/audio/speech`.",
+    )
+    input_audio_path: Path | None = Field(
+        default=None,
+        description=(
+            "For `kind: audio_transcription`, path to an audio fixture. Relative "
+            "paths resolve from the current harness working directory."
+        ),
+    )
+    input_audio_mime_type: str | None = Field(
+        default=None,
+        description=(
+            "Optional MIME type sent for `input_audio_path` multipart uploads. "
+            "When omitted, the harness infers it from the fixture extension."
+        ),
+    )
+    transcription_model_id: str | None = Field(
+        default=None,
+        description=(
+            "For `kind: speech_roundtrip`, optional explicit STT model. When "
+            "unset, the harness selects the first live catalog model advertising "
+            "STT support."
+        ),
+    )
+    transcription_response_format: TranscriptionResponseFormat = Field(
+        default="json",
+        description="Response format requested from `/v1/audio/transcriptions`.",
+    )
+    transcription_language: str | None = Field(
+        default=None,
+        description="Optional language hint for transcription requests.",
     )
     top_logprobs: int | None = Field(
         default=None,

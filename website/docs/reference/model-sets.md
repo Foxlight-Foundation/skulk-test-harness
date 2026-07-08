@@ -59,6 +59,8 @@ Each map key must match the model set's `name`.
 | `store-all` | Every model currently present in the store |
 | `catalog-small-text` | Small text-generation candidates |
 | `embeddings` | Sentence transformer embedding smoke target |
+| `speech-tts` | Text-to-speech targets resolved through Skulk's store |
+| `speech-stt` | Speech-to-text targets resolved through Skulk's store |
 | `vision` | Vision-capable models discovered from metadata |
 | `served-spec-draft-simple` | Models with `draft_simple` served speculation |
 | `served-spec-draft-eagle3` | Models with `draft_eagle3` served speculation |

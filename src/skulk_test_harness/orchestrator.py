@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import mimetypes
 import re
 import time
 from collections.abc import Mapping
 from pathlib import Path
+
+import httpx
 
 from skulk_test_harness.client import ChatExecution, SkulkApiError, SkulkClient
 from skulk_test_harness.fingerprint import gather_fingerprint
@@ -213,6 +216,9 @@ class HarnessRunner:
                         repetition=repetition,
                         artifact_dir=writer.run_dir(report.run_id) / "artifacts",
                         thinking_default=thinking_default,
+                        spec=spec,
+                        report=report,
+                        writer=writer,
                     )
                     report.results.append(result)
                     writer.write(report)
@@ -560,7 +566,7 @@ class HarnessRunner:
             return
         try:
             client.add_model_card(model_id)
-        except SkulkApiError as exc:
+        except (SkulkApiError, httpx.HTTPError) as exc:
             report.issues.append(
                 Issue(
                     severity="warning",
@@ -575,7 +581,7 @@ class HarnessRunner:
     ) -> None:
         try:
             client.request_store_download(model_id)
-        except SkulkApiError as exc:
+        except (SkulkApiError, httpx.HTTPError) as exc:
             report.issues.append(
                 Issue(
                     severity="warning",
@@ -589,7 +595,7 @@ class HarnessRunner:
         while time.monotonic() < deadline:
             try:
                 status = client.get_store_download_status(model_id) or {}
-            except SkulkApiError:
+            except (SkulkApiError, httpx.HTTPError):
                 time.sleep(self.config.poll_interval_s)
                 continue
             status_text = str(status.get("status") or status.get("state") or "").lower()
@@ -623,6 +629,9 @@ class HarnessRunner:
         repetition: int,
         artifact_dir: Path,
         thinking_default: bool | None = None,
+        spec: RunSpec | None = None,
+        report: RunReport | None = None,
+        writer: ReportWriter | None = None,
     ) -> TestResult:
         if test.kind == "cancel":
             return self._run_cancel_test(
@@ -643,6 +652,24 @@ class HarnessRunner:
         if test.kind == "embedding":
             return self._run_embedding_test(
                 client, model_id=model_id, test=test, repetition=repetition
+            )
+        if test.kind == "audio_speech":
+            return self._run_audio_speech_test(
+                client, model_id=model_id, test=test, repetition=repetition
+            )
+        if test.kind == "audio_transcription":
+            return self._run_audio_transcription_test(
+                client, model_id=model_id, test=test, repetition=repetition
+            )
+        if test.kind == "speech_roundtrip":
+            return self._run_speech_roundtrip_test(
+                client,
+                model_id=model_id,
+                test=test,
+                repetition=repetition,
+                spec=spec,
+                report=report,
+                writer=writer,
             )
 
         messages = _messages_for_test(test)
@@ -1089,6 +1116,277 @@ class HarnessRunner:
             issues=issues,
         )
 
+    def _run_audio_speech_test(
+        self,
+        client: SkulkClient,
+        *,
+        model_id: str,
+        test: PromptTest,
+        repetition: int,
+    ) -> TestResult:
+        """Run a TTS request and assert Skulk returns plausible audio bytes."""
+
+        issues: list[Issue] = []
+        output = ""
+        elapsed = 0.0
+        try:
+            execution = client.audio_speech(
+                model_id=model_id,
+                input_text=_expanded_prompt(test),
+                response_format=test.audio_response_format,
+                voice=test.speech_voice,
+                speed=test.speech_speed,
+            )
+        except (SkulkApiError, httpx.HTTPError, TypeError, ValueError) as exc:
+            issues.append(
+                Issue(
+                    severity="error",
+                    model_id=model_id,
+                    test_name=test.name,
+                    message="Speech synthesis request failed",
+                    evidence={"error": str(exc)},
+                )
+            )
+        else:
+            elapsed = execution.elapsed_s
+            issues.extend(
+                _score_audio_output(
+                    model_id,
+                    test.name,
+                    execution.audio,
+                    test.success,
+                    response_format=test.audio_response_format,
+                    media_type=execution.media_type,
+                )
+            )
+            output = (
+                f"audio_bytes={len(execution.audio)} "
+                f"media_type={execution.media_type} "
+                f"format={execution.response_format}"
+            )
+        return TestResult(
+            model_id=model_id,
+            test_name=test.name,
+            repetition=repetition,
+            passed=not any(issue.severity == "error" for issue in issues),
+            output_text=output,
+            metrics=GenerationMetrics(
+                elapsed_s=elapsed,
+                output_chars=len(output),
+                generated_chars=len(output),
+            ),
+            issues=issues,
+        )
+
+    def _run_audio_transcription_test(
+        self,
+        client: SkulkClient,
+        *,
+        model_id: str,
+        test: PromptTest,
+        repetition: int,
+    ) -> TestResult:
+        """Run an STT request against a configured local audio fixture."""
+
+        issues: list[Issue] = []
+        output = ""
+        elapsed = 0.0
+        if test.input_audio_path is None:
+            issues.append(
+                Issue(
+                    severity="error",
+                    model_id=model_id,
+                    test_name=test.name,
+                    message="audio_transcription test requires input_audio_path",
+                )
+            )
+        else:
+            audio_path = _resolve_audio_input_path(test.input_audio_path)
+            try:
+                audio = audio_path.read_bytes()
+                execution = client.audio_transcription(
+                    model_id=model_id,
+                    audio=audio,
+                    filename=audio_path.name,
+                    media_type=(
+                        test.input_audio_mime_type
+                        or _guess_audio_media_type(audio_path)
+                    ),
+                    response_format=test.transcription_response_format,
+                    language=test.transcription_language,
+                    prompt=test.prompt,
+                )
+            except (OSError, SkulkApiError, TypeError, ValueError) as exc:
+                issues.append(
+                    Issue(
+                        severity="error",
+                        model_id=model_id,
+                        test_name=test.name,
+                        message="Audio transcription request failed",
+                        evidence={"error": str(exc)},
+                    )
+                )
+            else:
+                elapsed = execution.elapsed_s
+                output = execution.text
+                issues.extend(
+                    _score_output(
+                        model_id,
+                        test.name,
+                        execution.text,
+                        test.success,
+                    )
+                )
+        return TestResult(
+            model_id=model_id,
+            test_name=test.name,
+            repetition=repetition,
+            passed=not any(issue.severity == "error" for issue in issues),
+            output_text=output,
+            metrics=GenerationMetrics(
+                elapsed_s=elapsed,
+                output_chars=len(output),
+                generated_chars=len(output),
+            ),
+            issues=issues,
+        )
+
+    def _run_speech_roundtrip_test(
+        self,
+        client: SkulkClient,
+        *,
+        model_id: str,
+        test: PromptTest,
+        repetition: int,
+        spec: RunSpec | None,
+        report: RunReport | None,
+        writer: ReportWriter | None,
+    ) -> TestResult:
+        """Generate speech with a TTS model, then transcribe it with an STT model."""
+
+        issues: list[Issue] = []
+        output = ""
+        elapsed = 0.0
+        if spec is None or report is None:
+            issues.append(
+                Issue(
+                    severity="error",
+                    model_id=model_id,
+                    test_name=test.name,
+                    message="speech_roundtrip requires an execution RunSpec/report",
+                )
+            )
+            return _speech_result(
+                model_id, test.name, repetition, output, elapsed, issues
+            )
+
+        transcription_model_id: str | None = None
+        stt_placement: PlacementResult | None = None
+        try:
+            transcription_model_id = test.transcription_model_id or _first_stt_model_id(
+                client.list_models(), exclude_model_id=model_id
+            )
+            if transcription_model_id is None:
+                issues.append(
+                    Issue(
+                        severity="error",
+                        model_id=model_id,
+                        test_name=test.name,
+                        message="No STT model found for speech roundtrip",
+                    )
+                )
+                return _speech_result(
+                    model_id, test.name, repetition, output, elapsed, issues
+                )
+            stt_placement = self._ensure_model_placed(
+                client, transcription_model_id, spec, report
+            )
+            if stt_placement is None or not stt_placement.ready:
+                issues.append(
+                    Issue(
+                        severity="error",
+                        model_id=model_id,
+                        test_name=test.name,
+                        message="STT model could not be made ready for speech roundtrip",
+                        evidence={"transcription_model_id": transcription_model_id},
+                    )
+                )
+                return _speech_result(
+                    model_id, test.name, repetition, output, elapsed, issues
+                )
+            _append_unique_placement(report, stt_placement)
+
+            speech = client.audio_speech(
+                model_id=model_id,
+                input_text=_expanded_prompt(test),
+                response_format=test.audio_response_format,
+                voice=test.speech_voice,
+                speed=test.speech_speed,
+            )
+            elapsed = speech.elapsed_s
+            issues.extend(
+                _score_audio_output(
+                    model_id,
+                    test.name,
+                    speech.audio,
+                    test.success,
+                    response_format=test.audio_response_format,
+                    media_type=speech.media_type,
+                )
+            )
+            transcript = client.audio_transcription(
+                model_id=transcription_model_id,
+                audio=speech.audio,
+                filename=f"{slugify(test.name)}.{test.audio_response_format}",
+                media_type=speech.media_type
+                or _audio_media_type_for_format(test.audio_response_format),
+                response_format=test.transcription_response_format,
+                language=test.transcription_language,
+                prompt=None,
+            )
+            elapsed += transcript.elapsed_s
+            output = transcript.text
+            issues.extend(
+                _score_output(
+                    model_id,
+                    test.name,
+                    transcript.text,
+                    test.success,
+                )
+            )
+        except (SkulkApiError, httpx.HTTPError, TypeError, ValueError) as exc:
+            issues.append(
+                Issue(
+                    severity="error",
+                    model_id=model_id,
+                    test_name=test.name,
+                    message="Speech roundtrip request failed",
+                    evidence={
+                        "error": str(exc),
+                        "transcription_model_id": transcription_model_id,
+                    },
+                )
+            )
+        finally:
+            if (
+                stt_placement is not None
+                and transcription_model_id is not None
+                and stt_placement.created_by_harness
+                and transcription_model_id != model_id
+                and not spec.retain_instances
+            ):
+                torn_down = self._teardown_harness_instances(
+                    client,
+                    transcription_model_id,
+                    stt_placement.instance_id,
+                    report,
+                )
+                if spec.delete_staged_models and torn_down:
+                    self._evict_staged_model(client, transcription_model_id, report)
+                if writer is not None:
+                    writer.write(report)
+        return _speech_result(model_id, test.name, repetition, output, elapsed, issues)
+
     def _model_set(self, name: str) -> ModelSet:
         try:
             return self.model_sets[name]
@@ -1127,8 +1425,8 @@ def _select_catalog_models(
             continue
         if selector.tasks_any and not _has_any(model.get("tasks"), selector.tasks_any):
             continue
-        if selector.capabilities_any and not _has_any(
-            model.get("capabilities"), selector.capabilities_any
+        if selector.capabilities_any and not _has_any_capability(
+            model, selector.capabilities_any
         ):
             continue
         if selector.served_spec_types_any and _served_spec_type(model) not in {
@@ -1175,6 +1473,152 @@ def _messages_for_test(test: PromptTest) -> list[dict[str, object]]:
         content.append({"type": "image_url", "image_url": image_url})
     messages.append({"role": "user", "content": content})
     return messages
+
+
+def _resolve_audio_input_path(path: Path) -> Path:
+    """Resolve an audio fixture path from the harness working directory."""
+
+    return path if path.is_absolute() else Path.cwd() / path
+
+
+def _guess_audio_media_type(path: Path) -> str:
+    """Best-effort MIME type for a local audio fixture."""
+
+    guessed, _encoding = mimetypes.guess_type(path)
+    return guessed or "audio/wav"
+
+
+def _audio_media_type_for_format(response_format: str) -> str:
+    """Return the OpenAI audio media type for an encoded response format."""
+
+    if response_format == "mp3":
+        return "audio/mpeg"
+    if response_format == "wav":
+        return "audio/wav"
+    if response_format == "flac":
+        return "audio/flac"
+    if response_format == "ogg":
+        return "audio/ogg"
+    if response_format == "opus":
+        return "audio/opus"
+    return "application/octet-stream"
+
+
+def _score_audio_output(
+    model_id: str,
+    test_name: str,
+    audio: bytes,
+    criteria: SuccessCriteria,
+    *,
+    response_format: str,
+    media_type: str,
+) -> list[Issue]:
+    """Score a binary TTS response without trying to inspect waveform semantics."""
+
+    issues: list[Issue] = []
+    if len(audio) < criteria.min_audio_bytes:
+        issues.append(
+            Issue(
+                severity="error",
+                model_id=model_id,
+                test_name=test_name,
+                message=(
+                    "Audio response shorter than required minimum "
+                    f"({len(audio)} < {criteria.min_audio_bytes} bytes)"
+                ),
+                evidence={"audio_bytes": len(audio)},
+            )
+        )
+    if media_type and not media_type.startswith("audio/"):
+        issues.append(
+            Issue(
+                severity="error",
+                model_id=model_id,
+                test_name=test_name,
+                message=f"Audio response had non-audio media type {media_type!r}",
+            )
+        )
+    if response_format == "wav" and audio and not (
+        audio.startswith(b"RIFF") and b"WAVE" in audio[:16]
+    ):
+        issues.append(
+            Issue(
+                severity="error",
+                model_id=model_id,
+                test_name=test_name,
+                message="WAV response did not contain a RIFF/WAVE header",
+            )
+        )
+    return issues
+
+
+def _speech_result(
+    model_id: str,
+    test_name: str,
+    repetition: int,
+    output: str,
+    elapsed: float,
+    issues: list[Issue],
+) -> TestResult:
+    """Build a standard result for speech endpoint tests."""
+
+    return TestResult(
+        model_id=model_id,
+        test_name=test_name,
+        repetition=repetition,
+        passed=not any(issue.severity == "error" for issue in issues),
+        output_text=output,
+        metrics=GenerationMetrics(
+            elapsed_s=elapsed,
+            output_chars=len(output),
+            generated_chars=len(output),
+        ),
+        issues=issues,
+    )
+
+
+def _append_unique_placement(report: RunReport, placement: PlacementResult) -> None:
+    """Record a secondary placement once, avoiding duplicate report rows."""
+
+    if not any(
+        existing.model_id == placement.model_id
+        and existing.instance_id == placement.instance_id
+        for existing in report.placements
+    ):
+        report.placements.append(placement)
+
+
+def _first_stt_model_id(
+    catalog: list[dict[str, object]], *, exclude_model_id: str
+) -> str | None:
+    """Pick the first catalog model advertising speech-to-text support."""
+
+    for model in catalog:
+        model_id = _model_id_from_catalog_entry(model)
+        if not model_id or model_id == exclude_model_id:
+            continue
+        if _catalog_entry_supports_stt(model):
+            return model_id
+    return None
+
+
+def _catalog_entry_supports_stt(model: dict[str, object]) -> bool:
+    """Return whether a `/models` entry looks usable as an STT model."""
+
+    resolved = model.get("resolved_capabilities")
+    if isinstance(resolved, dict) and (
+        bool(resolved.get("supports_transcription"))
+        or bool(resolved.get("supports_speech_translation"))
+    ):
+        return True
+    audio = model.get("audio")
+    if isinstance(audio, dict) and str(audio.get("kind") or "").lower() == "stt":
+        return True
+    return (
+        _has_any(model.get("tags"), ["stt"])
+        or _has_any_capability(model, ["stt"])
+        or _has_any(model.get("tasks"), ["SpeechToText", "SpeechTranslation"])
+    )
 
 
 def _model_id_from_catalog_entry(model: dict[str, object]) -> str:
@@ -1228,6 +1672,69 @@ def _has_any(raw: object, needles: list[str]) -> bool:
         return False
     haystack = {str(item).lower() for item in raw}
     return any(needle.lower() in haystack for needle in needles)
+
+
+def _has_any_capability(model: dict[str, object], needles: list[str]) -> bool:
+    """Match capability selectors across legacy lists and resolved API flags."""
+
+    capabilities = _normalized_string_set(model.get("capabilities"))
+    wanted = {_normalized_capability(needle) for needle in needles}
+    if capabilities & wanted:
+        return True
+    if capabilities & _TTS_CAPABILITY_ALIASES and wanted & _TTS_CAPABILITY_ALIASES:
+        return True
+    if capabilities & _STT_CAPABILITY_ALIASES and wanted & _STT_CAPABILITY_ALIASES:
+        return True
+    audio_kind = _audio_kind(model)
+    if audio_kind in _TTS_CAPABILITY_ALIASES and wanted & _TTS_CAPABILITY_ALIASES:
+        return True
+    if audio_kind in _STT_CAPABILITY_ALIASES and wanted & _STT_CAPABILITY_ALIASES:
+        return True
+    resolved = model.get("resolved_capabilities")
+    if not isinstance(resolved, dict):
+        return False
+    if wanted & _TTS_CAPABILITY_ALIASES and (
+        bool(resolved.get("supports_speech_synthesis"))
+        or bool(resolved.get("supports_audio_output"))
+    ):
+        return True
+    if wanted & _STT_CAPABILITY_ALIASES and (
+        bool(resolved.get("supports_transcription"))
+        or bool(resolved.get("supports_speech_translation"))
+    ):
+        return True
+    return "vision" in wanted and bool(resolved.get("supports_image_input"))
+
+
+def _audio_kind(model: dict[str, object]) -> str:
+    audio = model.get("audio")
+    if not isinstance(audio, dict):
+        return ""
+    return _normalized_capability(str(audio.get("kind") or ""))
+
+
+def _normalized_capability(value: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", value.lower())
+
+
+def _normalized_string_set(raw: object) -> set[str]:
+    if not isinstance(raw, list):
+        return set()
+    return {_normalized_capability(str(item)) for item in raw}
+
+
+_TTS_CAPABILITY_ALIASES = frozenset(
+    {"tts", "texttospeech", "speechsynthesis", "speechoutput", "audiooutput"}
+)
+_STT_CAPABILITY_ALIASES = frozenset(
+    {
+        "stt",
+        "speechtotext",
+        "transcription",
+        "speechtranscription",
+        "speechtranslation",
+    }
+)
 
 
 def _preview_node_count(preview: dict[str, object]) -> int:
