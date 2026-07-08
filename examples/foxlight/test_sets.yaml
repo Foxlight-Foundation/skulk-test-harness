@@ -569,6 +569,41 @@ test_sets:
         success:
           min_chars: 0
 
+  speech-synthesis:
+    name: speech-synthesis
+    description: >
+      Text-to-speech endpoint coverage. Calls /v1/audio/speech through a mounted
+      speech model and asserts Skulk returns plausible encoded audio.
+    tests:
+      - name: tts-wav-audio-bytes
+        kind: audio_speech
+        prompt: Hello world from the Skulk speech battery.
+        audio_response_format: wav
+        temperature: 0
+        success:
+          min_chars: 0
+          min_audio_bytes: 1024
+
+  speech-roundtrip:
+    name: speech-roundtrip
+    description: >
+      End-to-end speech coverage. Synthesizes audio through a mounted TTS model,
+      mounts the STT model through the normal store-backed placement path, then
+      transcribes the generated audio.
+    tests:
+      - name: tts-to-stt-hello-world
+        kind: speech_roundtrip
+        prompt: Hello world.
+        audio_response_format: wav
+        transcription_model_id: mlx-community/whisper-large-v3-asr-fp16
+        transcription_response_format: json
+        transcription_language: en
+        success:
+          min_chars: 5
+          min_audio_bytes: 1024
+          required_substrings:
+            - hello
+
   embeddings:
     name: embeddings
     description: >

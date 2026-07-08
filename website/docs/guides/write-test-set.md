@@ -179,6 +179,48 @@ test_sets:
           min_chars: 0
 ```
 
+## Speech Tests
+
+Speech synthesis tests call `/v1/audio/speech` and score the binary response:
+
+```yaml
+test_sets:
+  my-speech-tests:
+    name: my-speech-tests
+    description: One text-to-speech check.
+    tests:
+      - name: tts-wav-audio-bytes
+        kind: audio_speech
+        prompt: Hello world from Skulk.
+        audio_response_format: wav
+        success:
+          min_chars: 0
+          min_audio_bytes: 1024
+```
+
+Roundtrip tests use a mounted TTS model as the primary target, then place a
+speech-to-text model through the normal Skulk store-backed lifecycle and
+transcribe the generated audio:
+
+```yaml
+test_sets:
+  my-speech-roundtrip:
+    name: my-speech-roundtrip
+    description: TTS output transcribed by an STT model.
+    tests:
+      - name: tts-to-stt-hello-world
+        kind: speech_roundtrip
+        prompt: Hello world.
+        audio_response_format: wav
+        transcription_response_format: json
+        transcription_language: en
+        success:
+          min_chars: 5
+          min_audio_bytes: 1024
+          required_substrings:
+            - hello
+```
+
 ## Success Criteria
 
 | Field | Use it when you need to check... |
@@ -196,6 +238,7 @@ test_sets:
 | `require_logprobs` | per-token logprob availability |
 | `min_reasoning_chars` | separated reasoning output |
 | `min_wall_tps` | a throughput floor for benchmarks |
+| `min_audio_bytes` | encoded TTS audio size |
 
 ## Check Your Set
 

@@ -54,6 +54,8 @@ Built-in model sets include:
 - `store-all`
 - `catalog-small-text`
 - `embeddings`
+- `speech-tts`
+- `speech-stt`
 - `vision`
 - `served-spec-draft-simple`
 - `served-spec-draft-eagle3`
@@ -67,6 +69,8 @@ Built-in test sets include:
 - `cancellation`
 - `context-admission`
 - `embeddings`
+- `speech-synthesis`
+- `speech-roundtrip`
 - `vision`
 - `served-speculation`
 

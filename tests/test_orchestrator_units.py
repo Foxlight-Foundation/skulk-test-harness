@@ -1,6 +1,10 @@
 from pathlib import Path
 
+import httpx
+
 from skulk_test_harness.client import (
+    AudioSpeechExecution,
+    AudioTranscriptionExecution,
     ChatExecution,
     SkulkApiError,
     SkulkClient,
@@ -28,8 +32,10 @@ from skulk_test_harness.models import (
 from skulk_test_harness.orchestrator import (
     HarnessRunner,
     _clear_deferred_placement_issues,
+    _first_stt_model_id,
     _messages_for_test,
     _placement_from_preview,
+    _score_audio_output,
     _score_output,
     _select_catalog_models,
     _store_registry_entries,
@@ -386,6 +392,38 @@ def test_score_output_throughput_floor_catches_silent_mtp_fallback() -> None:
     assert no_rate == []
 
 
+def test_score_audio_output_accepts_wav_bytes() -> None:
+    audio = b"RIFF\x24\x00\x00\x00WAVEfmt " + (b"\x00" * 2048)
+
+    issues = _score_audio_output(
+        "tts-model",
+        "speech",
+        audio,
+        SuccessCriteria(min_audio_bytes=1024),
+        response_format="wav",
+        media_type="audio/wav",
+    )
+
+    assert issues == []
+
+
+def test_score_audio_output_flags_short_non_audio_response() -> None:
+    issues = _score_audio_output(
+        "tts-model",
+        "speech",
+        b"oops",
+        SuccessCriteria(min_audio_bytes=1024),
+        response_format="wav",
+        media_type="application/json",
+    )
+
+    assert [issue.message for issue in issues] == [
+        "Audio response shorter than required minimum (4 < 1024 bytes)",
+        "Audio response had non-audio media type 'application/json'",
+        "WAV response did not contain a RIFF/WAVE header",
+    ]
+
+
 def test_tool_roundtrip_messages_include_assistant_and_tool_results() -> None:
     issues = []
     messages = _tool_roundtrip_messages(
@@ -452,6 +490,44 @@ def test_served_spec_selector_matches_runtime_field() -> None:
     assert [item["id"] for item in selected] == ["org/eagle"]
 
 
+def test_capability_selector_matches_resolved_speech_flags() -> None:
+    selector = load_model_sets(
+        Path(__file__).parents[1] / "configs/model_sets.yaml"
+    ).model_sets["speech-tts"].selectors[0]
+    catalog = [
+        {
+            "id": "org/plain",
+            "resolved_capabilities": {"supports_transcription": True},
+        },
+        {
+            "id": "org/tts",
+            "resolved_capabilities": {"supports_speech_synthesis": True},
+        },
+    ]
+
+    selected = _select_catalog_models(catalog, selector)
+
+    assert [item["id"] for item in selected] == ["org/tts"]
+
+
+def test_first_stt_model_id_reads_speech_metadata() -> None:
+    catalog = [
+        {"id": "org/TTS", "tags": ["tts"]},
+        {
+            "id": "org/ResolvedSTT",
+            "resolved_capabilities": {"supports_transcription": True},
+        },
+        {"id": "org/TaggedSTT", "tags": ["stt"]},
+    ]
+
+    assert _first_stt_model_id(catalog, exclude_model_id="org/TTS") == (
+        "org/ResolvedSTT"
+    )
+    assert _first_stt_model_id(catalog, exclude_model_id="org/ResolvedSTT") == (
+        "org/TaggedSTT"
+    )
+
+
 def test_public_default_sets_are_cluster_neutral() -> None:
     root = Path(__file__).parents[1]
     model_sets = load_model_sets(root / "configs/model_sets.yaml").model_sets
@@ -462,6 +538,8 @@ def test_public_default_sets_are_cluster_neutral() -> None:
         "store-all",
         "catalog-small-text",
         "embeddings",
+        "speech-tts",
+        "speech-stt",
         "vision",
         "served-spec-draft-simple",
         "served-spec-draft-eagle3",
@@ -474,6 +552,8 @@ def test_public_default_sets_are_cluster_neutral() -> None:
         "cancellation",
         "context-admission",
         "embeddings",
+        "speech-synthesis",
+        "speech-roundtrip",
         "vision",
         "served-speculation",
     } <= set(test_sets)
@@ -647,6 +727,8 @@ class _FakeClient:
         self.deleted: list[str] = []
         self.evicted: list[str] = []
         self.thinking_seen: list[bool | None] = []
+        self.speech_requests: list[dict[str, object]] = []
+        self.transcription_requests: list[dict[str, object]] = []
 
     def find_placements_for_model(self, model_id: str) -> list[PlacementResult]:
         return [p for p in self._live if p.model_id == model_id]
@@ -664,6 +746,61 @@ class _FakeClient:
 
     def list_models(self) -> list[dict[str, object]]:
         return self._models
+
+    def audio_speech(
+        self,
+        *,
+        model_id: str,
+        input_text: str,
+        response_format: str = "wav",
+        voice: str | None = None,
+        speed: float | None = None,
+    ) -> AudioSpeechExecution:
+        self.speech_requests.append(
+            {
+                "model_id": model_id,
+                "input_text": input_text,
+                "response_format": response_format,
+                "voice": voice,
+                "speed": speed,
+            }
+        )
+        return AudioSpeechExecution(
+            audio=b"RIFF\x24\x00\x00\x00WAVEfmt " + (b"\x00" * 2048),
+            media_type="audio/wav",
+            elapsed_s=0.02,
+            response_format=response_format,
+        )
+
+    def audio_transcription(
+        self,
+        *,
+        model_id: str,
+        audio: bytes,
+        filename: str,
+        media_type: str,
+        response_format: str = "json",
+        language: str | None = None,
+        prompt: str | None = None,
+    ) -> AudioTranscriptionExecution:
+        self.transcription_requests.append(
+            {
+                "model_id": model_id,
+                "audio": audio,
+                "filename": filename,
+                "media_type": media_type,
+                "response_format": response_format,
+                "language": language,
+                "prompt": prompt,
+            }
+        )
+        return AudioTranscriptionExecution(
+            text="hello world",
+            media_type="application/json",
+            elapsed_s=0.03,
+            response_format=response_format,
+            raw_response={"text": "hello world"},
+        )
 
     def stream_chat(self, *, enable_thinking=None, **_kwargs) -> ChatExecution:
         self.thinking_seen.append(enable_thinking)
@@ -765,6 +902,55 @@ def test_run_test_explicit_thinking_overrides_default(tmp_path: Path) -> None:
     assert client.thinking_seen == [True]
 
 
+def test_run_test_dispatches_audio_speech(tmp_path: Path) -> None:
+    client = _FakeClient()
+    runner = _runner()
+    test = PromptTest(
+        name="tts",
+        kind="audio_speech",
+        prompt="hello",
+        success=SuccessCriteria(min_chars=0, min_audio_bytes=1024),
+    )
+
+    result = runner._run_test(
+        client,  # type: ignore[arg-type]
+        model_id="org/TTS",
+        test=test,
+        repetition=1,
+        artifact_dir=tmp_path,
+    )
+
+    assert result.passed is True
+    assert "audio_bytes=" in result.output_text
+    assert client.speech_requests[0]["model_id"] == "org/TTS"
+
+
+def test_run_test_dispatches_audio_transcription(tmp_path: Path) -> None:
+    audio_path = tmp_path / "sample.wav"
+    audio_path.write_bytes(b"RIFF\x24\x00\x00\x00WAVEfmt " + (b"\x00" * 32))
+    client = _FakeClient()
+    runner = _runner()
+    test = PromptTest(
+        name="stt",
+        kind="audio_transcription",
+        prompt="transcribe this",
+        input_audio_path=audio_path,
+        success=SuccessCriteria(min_chars=5, required_substrings=["hello"]),
+    )
+
+    result = runner._run_test(
+        client,  # type: ignore[arg-type]
+        model_id="org/STT",
+        test=test,
+        repetition=1,
+        artifact_dir=tmp_path,
+    )
+
+    assert result.passed is True
+    assert result.output_text == "hello world"
+    assert client.transcription_requests[0]["filename"] == "sample.wav"
+
+
 def test_ensure_model_placed_fast_fails_when_instance_never_appears() -> None:
     class _NoAppearanceClient(_FakeClient):
         def get_store_registry(self) -> None:
@@ -811,6 +997,27 @@ def test_ensure_model_placed_fast_fails_when_instance_never_appears() -> None:
     assert placement.created_by_harness is True
     assert placement.ready is False
     assert any("placement refusal" in issue.message for issue in report.issues)
+
+
+def test_ensure_store_download_reports_transport_timeout() -> None:
+    class _TimeoutDownloadClient(_FakeClient):
+        def request_store_download(self, model_id: str) -> None:
+            del model_id
+            raise httpx.ReadTimeout("timed out")
+
+    runner = _runner()
+    report = _report()
+
+    runner._ensure_store_download(
+        _TimeoutDownloadClient(),  # type: ignore[arg-type]
+        "m/Slow",
+        report,
+    )
+
+    assert [(issue.severity, issue.message) for issue in report.issues] == [
+        ("warning", "Failed to request model-store download")
+    ]
+    assert "timed out" in str(report.issues[0].evidence["error"])
 
 
 def test_clear_deferred_placement_issues_keeps_real_run_errors() -> None:

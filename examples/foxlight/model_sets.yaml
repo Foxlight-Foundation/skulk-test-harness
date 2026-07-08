@@ -84,6 +84,50 @@ model_sets:
     models:
       - sentence-transformers/all-MiniLM-L6-v2
 
+  speech-tts:
+    name: speech-tts
+    description: >-
+      Text-to-speech targets for Skulk's mlx_audio speech runner. Explicit HF
+      IDs keep the fleet battery reproducible; selectors also pick up
+      operator-added speech cards already present in the live catalog/store.
+    models:
+      - majentik/Kokoro-82M-MLX-4bit
+    selectors:
+      - source: both
+        capabilities_any:
+          - tts
+        max_models: 2
+      - source: both
+        tags_any:
+          - tts
+        max_models: 2
+      - source: both
+        tasks_any:
+          - TextToSpeech
+        max_models: 2
+
+  speech-stt:
+    name: speech-stt
+    description: >-
+      Speech-to-text targets for Skulk's mlx_audio speech runner. The roundtrip
+      suite uses this class of model as its secondary mounted transcription
+      target.
+    models:
+      - mlx-community/whisper-large-v3-asr-fp16
+    selectors:
+      - source: both
+        capabilities_any:
+          - stt
+        max_models: 2
+      - source: both
+        tags_any:
+          - stt
+        max_models: 2
+      - source: both
+        tasks_any:
+          - SpeechToText
+        max_models: 2
+
   vision:
     name: vision
     description: Vision-capable text-generation model for image input coverage.

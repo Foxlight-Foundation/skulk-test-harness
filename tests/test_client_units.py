@@ -52,6 +52,118 @@ def test_request_json_does_not_retry_post_read_timeout(
     assert calls == 1
 
 
+def test_audio_speech_posts_openai_payload_and_returns_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = SkulkClient("http://skulk.test")
+    seen: dict[str, object] = {}
+    wav = b"RIFF\x24\x00\x00\x00WAVEfmt " + (b"\x00" * 32)
+
+    def post(path: str, **kwargs: object) -> httpx.Response:
+        seen["path"] = path
+        seen["json"] = kwargs["json"]
+        return httpx.Response(
+            200,
+            content=wav,
+            headers={"content-type": "audio/wav; charset=binary"},
+        )
+
+    monkeypatch.setattr(client._client, "post", post)
+    try:
+        execution = client.audio_speech(
+            model_id="org/TTS",
+            input_text="hello",
+            response_format="wav",
+            voice="af_heart",
+            speed=1.1,
+        )
+    finally:
+        client.close()
+
+    assert seen == {
+        "path": "/v1/audio/speech",
+        "json": {
+            "model": "org/TTS",
+            "input": "hello",
+            "response_format": "wav",
+            "voice": "af_heart",
+            "speed": 1.1,
+        },
+    }
+    assert execution.audio == wav
+    assert execution.media_type == "audio/wav"
+    assert execution.response_format == "wav"
+
+
+def test_audio_transcription_posts_multipart_and_extracts_json_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = SkulkClient("http://skulk.test")
+    seen: dict[str, object] = {}
+
+    def post(path: str, **kwargs: object) -> httpx.Response:
+        seen["path"] = path
+        seen["data"] = kwargs["data"]
+        seen["files"] = kwargs["files"]
+        return httpx.Response(
+            200,
+            json={"text": "hello world"},
+            headers={"content-type": "application/json"},
+        )
+
+    monkeypatch.setattr(client._client, "post", post)
+    try:
+        execution = client.audio_transcription(
+            model_id="org/STT",
+            audio=b"RIFF....WAVE",
+            filename="sample.wav",
+            media_type="audio/wav",
+            response_format="json",
+            language="en",
+            prompt="hint",
+        )
+    finally:
+        client.close()
+
+    assert seen["path"] == "/v1/audio/transcriptions"
+    assert seen["data"] == {
+        "model": "org/STT",
+        "response_format": "json",
+        "language": "en",
+        "prompt": "hint",
+    }
+    assert seen["files"] == {"file": ("sample.wav", b"RIFF....WAVE", "audio/wav")}
+    assert execution.text == "hello world"
+    assert execution.media_type == "application/json"
+
+
+def test_audio_transcription_extracts_ndjson_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = SkulkClient("http://skulk.test")
+
+    def post(_path: str, **_kwargs: object) -> httpx.Response:
+        return httpx.Response(
+            200,
+            text='{"text":"hello"}\n{"text":"world"}\n',
+            headers={"content-type": "application/x-ndjson"},
+        )
+
+    monkeypatch.setattr(client._client, "post", post)
+    try:
+        execution = client.audio_transcription(
+            model_id="org/STT",
+            audio=b"audio",
+            filename="sample.wav",
+            media_type="audio/wav",
+            response_format="ndjson",
+        )
+    finally:
+        client.close()
+
+    assert execution.text == "hello world"
+
+
 def test_stream_chat_counts_reasoning_for_generated_throughput(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
