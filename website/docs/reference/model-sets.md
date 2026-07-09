@@ -41,6 +41,7 @@ Each map key must match the model set's `name`.
 | `tasks_any` | list of strings | Match any listed task |
 | `capabilities_any` | list of strings | Match any listed capability |
 | `served_spec_types_any` | list of strings | Match served speculation metadata |
+| `require_audio_streaming` | boolean | Require `audio.supports_streaming=true` or equivalent resolved streaming-audio metadata |
 | `max_models` | integer | Stop after this many matches |
 
 ## Hugging Face Seed Fields
@@ -60,6 +61,7 @@ Each map key must match the model set's `name`.
 | `catalog-small-text` | Small text-generation candidates |
 | `embeddings` | Sentence transformer embedding smoke target |
 | `speech-tts` | Text-to-speech targets resolved through Skulk's store |
+| `speech-tts-streaming` | Text-to-speech targets whose audio metadata declares streaming support |
 | `speech-roundtrip-tts` | Text-to-speech targets suitable for the TTS-to-STT roundtrip suite |
 | `speech-stt` | Speech-to-text targets resolved through Skulk's store |
 | `vision` | Vision-capable models discovered from metadata |

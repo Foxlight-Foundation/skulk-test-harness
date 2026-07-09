@@ -1,3 +1,5 @@
+import json
+import math
 from pathlib import Path
 
 import httpx
@@ -38,6 +40,7 @@ from skulk_test_harness.orchestrator import (
     _placement_from_preview,
     _score_audio_output,
     _score_output,
+    _score_streaming_audio_output,
     _select_catalog_models,
     _store_registry_entries,
     _tool_roundtrip_messages,
@@ -509,6 +512,30 @@ def test_capability_selector_matches_resolved_speech_flags() -> None:
     assert [item["id"] for item in selected] == ["org/tts"]
 
 
+def test_streaming_audio_selector_requires_streaming_card_metadata() -> None:
+    selector = ModelSelector(
+        source="both",
+        capabilities_any=["tts"],
+        require_audio_streaming=True,
+    )
+    catalog = [
+        {
+            "id": "org/batch-tts",
+            "capabilities": ["TextToSpeech"],
+            "audio": {"kind": "tts", "supports_streaming": False},
+        },
+        {
+            "id": "org/streaming-tts",
+            "capabilities": ["TextToSpeech"],
+            "audio": {"kind": "tts", "supports_streaming": True},
+        },
+    ]
+
+    selected = _select_catalog_models(catalog, selector)
+
+    assert [item["id"] for item in selected] == ["org/streaming-tts"]
+
+
 def test_capability_selector_matches_raw_speech_aliases() -> None:
     tts_selector = ModelSelector(source="both", capabilities_any=["tts"])
     stt_selector = ModelSelector(source="both", capabilities_any=["stt"])
@@ -557,6 +584,7 @@ def test_public_default_sets_are_cluster_neutral() -> None:
         "catalog-small-text",
         "embeddings",
         "speech-tts",
+        "speech-tts-streaming",
         "speech-roundtrip-tts",
         "speech-stt",
         "vision",
@@ -572,6 +600,7 @@ def test_public_default_sets_are_cluster_neutral() -> None:
         "context-admission",
         "embeddings",
         "speech-synthesis",
+        "speech-synthesis-streaming",
         "speech-roundtrip",
         "vision",
         "served-speculation",
@@ -782,6 +811,8 @@ class _FakeClient:
         response_format: str = "wav",
         voice: str | None = None,
         speed: float | None = None,
+        stream: bool = False,
+        streaming_interval: float | None = None,
     ) -> AudioSpeechExecution:
         self.speech_requests.append(
             {
@@ -790,13 +821,25 @@ class _FakeClient:
                 "response_format": response_format,
                 "voice": voice,
                 "speed": speed,
+                "stream": stream,
+                "streaming_interval": streaming_interval,
             }
         )
+        audio = (
+            b"ID3" + (b"\x00" * 2048)
+            if response_format == "mp3"
+            else b"RIFF\x24\x00\x00\x00WAVEfmt " + (b"\x00" * 2048)
+        )
         return AudioSpeechExecution(
-            audio=b"RIFF\x24\x00\x00\x00WAVEfmt " + (b"\x00" * 2048),
-            media_type="audio/wav",
-            elapsed_s=0.02,
+            audio=audio,
+            media_type="audio/mpeg" if response_format == "mp3" else "audio/wav",
+            elapsed_s=0.8 if stream else 0.02,
             response_format=response_format,
+            chunks=3 if stream else 1,
+            first_byte_s=0.01 if stream else None,
+            chunk_sizes=[3, 1024, 1024] if stream else [len(audio)],
+            chunk_arrival_s=[0.01, 0.35, 0.75] if stream else [],
+            streaming=stream,
         )
 
     def audio_transcription(
@@ -955,6 +998,83 @@ def test_run_test_dispatches_audio_speech(tmp_path: Path) -> None:
     assert result.artifact_path.read_bytes() == (
         b"RIFF\x24\x00\x00\x00WAVEfmt " + (b"\x00" * 2048)
     )
+
+
+def test_run_test_dispatches_streaming_audio_speech(tmp_path: Path) -> None:
+    client = _FakeClient()
+    runner = _runner()
+    test = PromptTest(
+        name="tts-stream",
+        kind="audio_speech_streaming",
+        prompt="hello",
+        audio_response_format="mp3",
+        speech_streaming_interval=0.25,
+        success=SuccessCriteria(
+            min_chars=0,
+            min_audio_bytes=1024,
+            min_stream_chunks=2,
+            min_stream_span_s=0.5,
+        ),
+    )
+
+    result = runner._run_test(
+        client,  # type: ignore[arg-type]
+        model_id="org/TTS",
+        test=test,
+        repetition=1,
+        artifact_dir=tmp_path,
+    )
+
+    assert result.passed is True
+    artifact_path = result.artifact_path
+    assert artifact_path == tmp_path / "org-tts--tts-stream--rep-1.mp3"
+    assert artifact_path is not None
+    assert artifact_path.read_bytes().startswith(b"ID3")
+    assert result.metrics.ttft_s == 0.01
+    assert result.metrics.chunks == 3
+    assert "streaming=True" in result.output_text
+    assert "chunks=3" in result.output_text
+    assert "stream_span_s=0.740" in result.output_text
+    assert client.speech_requests[0]["stream"] is True
+    assert client.speech_requests[0]["streaming_interval"] == 0.25
+
+    sidecar = artifact_path.with_suffix(".mp3.stream.json")
+    assert f"stream_metadata={sidecar}" in result.output_text
+    assert json.loads(sidecar.read_text()) == {
+        "chunks": 3,
+        "first_byte_s": 0.01,
+        "stream_span_s": 0.74,
+        "chunk_sizes": [3, 1024, 1024],
+        "chunk_arrival_s": [0.01, 0.35, 0.75],
+    }
+
+
+def test_score_streaming_audio_output_rejects_burst_chunks() -> None:
+    execution = AudioSpeechExecution(
+        audio=b"ID3" + (b"\x00" * 2048),
+        media_type="audio/mpeg",
+        elapsed_s=31.63,
+        response_format="mp3",
+        chunks=46,
+        first_byte_s=31.62,
+        chunk_sizes=[1024, 1024],
+        chunk_arrival_s=[31.62, 31.626],
+        streaming=True,
+    )
+
+    issues = _score_streaming_audio_output(
+        "org/TTS",
+        "tts-stream",
+        execution,
+        SuccessCriteria(min_stream_chunks=2, min_stream_span_s=0.5),
+    )
+
+    assert len(issues) == 1
+    assert issues[0].message == "Streaming response did not span the configured duration"
+    assert issues[0].evidence["min_stream_span_s"] == 0.5
+    stream_span_s = issues[0].evidence["stream_span_s"]
+    assert isinstance(stream_span_s, float)
+    assert math.isclose(stream_span_s, 0.006, abs_tol=0.001)
 
 
 def test_run_test_dispatches_audio_transcription(tmp_path: Path) -> None:

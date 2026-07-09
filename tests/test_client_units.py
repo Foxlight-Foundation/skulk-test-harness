@@ -95,6 +95,72 @@ def test_audio_speech_posts_openai_payload_and_returns_bytes(
     assert execution.response_format == "wav"
 
 
+def test_audio_speech_streams_bytes_and_records_chunk_timings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = SkulkClient("http://skulk.test")
+    seen: dict[str, object] = {}
+    times = iter([100.0, 100.2, 100.6, 101.0])
+    monkeypatch.setattr(
+        "skulk_test_harness.client.time.monotonic", lambda: next(times)
+    )
+
+    class _Stream:
+        status_code = 200
+        headers = {"content-type": "audio/mpeg"}
+
+        def __enter__(self) -> "_Stream":
+            return self
+
+        def __exit__(self, *_exc: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return b""
+
+        def iter_bytes(self):
+            yield b"abc"
+            yield b"def"
+
+    def stream(method: str, path: str, **kwargs: object) -> _Stream:
+        seen["method"] = method
+        seen["path"] = path
+        seen["json"] = kwargs["json"]
+        return _Stream()
+
+    monkeypatch.setattr(client._client, "stream", stream)
+    try:
+        execution = client.audio_speech(
+            model_id="org/TTS",
+            input_text="hello",
+            response_format="mp3",
+            stream=True,
+            streaming_interval=0.25,
+        )
+    finally:
+        client.close()
+
+    assert seen == {
+        "method": "POST",
+        "path": "/v1/audio/speech",
+        "json": {
+            "model": "org/TTS",
+            "input": "hello",
+            "response_format": "mp3",
+            "stream": True,
+            "streaming_interval": 0.25,
+        },
+    }
+    assert execution.audio == b"abcdef"
+    assert execution.media_type == "audio/mpeg"
+    assert execution.elapsed_s == pytest.approx(1.0)
+    assert execution.first_byte_s == pytest.approx(0.2)
+    assert execution.chunks == 2
+    assert execution.chunk_sizes == [3, 3]
+    assert execution.chunk_arrival_s == pytest.approx([0.2, 0.6])
+    assert execution.streaming is True
+
+
 def test_audio_speech_wraps_transport_failures(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

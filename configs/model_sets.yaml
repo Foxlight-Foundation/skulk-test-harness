@@ -45,6 +45,26 @@ model_sets:
           - TextToSpeech
         max_models: 2
 
+  speech-tts-streaming:
+    name: speech-tts-streaming
+    description: Text-to-speech targets that explicitly advertise streaming support.
+    selectors:
+      - source: both
+        capabilities_any:
+          - tts
+        require_audio_streaming: true
+        max_models: 2
+      - source: both
+        tags_any:
+          - tts
+        require_audio_streaming: true
+        max_models: 2
+      - source: both
+        tasks_any:
+          - TextToSpeech
+        require_audio_streaming: true
+        max_models: 2
+
   speech-roundtrip-tts:
     name: speech-roundtrip-tts
     description: Text-to-speech targets suitable for the TTS-to-STT roundtrip suite.

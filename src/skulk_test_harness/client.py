@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from urllib.parse import quote
 
 import httpx
@@ -67,6 +67,11 @@ class AudioSpeechExecution:
     media_type: str
     elapsed_s: float
     response_format: str
+    chunks: int = 0
+    first_byte_s: float | None = None
+    chunk_sizes: list[int] = field(default_factory=list)
+    chunk_arrival_s: list[float] = field(default_factory=list)
+    streaming: bool = False
 
 
 @dataclass(frozen=True)
@@ -682,20 +687,81 @@ class SkulkClient:
         response_format: str = "wav",
         voice: str | None = None,
         speed: float | None = None,
+        stream: bool = False,
+        streaming_interval: float | None = None,
     ) -> AudioSpeechExecution:
-        """Generate non-streaming speech audio with OpenAI's speech endpoint."""
+        """Generate speech audio with OpenAI's speech endpoint."""
 
         payload: dict[str, object] = {
             "model": model_id,
             "input": input_text,
             "response_format": response_format,
         }
+        if stream:
+            payload["stream"] = True
+        if streaming_interval is not None:
+            payload["streaming_interval"] = streaming_interval
         if voice is not None:
             payload["voice"] = voice
         if speed is not None:
             payload["speed"] = speed
 
         start = time.monotonic()
+        if stream:
+            first_byte_at: float | None = None
+            audio_parts: list[bytes] = []
+            chunk_sizes: list[int] = []
+            chunk_arrival_s: list[float] = []
+            try:
+                with self._client.stream(
+                    "POST",
+                    "/v1/audio/speech",
+                    json=payload,
+                    timeout=httpx.Timeout(
+                        timeout=None,
+                        connect=self.request_timeout_s,
+                        read=self.stream_read_timeout_s,
+                        write=self.request_timeout_s,
+                        pool=self.request_timeout_s,
+                    ),
+                ) as response:
+                    if response.status_code >= 400:
+                        body = response.read().decode("utf-8", errors="replace")
+                        raise SkulkApiError(
+                            "POST", "/v1/audio/speech", response.status_code, body
+                        )
+                    media_type = _base_media_type(
+                        response.headers.get("content-type", "")
+                    )
+                    for chunk in response.iter_bytes():
+                        if not chunk:
+                            continue
+                        arrived_at = time.monotonic() - start
+                        if first_byte_at is None:
+                            first_byte_at = arrived_at
+                        audio_parts.append(chunk)
+                        chunk_sizes.append(len(chunk))
+                        chunk_arrival_s.append(arrived_at)
+            except (httpx.TimeoutException, httpx.TransportError) as exc:
+                raise SkulkApiError(
+                    "POST",
+                    "/v1/audio/speech",
+                    0,
+                    f"{type(exc).__name__}: {exc}",
+                ) from exc
+            elapsed = time.monotonic() - start
+            return AudioSpeechExecution(
+                audio=b"".join(audio_parts),
+                media_type=media_type,
+                elapsed_s=elapsed,
+                response_format=response_format,
+                chunks=len(chunk_sizes),
+                first_byte_s=first_byte_at,
+                chunk_sizes=chunk_sizes,
+                chunk_arrival_s=chunk_arrival_s,
+                streaming=True,
+            )
+
         try:
             response = self._client.post(
                 "/v1/audio/speech",
@@ -719,6 +785,7 @@ class SkulkClient:
             media_type=_base_media_type(response.headers.get("content-type", "")),
             elapsed_s=elapsed,
             response_format=response_format,
+            chunks=1 if response.content else 0,
         )
 
     def audio_transcription(

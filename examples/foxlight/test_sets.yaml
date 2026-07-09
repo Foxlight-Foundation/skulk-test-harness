@@ -584,6 +584,27 @@ test_sets:
           min_chars: 0
           min_audio_bytes: 1024
 
+  speech-synthesis-streaming:
+    name: speech-synthesis-streaming
+    description: >
+      Experimental text-to-speech streaming coverage. Requires Skulk
+      experimental mode, experiments.tts_streaming=true, and a mounted TTS card
+      that explicitly declares audio.supports_streaming=true.
+    tests:
+      - name: tts-mp3-streaming-chunks
+        kind: audio_speech_streaming
+        prompt: >
+          Hello world from the Skulk streaming speech battery. This sentence is
+          intentionally long enough to encourage more than one speech segment.
+        audio_response_format: mp3
+        speech_streaming_interval: 0.25
+        temperature: 0
+        success:
+          min_chars: 0
+          min_audio_bytes: 1024
+          min_stream_chunks: 2
+          min_stream_span_s: 0.5
+
   speech-roundtrip:
     name: speech-roundtrip
     description: >

@@ -24,6 +24,7 @@ TestKind = Literal[
     "error",
     "embedding",
     "audio_speech",
+    "audio_speech_streaming",
     "audio_transcription",
     "speech_roundtrip",
 ]
@@ -152,6 +153,13 @@ class ModelSelector(HarnessBaseModel):
             "draft_mtp, draft_simple, or draft_eagle3."
         ),
     )
+    require_audio_streaming: bool = Field(
+        default=False,
+        description=(
+            "When true, select only catalog/store entries whose audio metadata "
+            "declares supports_streaming=true."
+        ),
+    )
     max_models: int | None = Field(default=None, ge=1)
 
 
@@ -272,6 +280,32 @@ class SuccessCriteria(HarnessBaseModel):
             "audio bytes. Use this instead of min_chars for binary audio output."
         ),
     )
+    min_stream_chunks: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "For streaming tests, require at least this many response chunks. "
+            "For TTS streaming this is measured from HTTP audio byte chunks."
+        ),
+    )
+    max_first_byte_s: float | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Optional maximum time to first streamed byte/token in seconds. "
+            "Leave unset for cold-load speech tests where model startup dominates."
+        ),
+    )
+    min_stream_span_s: float = Field(
+        default=0.0,
+        ge=0,
+        description=(
+            "For streaming tests, require at least this many seconds between the "
+            "first and last streamed response chunk. This distinguishes genuine "
+            "incremental delivery from a finished response that was merely split "
+            "into multiple HTTP chunks."
+        ),
+    )
 
 
 class ExpectedToolCall(HarnessBaseModel):
@@ -380,6 +414,14 @@ class PromptTest(HarnessBaseModel):
         default=None,
         gt=0,
         description="Optional TTS speed multiplier passed to `/v1/audio/speech`.",
+    )
+    speech_streaming_interval: float | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Optional streaming_interval hint passed to `/v1/audio/speech` for "
+            "`kind: audio_speech_streaming`."
+        ),
     )
     input_audio_path: Path | None = Field(
         default=None,
