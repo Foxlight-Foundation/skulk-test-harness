@@ -577,16 +577,14 @@ def test_public_default_sets_are_cluster_neutral() -> None:
         "served-speculation",
     } <= set(test_sets)
     assert "gpt-oss-20b" not in model_sets
-    assert model_sets["speech-tts"].models == [
-        "mlx-community/fish-audio-s2-pro-8bit",
-        "mlx-community/LongCat-AudioDiT-1B-4bit",
-    ]
-    assert model_sets["speech-roundtrip-tts"].models == [
-        "mlx-community/LongCat-AudioDiT-1B-4bit"
-    ]
-    assert model_sets["speech-stt"].models == [
-        "mlx-community/parakeet-tdt-0.6b-v3"
-    ]
+    assert model_sets["speech-tts"].models == []
+    assert model_sets["speech-roundtrip-tts"].models == []
+    assert model_sets["speech-stt"].models == []
+    assert model_sets["speech-tts"].selectors
+    assert model_sets["speech-roundtrip-tts"].selectors
+    assert model_sets["speech-stt"].selectors
+    roundtrip_test = test_sets["speech-roundtrip"].tests[0]
+    assert roundtrip_test.transcription_model_id is None
 
     tool_suite = test_sets["tool-tests"]
     node_test = next(
