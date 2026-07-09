@@ -692,6 +692,8 @@ class SkulkClient:
     ) -> AudioSpeechExecution:
         """Generate speech audio with OpenAI's speech endpoint."""
 
+        if streaming_interval is not None and not stream:
+            raise ValueError("streaming_interval requires stream=True")
         payload: dict[str, object] = {
             "model": model_id,
             "input": input_text,

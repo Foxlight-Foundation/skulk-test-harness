@@ -161,6 +161,20 @@ def test_audio_speech_streams_bytes_and_records_chunk_timings(
     assert execution.streaming is True
 
 
+def test_audio_speech_rejects_streaming_interval_without_stream() -> None:
+    client = SkulkClient("http://skulk.test")
+    try:
+        with pytest.raises(ValueError, match="streaming_interval requires stream=True"):
+            client.audio_speech(
+                model_id="org/TTS",
+                input_text="hello",
+                response_format="mp3",
+                streaming_interval=0.25,
+            )
+    finally:
+        client.close()
+
+
 def test_audio_speech_wraps_transport_failures(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
