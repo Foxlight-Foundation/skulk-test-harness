@@ -24,3 +24,6 @@ skulk-harness.*.yaml
 !skulk-harness.example.yaml
 !examples/foxlight/skulk-harness.yaml
 !examples/foxlight/skulk-harness.stability.example.yaml
+
+# machine-local results-ledger auto-publish switch
+.autopublish-results

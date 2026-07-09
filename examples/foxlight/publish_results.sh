@@ -3,10 +3,13 @@
 # trigger the ledger site rebuild, then prune the published local run dirs so
 # they do not pile up forever. Called at the end of each battery.
 #
-# OPT-IN: does nothing unless SKULK_PUBLISH_RESULTS is truthy. This keeps a
-# battery on a machine without the ledger checkout behaving exactly as before.
+# OPT-IN: does nothing unless enabled, so a battery on a machine without the
+# ledger checkout behaves exactly as before. Enabled by EITHER:
+#   - SKULK_PUBLISH_RESULTS truthy (1/true/yes/on) in the environment, OR
+#   - a marker file `.autopublish-results` at the harness repo root. This is the
+#     "this is my publishing machine" switch: create it once (it is gitignored,
+#     so it stays machine-local and never enables publishing on the kites/CI).
 #
-#   SKULK_PUBLISH_RESULTS=1   enable (required)
 #   SKULK_RESULTS_DATA_DIR    path to the skulk-results-data repo
 #                             (default: ../skulk-results-data next to the harness)
 #   SKULK_RESULTS_WEB_DIR     path to the skulk-results-ledger-web repo (has
@@ -22,13 +25,14 @@ set -u
 
 _truthy() { case "${1:-}" in 1 | true | yes | on) return 0 ;; *) return 1 ;; esac; }
 
-if ! _truthy "${SKULK_PUBLISH_RESULTS:-}"; then
-  echo "[publish] SKULK_PUBLISH_RESULTS not set; skipping results publish."
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HARNESS_ROOT="$(cd "$HERE/../.." && pwd)"
+
+if ! _truthy "${SKULK_PUBLISH_RESULTS:-}" && [ ! -f "$HARNESS_ROOT/.autopublish-results" ]; then
+  echo "[publish] not enabled (no SKULK_PUBLISH_RESULTS, no .autopublish-results marker); skipping."
   exit 0
 fi
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-HARNESS_ROOT="$(cd "$HERE/../.." && pwd)"
 DATA_DIR="${SKULK_RESULTS_DATA_DIR:-$(cd "$HARNESS_ROOT/.." && pwd)/skulk-results-data}"
 WEB_DIR="${SKULK_RESULTS_WEB_DIR:-$(cd "$HARNESS_ROOT/.." && pwd)/skulk-results-ledger-web}"
 DEPLOY_REPO="${SKULK_RESULTS_DEPLOY_REPO-Foxlight-Foundation/skulk-results-ledger-web}"
