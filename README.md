@@ -88,7 +88,8 @@ side effects. Configure `cluster_nodes` with SSH hosts and explicit
 ## Reports
 
 Runs write JSON, JSONL, Markdown summaries, and artifacts under `runs/` by
-default. That directory is ignored by git.
+default. Speech synthesis and speech roundtrip tests persist generated audio
+under the run's `artifacts/` directory. The `runs/` directory is ignored by git.
 
 ## Foxlight Profile
 
