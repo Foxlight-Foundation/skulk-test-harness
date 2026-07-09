@@ -17,6 +17,7 @@ from skulk_test_harness.models import (
     HarnessConfig,
     Issue,
     ModelRef,
+    ModelSelector,
     PlacementResult,
     PromptImage,
     PromptTest,
@@ -491,9 +492,7 @@ def test_served_spec_selector_matches_runtime_field() -> None:
 
 
 def test_capability_selector_matches_resolved_speech_flags() -> None:
-    selector = load_model_sets(
-        Path(__file__).parents[1] / "configs/model_sets.yaml"
-    ).model_sets["speech-tts"].selectors[0]
+    selector = ModelSelector(source="both", capabilities_any=["tts"])
     catalog = [
         {
             "id": "org/plain",
@@ -511,9 +510,8 @@ def test_capability_selector_matches_resolved_speech_flags() -> None:
 
 
 def test_capability_selector_matches_raw_speech_aliases() -> None:
-    model_sets = load_model_sets(Path(__file__).parents[1] / "configs/model_sets.yaml")
-    tts_selector = model_sets.model_sets["speech-tts"].selectors[0]
-    stt_selector = model_sets.model_sets["speech-stt"].selectors[0]
+    tts_selector = ModelSelector(source="both", capabilities_any=["tts"])
+    stt_selector = ModelSelector(source="both", capabilities_any=["stt"])
     catalog = [
         {"id": "org/text-to-speech", "capabilities": ["TextToSpeech"]},
         {"id": "org/speech-synthesis", "capabilities": ["speech_synthesis"]},
@@ -559,6 +557,7 @@ def test_public_default_sets_are_cluster_neutral() -> None:
         "catalog-small-text",
         "embeddings",
         "speech-tts",
+        "speech-roundtrip-tts",
         "speech-stt",
         "vision",
         "served-spec-draft-simple",
@@ -578,6 +577,16 @@ def test_public_default_sets_are_cluster_neutral() -> None:
         "served-speculation",
     } <= set(test_sets)
     assert "gpt-oss-20b" not in model_sets
+    assert model_sets["speech-tts"].models == [
+        "mlx-community/fish-audio-s2-pro-8bit",
+        "mlx-community/LongCat-AudioDiT-1B-4bit",
+    ]
+    assert model_sets["speech-roundtrip-tts"].models == [
+        "mlx-community/LongCat-AudioDiT-1B-4bit"
+    ]
+    assert model_sets["speech-stt"].models == [
+        "mlx-community/parakeet-tdt-0.6b-v3"
+    ]
 
     tool_suite = test_sets["tool-tests"]
     node_test = next(

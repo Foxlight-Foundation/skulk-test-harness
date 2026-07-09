@@ -88,23 +88,20 @@ model_sets:
     name: speech-tts
     description: >-
       Text-to-speech targets for Skulk's mlx_audio speech runner. Explicit HF
-      IDs keep the fleet battery reproducible; selectors also pick up
-      operator-added speech cards already present in the live catalog/store.
+      IDs keep the fleet battery reproducible and avoid optional-dependency
+      model families that are not part of the production fleet profile.
     models:
-      - majentik/Kokoro-82M-MLX-4bit
-    selectors:
-      - source: both
-        capabilities_any:
-          - tts
-        max_models: 2
-      - source: both
-        tags_any:
-          - tts
-        max_models: 2
-      - source: both
-        tasks_any:
-          - TextToSpeech
-        max_models: 2
+      - mlx-community/fish-audio-s2-pro-8bit
+      - mlx-community/LongCat-AudioDiT-1B-4bit
+
+  speech-roundtrip-tts:
+    name: speech-roundtrip-tts
+    description: >-
+      Text-to-speech target used by the production TTS-to-STT roundtrip. This is
+      intentionally narrower than speech-tts so semantic transcription checks
+      run on the TTS model that produces stable English output.
+    models:
+      - mlx-community/LongCat-AudioDiT-1B-4bit
 
   speech-stt:
     name: speech-stt
@@ -113,20 +110,7 @@ model_sets:
       suite uses this class of model as its secondary mounted transcription
       target.
     models:
-      - mlx-community/whisper-large-v3-asr-fp16
-    selectors:
-      - source: both
-        capabilities_any:
-          - stt
-        max_models: 2
-      - source: both
-        tags_any:
-          - stt
-        max_models: 2
-      - source: both
-        tasks_any:
-          - SpeechToText
-        max_models: 2
+      - mlx-community/parakeet-tdt-0.6b-v3
 
   vision:
     name: vision

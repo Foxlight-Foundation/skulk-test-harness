@@ -55,6 +55,7 @@ Built-in model sets include:
 - `catalog-small-text`
 - `embeddings`
 - `speech-tts`
+- `speech-roundtrip-tts`
 - `speech-stt`
 - `vision`
 - `served-spec-draft-simple`
