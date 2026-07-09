@@ -12,6 +12,7 @@ runs/<run-id>/
   report.json
   events.jsonl
   summary.md
+  artifacts/
 ```
 
 Stability suites write:
@@ -29,6 +30,7 @@ runs/<run-id>/
 | `summary.md` | Humans | Fast reading and pull request comments |
 | `report.json` | Automation | Full structured report |
 | `events.jsonl` | Scripts and logs | One event per line |
+| `artifacts/` | Humans and scripts | Generated files such as HTML/code outputs and speech audio |
 
 ## Summary Sections
 
@@ -38,6 +40,10 @@ runs/<run-id>/
 | Placements | Instances, nodes, reuse, and readiness |
 | Results | Pass or fail for each model, test, and repetition |
 | Issues | Run-level and result-level problems |
+
+Speech synthesis and speech roundtrip results include an artifact path when
+they generate audio. Open the recorded path to inspect or listen to the exact
+bytes the harness scored.
 
 ## Important Metrics
 
@@ -68,7 +74,8 @@ runs/<run-id>/
     "chunks": 2,
     "wall_tps": 18.0
   },
-  "issues": []
+  "issues": [],
+  "artifact_path": null
 }
 ```
 

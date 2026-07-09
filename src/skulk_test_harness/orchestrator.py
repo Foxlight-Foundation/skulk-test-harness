@@ -655,7 +655,11 @@ class HarnessRunner:
             )
         if test.kind == "audio_speech":
             return self._run_audio_speech_test(
-                client, model_id=model_id, test=test, repetition=repetition
+                client,
+                model_id=model_id,
+                test=test,
+                repetition=repetition,
+                artifact_dir=artifact_dir,
             )
         if test.kind == "audio_transcription":
             return self._run_audio_transcription_test(
@@ -667,6 +671,7 @@ class HarnessRunner:
                 model_id=model_id,
                 test=test,
                 repetition=repetition,
+                artifact_dir=artifact_dir,
                 spec=spec,
                 report=report,
                 writer=writer,
@@ -1123,12 +1128,14 @@ class HarnessRunner:
         model_id: str,
         test: PromptTest,
         repetition: int,
+        artifact_dir: Path,
     ) -> TestResult:
         """Run a TTS request and assert Skulk returns plausible audio bytes."""
 
         issues: list[Issue] = []
         output = ""
         elapsed = 0.0
+        artifact_path: Path | None = None
         try:
             execution = client.audio_speech(
                 model_id=model_id,
@@ -1159,10 +1166,19 @@ class HarnessRunner:
                     media_type=execution.media_type,
                 )
             )
+            artifact_path = _audio_artifact_path(
+                artifact_dir,
+                model_id,
+                test.name,
+                repetition,
+                execution.response_format,
+                execution.audio,
+            )
             output = (
                 f"audio_bytes={len(execution.audio)} "
                 f"media_type={execution.media_type} "
-                f"format={execution.response_format}"
+                f"format={execution.response_format} "
+                f"artifact={artifact_path}"
             )
         return TestResult(
             model_id=model_id,
@@ -1176,6 +1192,7 @@ class HarnessRunner:
                 generated_chars=len(output),
             ),
             issues=issues,
+            artifact_path=artifact_path,
         )
 
     def _run_audio_transcription_test(
@@ -1258,6 +1275,7 @@ class HarnessRunner:
         model_id: str,
         test: PromptTest,
         repetition: int,
+        artifact_dir: Path,
         spec: RunSpec | None,
         report: RunReport | None,
         writer: ReportWriter | None,
@@ -1267,6 +1285,7 @@ class HarnessRunner:
         issues: list[Issue] = []
         output = ""
         elapsed = 0.0
+        artifact_path: Path | None = None
         if spec is None or report is None:
             issues.append(
                 Issue(
@@ -1277,7 +1296,13 @@ class HarnessRunner:
                 )
             )
             return _speech_result(
-                model_id, test.name, repetition, output, elapsed, issues
+                model_id,
+                test.name,
+                repetition,
+                output,
+                elapsed,
+                issues,
+                artifact_path=artifact_path,
             )
 
         transcription_model_id: str | None = None
@@ -1296,7 +1321,13 @@ class HarnessRunner:
                     )
                 )
                 return _speech_result(
-                    model_id, test.name, repetition, output, elapsed, issues
+                    model_id,
+                    test.name,
+                    repetition,
+                    output,
+                    elapsed,
+                    issues,
+                    artifact_path=artifact_path,
                 )
             stt_placement = self._ensure_model_placed(
                 client, transcription_model_id, spec, report
@@ -1312,7 +1343,13 @@ class HarnessRunner:
                     )
                 )
                 return _speech_result(
-                    model_id, test.name, repetition, output, elapsed, issues
+                    model_id,
+                    test.name,
+                    repetition,
+                    output,
+                    elapsed,
+                    issues,
+                    artifact_path=artifact_path,
                 )
             _append_unique_placement(report, stt_placement)
 
@@ -1333,6 +1370,14 @@ class HarnessRunner:
                     response_format=test.audio_response_format,
                     media_type=speech.media_type,
                 )
+            )
+            artifact_path = _audio_artifact_path(
+                artifact_dir,
+                model_id,
+                test.name,
+                repetition,
+                speech.response_format,
+                speech.audio,
             )
             transcript = client.audio_transcription(
                 model_id=transcription_model_id,
@@ -1385,7 +1430,15 @@ class HarnessRunner:
                     self._evict_staged_model(client, transcription_model_id, report)
                 if writer is not None:
                     writer.write(report)
-        return _speech_result(model_id, test.name, repetition, output, elapsed, issues)
+        return _speech_result(
+            model_id,
+            test.name,
+            repetition,
+            output,
+            elapsed,
+            issues,
+            artifact_path=artifact_path,
+        )
 
     def _model_set(self, name: str) -> ModelSet:
         try:
@@ -1559,6 +1612,8 @@ def _speech_result(
     output: str,
     elapsed: float,
     issues: list[Issue],
+    *,
+    artifact_path: Path | None = None,
 ) -> TestResult:
     """Build a standard result for speech endpoint tests."""
 
@@ -1574,6 +1629,7 @@ def _speech_result(
             generated_chars=len(output),
         ),
         issues=issues,
+        artifact_path=artifact_path,
     )
 
 
@@ -2163,6 +2219,26 @@ def _artifact_path(
         f"{slugify(model_id)}--{slugify(test.name)}--rep-{repetition}.{extension}"
     )
     return maybe_write_artifact(artifact_dir, filename, code)
+
+
+def _audio_artifact_path(
+    artifact_dir: Path,
+    model_id: str,
+    test_name: str,
+    repetition: int,
+    response_format: str,
+    audio: bytes,
+) -> Path:
+    """Persist generated audio bytes and return the reportable artifact path."""
+
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    filename = (
+        f"{slugify(model_id)}--{slugify(test_name)}--rep-{repetition}."
+        f"{slugify(response_format)}"
+    )
+    path = artifact_dir / filename
+    path.write_bytes(audio)
+    return path
 
 
 def _empty_metrics() -> GenerationMetrics:

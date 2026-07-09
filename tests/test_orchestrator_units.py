@@ -943,6 +943,11 @@ def test_run_test_dispatches_audio_speech(tmp_path: Path) -> None:
     assert result.passed is True
     assert "audio_bytes=" in result.output_text
     assert client.speech_requests[0]["model_id"] == "org/TTS"
+    assert result.artifact_path is not None
+    assert result.artifact_path == tmp_path / "org-tts--tts--rep-1.wav"
+    assert result.artifact_path.read_bytes() == (
+        b"RIFF\x24\x00\x00\x00WAVEfmt " + (b"\x00" * 2048)
+    )
 
 
 def test_run_test_dispatches_audio_transcription(tmp_path: Path) -> None:
@@ -1061,6 +1066,50 @@ def test_speech_roundtrip_records_stt_discovery_transport_error(
     assert result.issues[0].message == "Speech roundtrip request failed"
     assert "models timed out" in str(result.issues[0].evidence["error"])
     assert result.issues[0].evidence["transcription_model_id"] is None
+
+
+def test_speech_roundtrip_persists_generated_audio_artifact(
+    tmp_path: Path,
+) -> None:
+    client = _FakeClient()
+    runner = _runner()
+    runner._ensure_model_placed = lambda *_args, **_kwargs: PlacementResult(  # type: ignore[method-assign]
+        model_id="org/STT",
+        instance_id="stt-instance",
+        ready=True,
+        created_by_harness=False,
+    )
+    test = PromptTest(
+        name="roundtrip",
+        kind="speech_roundtrip",
+        prompt="hello",
+        transcription_model_id="org/STT",
+        success=SuccessCriteria(
+            min_chars=5,
+            min_audio_bytes=1024,
+            required_substrings=["hello"],
+        ),
+    )
+    spec = RunSpec(model_set="m", test_set="t", mode="execute")
+    report = _report()
+
+    result = runner._run_test(
+        client,  # type: ignore[arg-type]
+        model_id="org/TTS",
+        test=test,
+        repetition=1,
+        artifact_dir=tmp_path,
+        spec=spec,
+        report=report,
+    )
+
+    assert result.passed is True
+    assert result.output_text == "hello world"
+    assert result.artifact_path is not None
+    assert result.artifact_path == tmp_path / "org-tts--roundtrip--rep-1.wav"
+    audio = result.artifact_path.read_bytes()
+    assert audio.startswith(b"RIFF")
+    assert client.transcription_requests[0]["audio"] == audio
 
 
 def test_ensure_model_placed_fast_fails_when_instance_never_appears() -> None:

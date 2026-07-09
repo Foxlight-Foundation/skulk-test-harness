@@ -36,9 +36,9 @@ Each map key must match the test set's `name`.
 | `cancel` | Streaming cancellation and follow-up health |
 | `error` | Expected API error behavior |
 | `embedding` | Embeddings endpoint behavior |
-| `audio_speech` | Text-to-speech endpoint behavior |
+| `audio_speech` | Text-to-speech endpoint behavior; generated audio is saved as an artifact |
 | `audio_transcription` | Speech-to-text endpoint behavior with an audio fixture |
-| `speech_roundtrip` | TTS output piped into a mounted STT model |
+| `speech_roundtrip` | TTS output saved as an artifact and piped into a mounted STT model |
 
 ## Prompt Test Fields
 

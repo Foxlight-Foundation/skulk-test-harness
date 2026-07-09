@@ -181,7 +181,8 @@ test_sets:
 
 ## Speech Tests
 
-Speech synthesis tests call `/v1/audio/speech` and score the binary response:
+Speech synthesis tests call `/v1/audio/speech`, score the binary response, and
+persist the generated audio under the run's `artifacts/` directory:
 
 ```yaml
 test_sets:
@@ -198,9 +199,9 @@ test_sets:
           min_audio_bytes: 1024
 ```
 
-Roundtrip tests use a mounted TTS model as the primary target, then place a
-speech-to-text model through the normal Skulk store-backed lifecycle and
-transcribe the generated audio:
+Roundtrip tests use a mounted TTS model as the primary target, persist that
+generated audio, then place a speech-to-text model through the normal Skulk
+store-backed lifecycle and transcribe the generated audio:
 
 ```yaml
 test_sets:
