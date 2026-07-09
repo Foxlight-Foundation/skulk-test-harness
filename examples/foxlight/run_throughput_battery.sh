@@ -30,3 +30,8 @@ cell moe
 cell multinode-large
 cell gguf-big
 say "THROUGHPUT BATTERY COMPLETE"
+
+# --- Publish results to the ledger + prune published local runs (opt-in via
+# SKULK_PUBLISH_RESULTS=1; no-op otherwise). Non-fatal, runs regardless of
+# pass/fail so failed cells still land in the ledger history. ---
+"$SCRIPT_DIR/publish_results.sh" || true

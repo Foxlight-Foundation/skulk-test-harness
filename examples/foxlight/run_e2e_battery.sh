@@ -78,4 +78,10 @@ cell gguf-llama-cpp   llama-cpp        "--exclude-nodes kite4"
 cell mtp-served-9b    mtp-correctness  "--exclude-nodes kite4 --delete-staged-models"
 
 say "BATTERY COMPLETE (rc=$battery_rc)"
+
+# --- Publish results to the ledger + prune published local runs (opt-in via
+# SKULK_PUBLISH_RESULTS=1; no-op otherwise). Non-fatal, runs regardless of
+# pass/fail so failed cells still land in the ledger history. ---
+"$SCRIPT_DIR/publish_results.sh" || true
+
 exit "$battery_rc"

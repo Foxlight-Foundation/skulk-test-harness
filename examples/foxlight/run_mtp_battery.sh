@@ -52,4 +52,10 @@ rc=0
 [ "$rc_correctness" -ne 0 ] && rc=$rc_correctness
 [ "$rc_throughput" -ne 0 ] && rc=$rc_throughput
 say "MTP BATTERY END (rc=$rc; correctness=$rc_correctness throughput=$rc_throughput)"
+
+# --- Publish results to the ledger + prune published local runs (opt-in via
+# SKULK_PUBLISH_RESULTS=1; no-op otherwise). Non-fatal, runs regardless of
+# pass/fail so failed cells still land in the ledger history. ---
+"$SCRIPT_DIR/publish_results.sh" || true
+
 exit "$rc"
