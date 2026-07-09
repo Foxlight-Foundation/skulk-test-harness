@@ -31,8 +31,6 @@ model_sets:
   speech-tts:
     name: speech-tts
     description: Common text-to-speech targets resolved through Skulk's store.
-    models:
-      - majentik/Kokoro-82M-MLX-4bit
     selectors:
       - source: both
         capabilities_any:
@@ -47,11 +45,26 @@ model_sets:
           - TextToSpeech
         max_models: 2
 
+  speech-roundtrip-tts:
+    name: speech-roundtrip-tts
+    description: Text-to-speech targets suitable for the TTS-to-STT roundtrip suite.
+    selectors:
+      - source: both
+        capabilities_any:
+          - tts
+        max_models: 1
+      - source: both
+        tags_any:
+          - tts
+        max_models: 1
+      - source: both
+        tasks_any:
+          - TextToSpeech
+        max_models: 1
+
   speech-stt:
     name: speech-stt
     description: Common speech-to-text targets resolved through Skulk's store.
-    models:
-      - mlx-community/whisper-large-v3-asr-fp16
     selectors:
       - source: both
         capabilities_any:

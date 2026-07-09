@@ -42,7 +42,7 @@ cell smoke            cancellation
 cell context-admission context-admission
 cell embeddings       embeddings
 cell speech-tts       speech-synthesis
-cell speech-tts       speech-roundtrip
+cell speech-roundtrip-tts speech-roundtrip
 cell vision           vision
 
 # --- AMD / llama.cpp leg (kite4): GGUF coherence + the big models Bug A unlocked ---

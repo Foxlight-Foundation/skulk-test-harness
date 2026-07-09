@@ -60,6 +60,7 @@ Each map key must match the model set's `name`.
 | `catalog-small-text` | Small text-generation candidates |
 | `embeddings` | Sentence transformer embedding smoke target |
 | `speech-tts` | Text-to-speech targets resolved through Skulk's store |
+| `speech-roundtrip-tts` | Text-to-speech targets suitable for the TTS-to-STT roundtrip suite |
 | `speech-stt` | Speech-to-text targets resolved through Skulk's store |
 | `vision` | Vision-capable models discovered from metadata |
 | `served-spec-draft-simple` | Models with `draft_simple` served speculation |
