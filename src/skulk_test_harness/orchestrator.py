@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import mimetypes
 import re
 import time
@@ -10,7 +11,12 @@ from pathlib import Path
 
 import httpx
 
-from skulk_test_harness.client import ChatExecution, SkulkApiError, SkulkClient
+from skulk_test_harness.client import (
+    AudioSpeechExecution,
+    ChatExecution,
+    SkulkApiError,
+    SkulkClient,
+)
 from skulk_test_harness.fingerprint import gather_fingerprint
 from skulk_test_harness.models import (
     ExpectedToolCall,
@@ -653,13 +659,14 @@ class HarnessRunner:
             return self._run_embedding_test(
                 client, model_id=model_id, test=test, repetition=repetition
             )
-        if test.kind == "audio_speech":
+        if test.kind in {"audio_speech", "audio_speech_streaming"}:
             return self._run_audio_speech_test(
                 client,
                 model_id=model_id,
                 test=test,
                 repetition=repetition,
                 artifact_dir=artifact_dir,
+                stream=test.kind == "audio_speech_streaming",
             )
         if test.kind == "audio_transcription":
             return self._run_audio_transcription_test(
@@ -1129,6 +1136,7 @@ class HarnessRunner:
         test: PromptTest,
         repetition: int,
         artifact_dir: Path,
+        stream: bool = False,
     ) -> TestResult:
         """Run a TTS request and assert Skulk returns plausible audio bytes."""
 
@@ -1136,6 +1144,7 @@ class HarnessRunner:
         output = ""
         elapsed = 0.0
         artifact_path: Path | None = None
+        execution: AudioSpeechExecution | None = None
         try:
             execution = client.audio_speech(
                 model_id=model_id,
@@ -1143,6 +1152,8 @@ class HarnessRunner:
                 response_format=test.audio_response_format,
                 voice=test.speech_voice,
                 speed=test.speech_speed,
+                stream=stream,
+                streaming_interval=test.speech_streaming_interval,
             )
         except (SkulkApiError, httpx.HTTPError, TypeError, ValueError) as exc:
             issues.append(
@@ -1166,6 +1177,15 @@ class HarnessRunner:
                     media_type=execution.media_type,
                 )
             )
+            if stream:
+                issues.extend(
+                    _score_streaming_audio_output(
+                        model_id,
+                        test.name,
+                        execution,
+                        test.success,
+                    )
+                )
             artifact_path = _audio_artifact_path(
                 artifact_dir,
                 model_id,
@@ -1174,12 +1194,29 @@ class HarnessRunner:
                 execution.response_format,
                 execution.audio,
             )
+            stream_metadata_path: Path | None = None
+            if stream:
+                stream_span_s = _stream_span_s(execution.chunk_arrival_s)
+                stream_metadata_path = _audio_stream_metadata_path(
+                    artifact_path,
+                    execution.chunks,
+                    execution.first_byte_s,
+                    stream_span_s,
+                    execution.chunk_sizes,
+                    execution.chunk_arrival_s,
+                )
             output = (
                 f"audio_bytes={len(execution.audio)} "
                 f"media_type={execution.media_type} "
                 f"format={execution.response_format} "
+                f"streaming={execution.streaming} "
+                f"chunks={execution.chunks} "
+                f"first_byte_s={_fmt_optional_float(execution.first_byte_s)} "
+                f"stream_span_s={_fmt_optional_float(_stream_span_s(execution.chunk_arrival_s))} "
                 f"artifact={artifact_path}"
             )
+            if stream_metadata_path is not None:
+                output = f"{output} stream_metadata={stream_metadata_path}"
         return TestResult(
             model_id=model_id,
             test_name=test.name,
@@ -1188,8 +1225,10 @@ class HarnessRunner:
             output_text=output,
             metrics=GenerationMetrics(
                 elapsed_s=elapsed,
+                ttft_s=execution.first_byte_s if execution is not None else None,
                 output_chars=len(output),
                 generated_chars=len(output),
+                chunks=execution.chunks if execution is not None else 0,
             ),
             issues=issues,
             artifact_path=artifact_path,
@@ -1486,6 +1525,10 @@ def _select_catalog_models(
             value.lower() for value in selector.served_spec_types_any
         }:
             continue
+        if selector.require_audio_streaming and not _catalog_entry_supports_streaming_audio(
+            model
+        ):
+            continue
         selected.append(model)
         if selector.max_models is not None and len(selected) >= selector.max_models:
             break
@@ -1605,6 +1648,75 @@ def _score_audio_output(
     return issues
 
 
+def _score_streaming_audio_output(
+    model_id: str,
+    test_name: str,
+    execution: AudioSpeechExecution,
+    criteria: SuccessCriteria,
+) -> list[Issue]:
+    """Score streaming transport evidence for a TTS response."""
+
+    issues: list[Issue] = []
+    if execution.chunks < criteria.min_stream_chunks:
+        issues.append(
+            Issue(
+                severity="error",
+                model_id=model_id,
+                test_name=test_name,
+                message=(
+                    "Streaming response yielded fewer chunks than required "
+                    f"({execution.chunks} < {criteria.min_stream_chunks})"
+                ),
+                evidence={"chunks": execution.chunks},
+            )
+        )
+    if (
+        criteria.max_first_byte_s is not None
+        and (
+            execution.first_byte_s is None
+            or execution.first_byte_s > criteria.max_first_byte_s
+        )
+    ):
+        issues.append(
+            Issue(
+                severity="error",
+                model_id=model_id,
+                test_name=test_name,
+                message="Streaming first byte exceeded the configured limit",
+                evidence={
+                    "first_byte_s": execution.first_byte_s,
+                    "max_first_byte_s": criteria.max_first_byte_s,
+                },
+            )
+        )
+    stream_span_s = _stream_span_s(execution.chunk_arrival_s)
+    if (
+        criteria.min_stream_span_s > 0
+        and (stream_span_s is None or stream_span_s < criteria.min_stream_span_s)
+    ):
+        issues.append(
+            Issue(
+                severity="error",
+                model_id=model_id,
+                test_name=test_name,
+                message="Streaming response did not span the configured duration",
+                evidence={
+                    "stream_span_s": stream_span_s,
+                    "min_stream_span_s": criteria.min_stream_span_s,
+                },
+            )
+        )
+    return issues
+
+
+def _stream_span_s(chunk_arrival_s: list[float]) -> float | None:
+    """Return elapsed seconds between first and last streamed chunks."""
+
+    if len(chunk_arrival_s) < 2:
+        return None
+    return max(0.0, chunk_arrival_s[-1] - chunk_arrival_s[0])
+
+
 def _speech_result(
     model_id: str,
     test_name: str,
@@ -1631,6 +1743,12 @@ def _speech_result(
         issues=issues,
         artifact_path=artifact_path,
     )
+
+
+def _fmt_optional_float(value: float | None) -> str:
+    """Format an optional float for compact result text."""
+
+    return "None" if value is None else f"{value:.3f}"
 
 
 def _append_unique_placement(report: RunReport, placement: PlacementResult) -> None:
@@ -1674,6 +1792,19 @@ def _catalog_entry_supports_stt(model: dict[str, object]) -> bool:
         _has_any(model.get("tags"), ["stt"])
         or _has_any_capability(model, ["stt"])
         or _has_any(model.get("tasks"), ["SpeechToText", "SpeechTranslation"])
+    )
+
+
+def _catalog_entry_supports_streaming_audio(model: dict[str, object]) -> bool:
+    """Return whether a `/models` entry declares streaming speech output."""
+
+    audio = model.get("audio")
+    if isinstance(audio, dict) and audio.get("supports_streaming") is True:
+        return True
+    resolved = model.get("resolved_capabilities")
+    return isinstance(resolved, dict) and bool(
+        resolved.get("supports_audio_output_streaming")
+        or resolved.get("supports_speech_synthesis_streaming")
     )
 
 
@@ -2238,6 +2369,32 @@ def _audio_artifact_path(
     )
     path = artifact_dir / filename
     path.write_bytes(audio)
+    return path
+
+
+def _audio_stream_metadata_path(
+    audio_path: Path,
+    chunks: int,
+    first_byte_s: float | None,
+    stream_span_s: float | None,
+    chunk_sizes: list[int],
+    chunk_arrival_s: list[float],
+) -> Path:
+    """Persist per-chunk streaming timing evidence next to an audio artifact."""
+
+    path = audio_path.with_suffix(f"{audio_path.suffix}.stream.json")
+    path.write_text(
+        json.dumps(
+            {
+                "chunks": chunks,
+                "first_byte_s": first_byte_s,
+                "stream_span_s": stream_span_s,
+                "chunk_sizes": chunk_sizes,
+                "chunk_arrival_s": chunk_arrival_s,
+            },
+            indent=2,
+        )
+    )
     return path
 
 

@@ -55,6 +55,7 @@ Built-in model sets include:
 - `catalog-small-text`
 - `embeddings`
 - `speech-tts`
+- `speech-tts-streaming`
 - `speech-roundtrip-tts`
 - `speech-stt`
 - `vision`
@@ -71,6 +72,7 @@ Built-in test sets include:
 - `context-admission`
 - `embeddings`
 - `speech-synthesis`
+- `speech-synthesis-streaming`
 - `speech-roundtrip`
 - `vision`
 - `served-speculation`
@@ -89,8 +91,11 @@ side effects. Configure `cluster_nodes` with SSH hosts and explicit
 ## Reports
 
 Runs write JSON, JSONL, Markdown summaries, and artifacts under `runs/` by
-default. Speech synthesis and speech roundtrip tests persist generated audio
-under the run's `artifacts/` directory. The `runs/` directory is ignored by git.
+default. Speech synthesis, streaming speech synthesis, and speech roundtrip
+tests persist generated audio under the run's `artifacts/` directory. Streaming
+speech tests also write a `.stream.json` timing sidecar next to the audio with
+chunk count, first-byte latency, stream span, and per-chunk timing. The `runs/`
+directory is ignored by git.
 
 ## Foxlight Profile
 

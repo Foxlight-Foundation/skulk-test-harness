@@ -37,6 +37,7 @@ Each map key must match the test set's `name`.
 | `error` | Expected API error behavior |
 | `embedding` | Embeddings endpoint behavior |
 | `audio_speech` | Text-to-speech endpoint behavior; generated audio is saved as an artifact |
+| `audio_speech_streaming` | Experimental text-to-speech streaming behavior; generated audio and timing sidecar are saved as artifacts |
 | `audio_transcription` | Speech-to-text endpoint behavior with an audio fixture |
 | `speech_roundtrip` | TTS output saved as an artifact and piped into a mounted STT model |
 
@@ -70,6 +71,7 @@ Each map key must match the test set's `name`.
 | `audio_response_format` | TTS audio response format, such as `wav` |
 | `speech_voice` | Optional voice name for TTS |
 | `speech_speed` | Optional speech speed multiplier for TTS |
+| `speech_streaming_interval` | Optional `streaming_interval` hint for `kind: audio_speech_streaming` |
 | `input_audio_path` | Local fixture path for `kind: audio_transcription` |
 | `input_audio_mime_type` | Optional MIME type for transcription fixture upload; inferred from the fixture extension when omitted |
 | `transcription_model_id` | Optional STT model used by `kind: speech_roundtrip` |
@@ -99,6 +101,9 @@ Each map key must match the test set's `name`.
 | `forbid_in_reasoning` | Apply forbidden strings to reasoning too |
 | `min_wall_tps` | Minimum wall-clock decode tokens per second |
 | `min_audio_bytes` | Minimum encoded audio bytes for speech synthesis |
+| `min_stream_chunks` | Minimum streamed response chunk count |
+| `max_first_byte_s` | Optional maximum time to first streamed byte/token |
+| `min_stream_span_s` | Minimum elapsed seconds between first and last streamed chunks |
 
 ## Public Built-In Sets
 
@@ -112,6 +117,7 @@ Each map key must match the test set's `name`.
 | `context-admission` | Oversized request guard |
 | `embeddings` | Embeddings endpoint coverage |
 | `speech-synthesis` | Text-to-speech endpoint coverage |
+| `speech-synthesis-streaming` | Experimental text-to-speech streaming coverage |
 | `speech-roundtrip` | TTS-to-STT endpoint coverage |
 | `vision` | Multimodal image input coverage |
 | `served-speculation` | Served speculation correctness and throughput |

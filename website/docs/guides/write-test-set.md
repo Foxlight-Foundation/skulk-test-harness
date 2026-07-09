@@ -199,6 +199,29 @@ test_sets:
           min_audio_bytes: 1024
 ```
 
+Streaming speech synthesis tests call `/v1/audio/speech` with `stream=true`,
+score the final audio bytes, and save a `.stream.json` timing sidecar next to
+the generated audio. Use `min_stream_span_s` when the suite should reject
+responses that are only split into chunks after synthesis has already finished:
+
+```yaml
+test_sets:
+  my-streaming-speech-tests:
+    name: my-streaming-speech-tests
+    description: One text-to-speech streaming check.
+    tests:
+      - name: tts-mp3-streaming-chunks
+        kind: audio_speech_streaming
+        prompt: Hello world from Skulk streaming speech.
+        audio_response_format: mp3
+        speech_streaming_interval: 0.25
+        success:
+          min_chars: 0
+          min_audio_bytes: 1024
+          min_stream_chunks: 2
+          min_stream_span_s: 0.5
+```
+
 Roundtrip tests use a mounted TTS model as the primary target, persist that
 generated audio, then place a speech-to-text model through the normal Skulk
 store-backed lifecycle and transcribe the generated audio:

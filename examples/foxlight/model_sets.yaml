@@ -94,6 +94,20 @@ model_sets:
       - mlx-community/fish-audio-s2-pro-8bit
       - mlx-community/LongCat-AudioDiT-1B-4bit
 
+  speech-tts-streaming:
+    name: speech-tts-streaming
+    description: >-
+      Text-to-speech targets whose Skulk model cards explicitly advertise
+      streaming support. This intentionally stays selector-only so the e2e
+      battery never forces a model whose card has not passed streaming
+      validation.
+    selectors:
+      - source: both
+        capabilities_any:
+          - tts
+        require_audio_streaming: true
+        max_models: 2
+
   speech-roundtrip-tts:
     name: speech-roundtrip-tts
     description: >-
