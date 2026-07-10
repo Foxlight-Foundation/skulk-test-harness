@@ -3,12 +3,16 @@
 # trigger the ledger site rebuild, then prune the published local run dirs so
 # they do not pile up forever. Called at the end of each battery.
 #
-# OPT-IN: does nothing unless enabled, so a battery on a machine without the
-# ledger checkout behaves exactly as before. Enabled by EITHER:
-#   - SKULK_PUBLISH_RESULTS truthy (1/true/yes/on) in the environment, OR
-#   - a marker file `.autopublish-results` at the harness repo root. This is the
-#     "this is my publishing machine" switch: create it once (it is gitignored,
-#     so it stays machine-local and never enables publishing on the kites/CI).
+# ON BY DEFAULT: publishing is the normal path, so the ledger stays fresh with
+# no per-machine setup. Turn it off INTENTIONALLY by EITHER:
+#   - SKULK_PUBLISH_RESULTS falsy (0/false/no/off) in the environment, OR
+#   - a marker file `.autopublish-results-off` at the harness repo root. This is
+#     the "hold publishing on this machine" switch (gitignored, machine-local),
+#     e.g. while dev churn on the fleet should stay out of the public ledger.
+# SKULK_PUBLISH_RESULTS truthy (1/true/yes/on) forces publishing on even when
+# the off-marker exists. Machines without the sibling skulk-results-data /
+# skulk-results-ledger-web checkouts (kites, CI) skip automatically below, so
+# default-on cannot publish from a machine that was never set up to publish.
 #
 #   SKULK_RESULTS_DATA_DIR    path to the skulk-results-data repo
 #                             (default: ../skulk-results-data next to the harness)
@@ -24,12 +28,17 @@
 set -u
 
 _truthy() { case "${1:-}" in 1 | true | yes | on) return 0 ;; *) return 1 ;; esac; }
+_falsy() { case "${1:-}" in 0 | false | no | off) return 0 ;; *) return 1 ;; esac; }
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HARNESS_ROOT="$(cd "$HERE/../.." && pwd)"
 
-if ! _truthy "${SKULK_PUBLISH_RESULTS:-}" && [ ! -f "$HARNESS_ROOT/.autopublish-results" ]; then
-  echo "[publish] not enabled (no SKULK_PUBLISH_RESULTS, no .autopublish-results marker); skipping."
+if _falsy "${SKULK_PUBLISH_RESULTS:-}"; then
+  echo "[publish] disabled via SKULK_PUBLISH_RESULTS=${SKULK_PUBLISH_RESULTS:-}; skipping."
+  exit 0
+fi
+if [ -f "$HARNESS_ROOT/.autopublish-results-off" ] && ! _truthy "${SKULK_PUBLISH_RESULTS:-}"; then
+  echo "[publish] disabled via .autopublish-results-off marker; skipping."
   exit 0
 fi
 

@@ -53,9 +53,11 @@ rc=0
 [ "$rc_throughput" -ne 0 ] && rc=$rc_throughput
 say "MTP BATTERY END (rc=$rc; correctness=$rc_correctness throughput=$rc_throughput)"
 
-# --- Publish results to the ledger + prune published local runs (opt-in via
-# SKULK_PUBLISH_RESULTS=1; no-op otherwise). Non-fatal, runs regardless of
-# pass/fail so failed cells still land in the ledger history. ---
-"$SCRIPT_DIR/publish_results.sh" || true
+# --- Publish results to the ledger + prune published local runs (ON by
+# default; hold with a .autopublish-results-off marker at the repo root or
+# SKULK_PUBLISH_RESULTS=0). Non-fatal, runs regardless of pass/fail so failed
+# cells still land in the ledger history. Output is tee'd into the battery log
+# so an unattended run leaves a visible publish/skip record. ---
+"$SCRIPT_DIR/publish_results.sh" 2>&1 | tee -a "$LOG" || true
 
 exit "$rc"

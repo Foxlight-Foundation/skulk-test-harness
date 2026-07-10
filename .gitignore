@@ -25,5 +25,9 @@ skulk-harness.*.yaml
 !examples/foxlight/skulk-harness.yaml
 !examples/foxlight/skulk-harness.stability.example.yaml
 
-# machine-local results-ledger auto-publish switch
+# machine-local results-ledger auto-publish switches (publishing is on by
+# default; .autopublish-results-off holds it on this machine; the old opt-in
+# .autopublish-results marker is obsolete but kept ignored so stale copies
+# do not show as untracked noise)
 .autopublish-results
+.autopublish-results-off
