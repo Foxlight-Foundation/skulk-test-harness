@@ -9,6 +9,7 @@ import re
 import statistics
 import time
 from collections.abc import Mapping
+from dataclasses import asdict
 from pathlib import Path
 
 import httpx
@@ -16,6 +17,8 @@ import httpx
 from skulk_test_harness.client import (
     AudioSpeechExecution,
     ChatExecution,
+    ClusterApiOwner,
+    DataPlaneDiagnosticsSnapshot,
     SkulkApiError,
     SkulkClient,
 )
@@ -677,6 +680,9 @@ class HarnessRunner:
                 test=test,
                 repetition=repetition,
                 artifact_dir=artifact_dir,
+                spec=spec,
+                report=report,
+                writer=writer,
             )
         if test.kind == "audio_transcription":
             return self._run_audio_transcription_test(
@@ -1262,47 +1268,144 @@ class HarnessRunner:
         test: PromptTest,
         repetition: int,
         artifact_dir: Path,
+        spec: RunSpec | None,
+        report: RunReport | None,
+        writer: ReportWriter | None,
     ) -> TestResult:
-        """Drive concurrent streaming TTS through one or more API owners."""
+        """Run pressure and always release a harness-created secondary model."""
+
+        secondary_placements: list[tuple[str, PlacementResult]] = []
+        try:
+            return self._run_audio_speech_pressure_test_inner(
+                client,
+                model_id=model_id,
+                test=test,
+                repetition=repetition,
+                artifact_dir=artifact_dir,
+                spec=spec,
+                report=report,
+                secondary_placements=secondary_placements,
+            )
+        finally:
+            if spec is not None and report is not None and not spec.retain_instances:
+                for secondary_model_id, placement in secondary_placements:
+                    if (
+                        secondary_model_id == model_id
+                        or not placement.created_by_harness
+                    ):
+                        continue
+                    torn_down = self._teardown_harness_instances(
+                        client,
+                        secondary_model_id,
+                        placement.instance_id,
+                        report,
+                    )
+                    if spec.delete_staged_models and torn_down:
+                        self._evict_staged_model(client, secondary_model_id, report)
+                if secondary_placements and writer is not None:
+                    writer.write(report)
+
+    def _run_audio_speech_pressure_test_inner(
+        self,
+        client: SkulkClient,
+        *,
+        model_id: str,
+        test: PromptTest,
+        repetition: int,
+        artifact_dir: Path,
+        spec: RunSpec | None,
+        report: RunReport | None,
+        secondary_placements: list[tuple[str, PlacementResult]],
+    ) -> TestResult:
+        """Drive concurrent TTS and optional chat through known API owners."""
 
         issues: list[Issue] = []
-        owner_urls = client.get_cluster_api_urls()
-        if len(owner_urls) < test.speech_owner_count:
-            issues.append(
-                Issue(
-                    severity="error",
-                    model_id=model_id,
-                    test_name=test.name,
-                    message="Not enough reachable API owners for speech pressure test",
-                    evidence={
-                        "required_owner_count": test.speech_owner_count,
-                        "reachable_owner_count": len(owner_urls),
-                    },
-                )
-            )
-            return TestResult(
+        owners, serving_node_id = self._select_speech_pressure_owners(
+            client, model_id, test, issues
+        )
+        if not owners:
+            return _speech_pressure_result(
                 model_id=model_id,
-                test_name=test.name,
+                test=test,
                 repetition=repetition,
-                passed=False,
-                output_text="speech pressure did not start",
-                metrics=GenerationMetrics(elapsed_s=0.0),
                 issues=issues,
+                elapsed_s=0.0,
             )
-        selected_owners = owner_urls[: test.speech_owner_count]
+
+        chat_model_id = test.speech_chat_model_id
+        chat_placement: PlacementResult | None = None
+        if test.speech_chat_concurrency > 0:
+            if spec is None or report is None or not chat_model_id:
+                issues.append(
+                    Issue(
+                        severity="error",
+                        model_id=model_id,
+                        test_name=test.name,
+                        message=(
+                            "Mixed speech pressure requires speech_chat_model_id "
+                            "and an execution RunSpec/report"
+                        ),
+                    )
+                )
+                return _speech_pressure_result(
+                    model_id=model_id,
+                    test=test,
+                    repetition=repetition,
+                    issues=issues,
+                    elapsed_s=0.0,
+                )
+            chat_placement = self._ensure_model_placed(
+                client, chat_model_id, spec, report
+            )
+            if chat_placement is not None:
+                secondary_placements.append((chat_model_id, chat_placement))
+            if chat_placement is None or not chat_placement.ready:
+                issues.append(
+                    Issue(
+                        severity="error",
+                        model_id=model_id,
+                        test_name=test.name,
+                        message="Chat model could not be made ready for mixed pressure",
+                        evidence={"chat_model_id": chat_model_id},
+                    )
+                )
+                return _speech_pressure_result(
+                    model_id=model_id,
+                    test=test,
+                    repetition=repetition,
+                    issues=issues,
+                    elapsed_s=0.0,
+                )
+            _append_unique_placement(report, chat_placement)
+
+        diagnostics_before: dict[str, DataPlaneDiagnosticsSnapshot] = {}
+        if test.speech_assert_data_plane_diagnostics:
+            try:
+                diagnostics_before = self._capture_data_plane_diagnostics(owners)
+            except (SkulkApiError, httpx.HTTPError, TypeError, ValueError) as exc:
+                issues.append(
+                    Issue(
+                        severity="error",
+                        model_id=model_id,
+                        test_name=test.name,
+                        message="Unable to capture pre-pressure DATA diagnostics",
+                        evidence={"error": str(exc)},
+                    )
+                )
+
         started_at = time.monotonic()
 
-        def run_worker(
+        def run_speech_worker(
             worker_index: int,
         ) -> list[tuple[int, AudioSpeechExecution | None, str | None]]:
-            owner_url = selected_owners[worker_index % len(selected_owners)]
+            owner = owners[worker_index % len(owners)]
             samples: list[tuple[int, AudioSpeechExecution | None, str | None]] = []
             read_delay_s = (
                 test.speech_slow_reader_delay_s
                 if worker_index < test.speech_slow_workers
                 else 0.0
             )
-            with self._client_for_url(owner_url) as owner_client:
+            with self._client_for_url(owner.base_url) as owner_client:
                 for request_index in range(test.speech_requests_per_worker):
                     try:
                         execution = owner_client.audio_speech(
@@ -1315,34 +1418,78 @@ class HarnessRunner:
                             streaming_interval=test.speech_streaming_interval,
                             read_delay_s=read_delay_s,
                         )
-                    except (SkulkApiError, httpx.HTTPError, TypeError, ValueError) as exc:
+                    except (
+                        SkulkApiError,
+                        httpx.HTTPError,
+                        TypeError,
+                        ValueError,
+                    ) as exc:
                         samples.append((request_index, None, str(exc)))
                     else:
                         samples.append((request_index, execution, None))
             return samples
 
-        worker_samples: list[
+        chat_thinking_default: bool | None = None
+        if chat_model_id:
+            try:
+                if client.resolved_thinking_toggle_by_model().get(chat_model_id):
+                    chat_thinking_default = False
+            except (SkulkApiError, httpx.HTTPError, TypeError, ValueError):
+                pass
+
+        def run_chat_worker(
+            worker_index: int,
+        ) -> tuple[ChatExecution | None, str | None]:
+            assert chat_model_id is not None
+            owner = owners[worker_index % len(owners)]
+            with self._client_for_url(owner.base_url) as owner_client:
+                try:
+                    execution = owner_client.stream_chat(
+                        model_id=chat_model_id,
+                        messages=[
+                            {
+                                "role": "user",
+                                "content": test.speech_chat_prompt or test.prompt,
+                            }
+                        ],
+                        max_tokens=test.max_tokens,
+                        temperature=test.temperature,
+                        top_p=test.top_p,
+                        enable_thinking=chat_thinking_default,
+                    )
+                except (SkulkApiError, httpx.HTTPError, TypeError, ValueError) as exc:
+                    return None, str(exc)
+            return execution, None
+
+        speech_samples: list[
             tuple[int, list[tuple[int, AudioSpeechExecution | None, str | None]]]
         ] = []
-        with concurrent.futures.ThreadPoolExecutor(
-            max_workers=test.speech_concurrency
-        ) as pool:
-            futures = {
-                pool.submit(run_worker, worker_index): worker_index
+        chat_samples: list[tuple[int, ChatExecution | None, str | None]] = []
+        max_workers = test.speech_concurrency + test.speech_chat_concurrency
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+            speech_futures = {
+                pool.submit(run_speech_worker, worker_index): worker_index
                 for worker_index in range(test.speech_concurrency)
             }
-            for future in concurrent.futures.as_completed(futures):
-                worker_samples.append((futures[future], future.result()))
+            chat_futures = {
+                pool.submit(run_chat_worker, worker_index): worker_index
+                for worker_index in range(test.speech_chat_concurrency)
+            }
+            for future in concurrent.futures.as_completed(speech_futures):
+                speech_samples.append((speech_futures[future], future.result()))
+            for future in concurrent.futures.as_completed(chat_futures):
+                execution, error = future.result()
+                chat_samples.append((chat_futures[future], execution, error))
 
         elapsed_s = time.monotonic() - started_at
         executions: list[AudioSpeechExecution] = []
+        chat_executions: list[ChatExecution] = []
         artifacts: list[Path] = []
         failures = 0
-        for worker_index, samples in sorted(worker_samples):
+        for worker_index, samples in sorted(speech_samples):
             for request_index, execution, error in samples:
                 sample_name = (
-                    f"{test.name}-worker-{worker_index + 1}-"
-                    f"request-{request_index + 1}"
+                    f"{test.name}-worker-{worker_index + 1}-request-{request_index + 1}"
                 )
                 if execution is None:
                     failures += 1
@@ -1377,9 +1524,7 @@ class HarnessRunner:
                         sample_name,
                         execution,
                         (
-                            test.success.model_copy(
-                                update={"min_stream_span_s": 0.0}
-                            )
+                            test.success.model_copy(update={"min_stream_span_s": 0.0})
                             if worker_index < test.speech_slow_workers
                             else test.success
                         ),
@@ -1403,18 +1548,85 @@ class HarnessRunner:
                     execution.chunk_arrival_s,
                 )
 
+        for worker_index, execution, error in sorted(chat_samples):
+            if execution is None:
+                failures += 1
+                issues.append(
+                    Issue(
+                        severity="error",
+                        model_id=chat_model_id,
+                        test_name=test.name,
+                        message="Concurrent chat request failed during speech pressure",
+                        evidence={
+                            "worker": worker_index + 1,
+                            "error": error or "unknown failure",
+                        },
+                    )
+                )
+                continue
+            chat_executions.append(execution)
+            issues.extend(
+                _score_output(
+                    chat_model_id or model_id,
+                    f"{test.name}-chat-worker-{worker_index + 1}",
+                    execution.text + execution.reasoning_text,
+                    test.success,
+                )
+            )
+
+        diagnostics_artifact: Path | None = None
+        if test.speech_assert_data_plane_diagnostics and diagnostics_before:
+            try:
+                diagnostics_after = self._wait_for_data_plane_idle(owners)
+                diagnostic_issues, diagnostic_records = _score_data_plane_diagnostics(
+                    model_id=model_id,
+                    test_name=test.name,
+                    owners=owners,
+                    serving_node_id=serving_node_id,
+                    before=diagnostics_before,
+                    after=diagnostics_after,
+                    successful_streams=len(executions) + len(chat_executions),
+                    require_local_remote=(test.speech_owner_topology == "local_remote"),
+                )
+                issues.extend(diagnostic_issues)
+                diagnostics_artifact = _data_plane_diagnostics_artifact_path(
+                    artifact_dir,
+                    model_id,
+                    test.name,
+                    repetition,
+                    diagnostic_records,
+                )
+            except (SkulkApiError, httpx.HTTPError, TypeError, ValueError) as exc:
+                issues.append(
+                    Issue(
+                        severity="error",
+                        model_id=model_id,
+                        test_name=test.name,
+                        message="Unable to validate post-pressure DATA diagnostics",
+                        evidence={"error": str(exc)},
+                    )
+                )
+
         first_bytes = [
-            execution.first_byte_s
-            for execution in executions
-            if execution.first_byte_s is not None
+            value
+            for value in (
+                [execution.first_byte_s for execution in executions]
+                + [execution.metrics.ttft_s for execution in chat_executions]
+            )
+            if value is not None
         ]
-        request_count = test.speech_concurrency * test.speech_requests_per_worker
+        speech_request_count = test.speech_concurrency * test.speech_requests_per_worker
         output = (
-            f"requests={request_count} successes={len(executions)} "
-            f"failures={failures} owners={len(selected_owners)} "
-            f"slow_workers={test.speech_slow_workers} "
-            f"artifacts={len(artifacts)}"
+            f"speech_requests={speech_request_count} "
+            f"speech_successes={len(executions)} "
+            f"chat_requests={test.speech_chat_concurrency} "
+            f"chat_successes={len(chat_executions)} failures={failures} "
+            f"owners={len(owners)} topology={test.speech_owner_topology} "
+            f"slow_workers={test.speech_slow_workers} artifacts={len(artifacts)}"
         )
+        if diagnostics_artifact is not None:
+            output += f" diagnostics={diagnostics_artifact}"
+
         return TestResult(
             model_id=model_id,
             test_name=test.name,
@@ -1424,13 +1636,126 @@ class HarnessRunner:
             metrics=GenerationMetrics(
                 elapsed_s=elapsed_s,
                 ttft_s=statistics.median(first_bytes) if first_bytes else None,
-                chunks=sum(execution.chunks for execution in executions),
+                chunks=(
+                    sum(execution.chunks for execution in executions)
+                    + sum(execution.metrics.chunks for execution in chat_executions)
+                ),
                 output_chars=len(output),
                 generated_chars=len(output),
             ),
             issues=issues,
             artifact_path=artifacts[0] if artifacts else None,
         )
+
+    def _select_speech_pressure_owners(
+        self,
+        client: SkulkClient,
+        model_id: str,
+        test: PromptTest,
+        issues: list[Issue],
+    ) -> tuple[list[ClusterApiOwner], str | None]:
+        """Choose API owners, optionally relative to the model's serving node."""
+
+        owners = client.get_cluster_api_owners()
+        serving_node_ids = {
+            node_id
+            for placement in client.find_placements_for_model(model_id)
+            if placement.ready
+            for node_id in placement.node_ids
+        }
+        if test.speech_owner_topology == "any":
+            selected = owners[: test.speech_owner_count]
+            serving_node_id = next(iter(sorted(serving_node_ids)), None)
+        else:
+            if test.speech_owner_count < 2:
+                issues.append(
+                    Issue(
+                        severity="error",
+                        model_id=model_id,
+                        test_name=test.name,
+                        message="local_remote pressure requires at least two owners",
+                    )
+                )
+                return [], None
+            local = sorted(
+                (owner for owner in owners if owner.node_id in serving_node_ids),
+                key=lambda owner: owner.node_id,
+            )
+            remote = sorted(
+                (owner for owner in owners if owner.node_id not in serving_node_ids),
+                key=lambda owner: owner.node_id,
+            )
+            if not local or len(remote) < test.speech_owner_count - 1:
+                issues.append(
+                    Issue(
+                        severity="error",
+                        model_id=model_id,
+                        test_name=test.name,
+                        message=(
+                            "Could not resolve the requested deterministic local/remote "
+                            "API owner topology"
+                        ),
+                        evidence={
+                            "serving_owner_count": len(local),
+                            "remote_owner_count": len(remote),
+                            "required_owner_count": test.speech_owner_count,
+                        },
+                    )
+                )
+                return [], None
+            selected = [local[0], *remote[: test.speech_owner_count - 1]]
+            serving_node_id = local[0].node_id
+
+        if len(selected) < test.speech_owner_count:
+            issues.append(
+                Issue(
+                    severity="error",
+                    model_id=model_id,
+                    test_name=test.name,
+                    message="Not enough reachable API owners for speech pressure test",
+                    evidence={
+                        "required_owner_count": test.speech_owner_count,
+                        "reachable_owner_count": len(owners),
+                    },
+                )
+            )
+            return [], serving_node_id
+        return selected, serving_node_id
+
+    def _capture_data_plane_diagnostics(
+        self, owners: list[ClusterApiOwner]
+    ) -> dict[str, DataPlaneDiagnosticsSnapshot]:
+        """Read one DATA snapshot from every selected owner."""
+
+        snapshots: dict[str, DataPlaneDiagnosticsSnapshot] = {}
+        for owner in owners:
+            with self._client_for_url(owner.base_url) as owner_client:
+                snapshot = owner_client.get_data_plane_diagnostics()
+            if snapshot.node_id != owner.node_id:
+                raise ValueError(
+                    "Resolved API route returned diagnostics for another node"
+                )
+            snapshots[owner.node_id] = snapshot
+        return snapshots
+
+    def _wait_for_data_plane_idle(
+        self, owners: list[ClusterApiOwner]
+    ) -> dict[str, DataPlaneDiagnosticsSnapshot]:
+        """Wait briefly for terminal delivery and egress queue cleanup."""
+
+        deadline = time.monotonic() + 10.0
+        snapshots = self._capture_data_plane_diagnostics(owners)
+        while time.monotonic() < deadline:
+            if all(
+                snapshot.active_streams == 0
+                and snapshot.active_stream_queues == 0
+                and snapshot.queue_depth == 0
+                for snapshot in snapshots.values()
+            ):
+                return snapshots
+            time.sleep(0.1)
+            snapshots = self._capture_data_plane_diagnostics(owners)
+        return snapshots
 
     def _run_audio_transcription_test(
         self,
@@ -2594,6 +2919,241 @@ def _audio_stream_metadata_path(
         )
     )
     return path
+
+
+_DATA_PLANE_COUNTER_FIELDS = (
+    "started_frames",
+    "completed_frames",
+    "failed_frames",
+    "cancelled_frames",
+    "duplicate_frames",
+    "out_of_order_frames",
+    "skipped_sequences",
+    "late_frames",
+    "missing_started_streams",
+    "missing_terminal_streams",
+    "idle_timeouts",
+    "transport_failures",
+    "local_short_circuits",
+    "remote_frames_enqueued",
+    "remote_frames_published",
+    "remote_frames_dropped",
+    "remote_publish_failures",
+)
+
+_DATA_PLANE_ANOMALY_FIELDS = (
+    "failed_frames",
+    "cancelled_frames",
+    "duplicate_frames",
+    "out_of_order_frames",
+    "skipped_sequences",
+    "late_frames",
+    "missing_started_streams",
+    "missing_terminal_streams",
+    "idle_timeouts",
+    "transport_failures",
+    "remote_frames_dropped",
+    "remote_publish_failures",
+)
+
+
+def _data_plane_counter_delta(
+    before: DataPlaneDiagnosticsSnapshot,
+    after: DataPlaneDiagnosticsSnapshot,
+) -> dict[str, int]:
+    """Subtract cumulative DATA counters from two same-process snapshots."""
+
+    return {
+        field_name: getattr(after, field_name) - getattr(before, field_name)
+        for field_name in _DATA_PLANE_COUNTER_FIELDS
+    }
+
+
+def _sanitized_data_plane_snapshot(
+    snapshot: DataPlaneDiagnosticsSnapshot,
+) -> dict[str, int]:
+    """Return diagnostics without node identity or environment route details."""
+
+    values = asdict(snapshot)
+    values.pop("node_id")
+    return {key: value for key, value in values.items() if isinstance(value, int)}
+
+
+def _score_data_plane_diagnostics(
+    *,
+    model_id: str,
+    test_name: str,
+    owners: list[ClusterApiOwner],
+    serving_node_id: str | None,
+    before: dict[str, DataPlaneDiagnosticsSnapshot],
+    after: dict[str, DataPlaneDiagnosticsSnapshot],
+    successful_streams: int,
+    require_local_remote: bool,
+) -> tuple[list[Issue], list[dict[str, object]]]:
+    """Require clean lifecycle deltas and prove configured routing activity."""
+
+    issues: list[Issue] = []
+    records: list[dict[str, object]] = []
+    deltas: dict[str, dict[str, int]] = {}
+    for owner_index, owner in enumerate(owners, start=1):
+        before_snapshot = before.get(owner.node_id)
+        after_snapshot = after.get(owner.node_id)
+        role = "serving_local" if owner.node_id == serving_node_id else "remote_owner"
+        label = f"owner-{owner_index}-{role}"
+        if before_snapshot is None or after_snapshot is None:
+            issues.append(
+                Issue(
+                    severity="error",
+                    model_id=model_id,
+                    test_name=test_name,
+                    message="DATA diagnostics snapshot missing for selected owner",
+                    evidence={"owner": label},
+                )
+            )
+            continue
+        delta = _data_plane_counter_delta(before_snapshot, after_snapshot)
+        deltas[owner.node_id] = delta
+        records.append(
+            {
+                "owner": label,
+                "before": _sanitized_data_plane_snapshot(before_snapshot),
+                "after": _sanitized_data_plane_snapshot(after_snapshot),
+                "delta": delta,
+            }
+        )
+        negative = {key: value for key, value in delta.items() if value < 0}
+        if negative:
+            issues.append(
+                Issue(
+                    severity="error",
+                    model_id=model_id,
+                    test_name=test_name,
+                    message="DATA diagnostics counters reset during pressure test",
+                    evidence={"owner": label, "negative_deltas": negative},
+                )
+            )
+        if (
+            after_snapshot.active_streams
+            or after_snapshot.active_stream_queues
+            or after_snapshot.queue_depth
+        ):
+            issues.append(
+                Issue(
+                    severity="error",
+                    model_id=model_id,
+                    test_name=test_name,
+                    message="DATA streams or egress queues did not drain after pressure",
+                    evidence={
+                        "owner": label,
+                        "active_streams": after_snapshot.active_streams,
+                        "active_stream_queues": after_snapshot.active_stream_queues,
+                        "queue_depth": after_snapshot.queue_depth,
+                    },
+                )
+            )
+        anomalies = {
+            key: delta[key] for key in _DATA_PLANE_ANOMALY_FIELDS if delta[key] > 0
+        }
+        if anomalies:
+            issues.append(
+                Issue(
+                    severity="error",
+                    model_id=model_id,
+                    test_name=test_name,
+                    message="DATA diagnostics recorded anomalies during successful pressure",
+                    evidence={"owner": label, "anomalies": anomalies},
+                )
+            )
+
+    started = sum(delta["started_frames"] for delta in deltas.values())
+    terminal = sum(
+        delta["completed_frames"] + delta["failed_frames"] + delta["cancelled_frames"]
+        for delta in deltas.values()
+    )
+    if started < successful_streams or terminal < successful_streams:
+        issues.append(
+            Issue(
+                severity="error",
+                model_id=model_id,
+                test_name=test_name,
+                message="DATA lifecycle counters did not cover every successful request",
+                evidence={
+                    "successful_requests": successful_streams,
+                    "started_delta": started,
+                    "terminal_delta": terminal,
+                },
+            )
+        )
+
+    if require_local_remote:
+        serving_delta = deltas.get(serving_node_id or "")
+        if serving_delta is None:
+            issues.append(
+                Issue(
+                    severity="error",
+                    model_id=model_id,
+                    test_name=test_name,
+                    message="Serving-node DATA diagnostics were unavailable",
+                )
+            )
+        else:
+            if serving_delta["local_short_circuits"] <= 0:
+                issues.append(
+                    Issue(
+                        severity="error",
+                        model_id=model_id,
+                        test_name=test_name,
+                        message="Deterministic local owner did not use the DATA fast path",
+                    )
+                )
+            if serving_delta["remote_frames_published"] <= 0:
+                issues.append(
+                    Issue(
+                        severity="error",
+                        model_id=model_id,
+                        test_name=test_name,
+                        message="Deterministic remote owner did not use DATA egress",
+                    )
+                )
+    return issues, records
+
+
+def _data_plane_diagnostics_artifact_path(
+    artifact_dir: Path,
+    model_id: str,
+    test_name: str,
+    repetition: int,
+    records: list[dict[str, object]],
+) -> Path:
+    """Persist sanitized pre/post DATA evidence for one pressure result."""
+
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    path = artifact_dir / (
+        f"{slugify(model_id)}--{slugify(test_name)}--rep-{repetition}.data-plane.json"
+    )
+    path.write_text(json.dumps({"owners": records}, indent=2, sort_keys=True))
+    return path
+
+
+def _speech_pressure_result(
+    *,
+    model_id: str,
+    test: PromptTest,
+    repetition: int,
+    issues: list[Issue],
+    elapsed_s: float,
+) -> TestResult:
+    """Build a failed pressure result for pre-workload validation errors."""
+
+    return TestResult(
+        model_id=model_id,
+        test_name=test.name,
+        repetition=repetition,
+        passed=False,
+        output_text="speech pressure did not start",
+        metrics=GenerationMetrics(elapsed_s=elapsed_s),
+        issues=issues,
+    )
 
 
 def _empty_metrics() -> GenerationMetrics:

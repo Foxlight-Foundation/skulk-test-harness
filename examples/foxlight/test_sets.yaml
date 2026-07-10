@@ -609,9 +609,9 @@ test_sets:
     name: speech-data-pressure
     description: >
       Concurrent streaming TTS coverage for DATA-plane queue isolation. The
-      harness discovers reachable API owners, distributes workers round-robin,
-      intentionally slows one reader, and persists every audio stream plus its
-      chunk timing sidecar.
+      harness selects API owners relative to the serving node, validates DATA
+      diagnostics, can mix chat and speech streams, and persists every audio
+      stream plus its chunk timing sidecar.
     tests:
       - name: tts-concurrent-single-owner
         kind: audio_speech_pressure
@@ -623,6 +623,7 @@ test_sets:
         speech_concurrency: 4
         speech_requests_per_worker: 2
         speech_owner_count: 1
+        speech_assert_data_plane_diagnostics: true
         success:
           min_chars: 0
           min_audio_bytes: 1024
@@ -638,10 +639,37 @@ test_sets:
         speech_concurrency: 6
         speech_requests_per_worker: 1
         speech_owner_count: 3
+        speech_owner_topology: local_remote
+        speech_assert_data_plane_diagnostics: true
         speech_slow_workers: 1
         speech_slow_reader_delay_s: 0.25
         success:
           min_chars: 0
+          min_audio_bytes: 1024
+          min_stream_chunks: 2
+          min_stream_span_s: 0.25
+      - name: tts-chat-mixed-data-pressure
+        kind: audio_speech_pressure
+        prompt: >
+          Skulk mixed DATA pressure keeps progressive speech independent while
+          text generation streams concurrently through the same fabric.
+        audio_response_format: mp3
+        speech_streaming_interval: 0.25
+        speech_concurrency: 4
+        speech_requests_per_worker: 1
+        speech_owner_count: 3
+        speech_owner_topology: local_remote
+        speech_assert_data_plane_diagnostics: true
+        speech_chat_model_id: mlx-community/Qwen3.5-9B-MLX-4bit
+        speech_chat_concurrency: 2
+        speech_chat_prompt: >
+          Write approximately one hundred words explaining why independent
+          streaming workloads should not block one another in a distributed
+          inference system.
+        max_tokens: 192
+        temperature: 0
+        success:
+          min_chars: 80
           min_audio_bytes: 1024
           min_stream_chunks: 2
           min_stream_span_s: 0.25

@@ -20,6 +20,15 @@ from skulk_test_harness.utils import unwrap_tagged
 QueryParams = dict[str, str | int | float | bool | list[str]]
 
 
+def _required_int(payload: dict[str, object], key: str) -> int:
+    """Read one required integer counter without accepting booleans."""
+
+    value = payload.get(key)
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise TypeError(f"Expected diagnostics field {key!r} to be an integer")
+    return value
+
+
 def _replace_url_host(url: str, host: str) -> str:
     """Replace a URL host while preserving its scheme and explicit port."""
 
@@ -91,6 +100,84 @@ class AudioTranscriptionExecution:
     elapsed_s: float
     response_format: str
     raw_response: dict[str, object] | str
+
+
+@dataclass(frozen=True)
+class ClusterApiOwner:
+    """One controller-reachable API route paired with its fabric node identity."""
+
+    node_id: str
+    base_url: str
+
+
+@dataclass(frozen=True)
+class DataPlaneDiagnosticsSnapshot:
+    """Counters and live gauges read from one node's DATA diagnostics."""
+
+    node_id: str
+    active_streams: int
+    started_frames: int
+    completed_frames: int
+    failed_frames: int
+    cancelled_frames: int
+    duplicate_frames: int
+    out_of_order_frames: int
+    skipped_sequences: int
+    late_frames: int
+    missing_started_streams: int
+    missing_terminal_streams: int
+    idle_timeouts: int
+    transport_failures: int
+    active_stream_queues: int
+    queue_depth: int
+    local_short_circuits: int
+    remote_frames_enqueued: int
+    remote_frames_published: int
+    remote_frames_dropped: int
+    remote_publish_failures: int
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, object]) -> "DataPlaneDiagnosticsSnapshot":
+        """Parse the DATA subset of ``GET /v1/diagnostics/node`` strictly."""
+
+        runtime = payload.get("runtime")
+        data_plane = payload.get("dataPlane")
+        if not isinstance(runtime, dict) or not isinstance(data_plane, dict):
+            raise TypeError(
+                "Node diagnostics did not include runtime/dataPlane objects"
+            )
+        egress = data_plane.get("egress")
+        if not isinstance(egress, dict):
+            raise TypeError("Node diagnostics did not include dataPlane.egress")
+        node_id = runtime.get("nodeId")
+        if not isinstance(node_id, str) or not node_id:
+            raise TypeError("Node diagnostics did not include runtime.nodeId")
+
+        return cls(
+            node_id=node_id,
+            active_streams=_required_int(data_plane, "activeStreams"),
+            started_frames=_required_int(data_plane, "startedFrames"),
+            completed_frames=_required_int(data_plane, "completedFrames"),
+            failed_frames=_required_int(data_plane, "failedFrames"),
+            cancelled_frames=_required_int(data_plane, "cancelledFrames"),
+            duplicate_frames=_required_int(data_plane, "duplicateFrames"),
+            out_of_order_frames=_required_int(data_plane, "outOfOrderFrames"),
+            skipped_sequences=_required_int(data_plane, "skippedSequences"),
+            late_frames=_required_int(data_plane, "lateFrames"),
+            missing_started_streams=_required_int(data_plane, "missingStartedStreams"),
+            missing_terminal_streams=_required_int(
+                data_plane, "missingTerminalStreams"
+            ),
+            idle_timeouts=_required_int(data_plane, "idleTimeouts"),
+            transport_failures=_required_int(data_plane, "transportFailures"),
+            active_stream_queues=_required_int(egress, "activeStreamQueues"),
+            queue_depth=_required_int(egress, "queueDepth"),
+            local_short_circuits=_required_int(egress, "localShortCircuits"),
+            remote_frames_enqueued=_required_int(egress, "remoteFramesEnqueued"),
+            remote_frames_published=_required_int(egress, "remoteFramesPublished"),
+            remote_frames_dropped=_required_int(egress, "remoteFramesDropped"),
+            remote_publish_failures=_required_int(egress, "remotePublishFailures"),
+        )
 
 
 class SkulkClient:
@@ -203,8 +290,8 @@ class SkulkClient:
             raise TypeError("Expected /state to return an object")
         return payload
 
-    def get_cluster_api_urls(self) -> list[str]:
-        """Return controller-reachable API URLs for distinct cluster nodes.
+    def get_cluster_api_owners(self) -> list[ClusterApiOwner]:
+        """Return controller-reachable API routes with stable live node IDs.
 
         Peer URLs in cluster diagnostics are selected from the serving node's
         routes and may not be reachable from the harness controller. Prefer a
@@ -213,25 +300,37 @@ class SkulkClient:
         """
 
         payload = self._request_json("GET", "/v1/diagnostics/cluster")
-        urls = [self.base_url]
+        local_node_id = (
+            payload.get("localNodeId") if isinstance(payload, dict) else None
+        )
+        if not isinstance(local_node_id, str) or not local_node_id:
+            local_node_id = self.get_node_id()
+        owners = [ClusterApiOwner(node_id=local_node_id, base_url=self.base_url)]
         if not isinstance(payload, dict):
-            return urls
+            return owners
         nodes = payload.get("nodes")
         if not isinstance(nodes, list):
-            return urls
-        local_node_id = payload.get("localNodeId")
+            return owners
+        seen_node_ids = {local_node_id}
         for node in nodes:
             if not isinstance(node, dict) or node.get("ok") is not True:
                 continue
-            if isinstance(local_node_id, str) and node.get("nodeId") == local_node_id:
+            node_id = node.get("nodeId")
+            if not isinstance(node_id, str) or not node_id or node_id in seen_node_ids:
                 continue
             for candidate in self._cluster_node_api_candidates(node):
-                if candidate in urls:
+                if any(owner.base_url == candidate for owner in owners):
                     break
                 if self._api_url_reachable(candidate):
-                    urls.append(candidate)
+                    owners.append(ClusterApiOwner(node_id=node_id, base_url=candidate))
+                    seen_node_ids.add(node_id)
                     break
-        return urls
+        return owners
+
+    def get_cluster_api_urls(self) -> list[str]:
+        """Return controller-reachable API URLs for distinct cluster nodes."""
+
+        return [owner.base_url for owner in self.get_cluster_api_owners()]
 
     def _cluster_node_api_candidates(self, node: dict[str, object]) -> list[str]:
         """Build preferred API routes for one cluster-diagnostics node."""
@@ -330,6 +429,11 @@ class SkulkClient:
         if not isinstance(payload, dict):
             raise TypeError("Expected /v1/diagnostics/node to return an object")
         return payload
+
+    def get_data_plane_diagnostics(self) -> DataPlaneDiagnosticsSnapshot:
+        """Return typed DATA lifecycle and egress counters for this API node."""
+
+        return DataPlaneDiagnosticsSnapshot.from_payload(self.get_diagnostics_node())
 
     def get_master_node_id(self) -> str:
         """Return the current master node ID as seen by this API node."""

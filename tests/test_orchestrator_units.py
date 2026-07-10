@@ -2,6 +2,7 @@ import json
 import math
 import shlex
 from pathlib import Path
+from typing import Never
 
 import httpx
 import pytest
@@ -10,6 +11,8 @@ from skulk_test_harness.client import (
     AudioSpeechExecution,
     AudioTranscriptionExecution,
     ChatExecution,
+    ClusterApiOwner,
+    DataPlaneDiagnosticsSnapshot,
     SkulkApiError,
     SkulkClient,
     _extract_stream_delta,
@@ -617,6 +620,9 @@ def test_public_default_sets_are_cluster_neutral() -> None:
     assert model_sets["speech-stt"].selectors
     roundtrip_test = test_sets["speech-roundtrip"].tests[0]
     assert roundtrip_test.transcription_model_id is None
+    pressure_tests = test_sets["speech-data-pressure"].tests
+    assert all(test.speech_assert_data_plane_diagnostics for test in pressure_tests)
+    assert pressure_tests[1].speech_owner_topology == "local_remote"
 
     tool_suite = test_sets["tool-tests"]
     node_test = next(
@@ -647,6 +653,26 @@ def test_foxlight_gpt_oss_complete_suite_loads_tool_tests() -> None:
     assert len(tool_tests) == 3
     assert all(test.tools for test in tool_tests)
     assert sum(1 for test in tool_tests if test.tool_mocks) == 2
+
+
+def test_foxlight_speech_pressure_closes_data_plane_coverage() -> None:
+    root = Path(__file__).parents[1]
+    test_sets = load_test_sets(root / "examples/foxlight/test_sets.yaml").test_sets
+    pressure = test_sets["speech-data-pressure"].tests
+
+    assert all(test.speech_assert_data_plane_diagnostics for test in pressure)
+    deterministic = next(
+        test
+        for test in pressure
+        if test.name == "tts-concurrent-multi-owner-slow-reader"
+    )
+    assert deterministic.speech_owner_topology == "local_remote"
+    mixed = next(
+        test for test in pressure if test.name == "tts-chat-mixed-data-pressure"
+    )
+    assert mixed.speech_owner_topology == "local_remote"
+    assert mixed.speech_chat_concurrency == 2
+    assert mixed.speech_chat_model_id == "mlx-community/Qwen3.5-9B-MLX-4bit"
 
 
 def test_foxlight_e2e_battery_references_defined_sets() -> None:
@@ -817,6 +843,12 @@ class _FakeClient:
     def get_cluster_api_urls(self) -> list[str]:
         return ["http://owner-a", "http://owner-b"]
 
+    def get_cluster_api_owners(self) -> list[ClusterApiOwner]:
+        return [
+            ClusterApiOwner(node_id="node-a", base_url="http://owner-a"),
+            ClusterApiOwner(node_id="node-b", base_url="http://owner-b"),
+        ]
+
     def find_placements_for_model(self, model_id: str) -> list[PlacementResult]:
         return [p for p in self._live if p.model_id == model_id]
 
@@ -833,6 +865,9 @@ class _FakeClient:
 
     def list_models(self) -> list[dict[str, object]]:
         return self._models
+
+    def resolved_thinking_toggle_by_model(self) -> dict[str, bool]:
+        return {}
 
     def audio_speech(
         self,
@@ -919,6 +954,40 @@ class _FakeClient:
             command_id=None,
             raw_events=[],
         )
+
+
+def _data_snapshot(
+    node_id: str,
+    *,
+    started_frames: int = 0,
+    completed_frames: int = 0,
+    local_short_circuits: int = 0,
+    remote_frames_enqueued: int = 0,
+    remote_frames_published: int = 0,
+) -> DataPlaneDiagnosticsSnapshot:
+    return DataPlaneDiagnosticsSnapshot(
+        node_id=node_id,
+        active_streams=0,
+        started_frames=started_frames,
+        completed_frames=completed_frames,
+        failed_frames=0,
+        cancelled_frames=0,
+        duplicate_frames=0,
+        out_of_order_frames=0,
+        skipped_sequences=0,
+        late_frames=0,
+        missing_started_streams=0,
+        missing_terminal_streams=0,
+        idle_timeouts=0,
+        transport_failures=0,
+        active_stream_queues=0,
+        queue_depth=0,
+        local_short_circuits=local_short_circuits,
+        remote_frames_enqueued=remote_frames_enqueued,
+        remote_frames_published=remote_frames_published,
+        remote_frames_dropped=0,
+        remote_publish_failures=0,
+    )
 
 
 def test_teardown_sweeps_reissued_orphan_instance() -> None:
@@ -1127,16 +1196,211 @@ def test_run_test_drives_multi_owner_speech_pressure(
     )
 
     assert result.passed is True
-    assert "requests=8 successes=8 failures=0 owners=2" in result.output_text
+    assert "speech_requests=8 speech_successes=8" in result.output_text
+    assert "chat_requests=0 chat_successes=0 failures=0 owners=2" in result.output_text
     assert len(pressure_clients) == 4
     assert sum(len(item.speech_requests) for item in pressure_clients) == 8
-    assert sum(
-        request["read_delay_s"] == 0.25
-        for item in pressure_clients
-        for request in item.speech_requests
-    ) == 2
+    assert (
+        sum(
+            request["read_delay_s"] == 0.25
+            for item in pressure_clients
+            for request in item.speech_requests
+        )
+        == 2
+    )
     assert len(list(tmp_path.glob("*.mp3"))) == 8
     assert len(list(tmp_path.glob("*.stream.json"))) == 8
+
+
+def test_speech_pressure_proves_local_remote_paths_and_diagnostics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _FakeClient(
+        live_placements=[
+            PlacementResult(
+                model_id="org/TTS",
+                instance_id="tts-instance",
+                node_ids=["node-a"],
+                ready=True,
+            )
+        ]
+    )
+    runner = _runner()
+    monkeypatch.setattr(runner, "_client_for_url", lambda _url: _FakeClient())
+    before = {
+        "node-a": _data_snapshot("node-a"),
+        "node-b": _data_snapshot("node-b"),
+    }
+    after = {
+        "node-a": _data_snapshot(
+            "node-a",
+            started_frames=2,
+            completed_frames=2,
+            local_short_circuits=8,
+            remote_frames_enqueued=8,
+            remote_frames_published=8,
+        ),
+        "node-b": _data_snapshot(
+            "node-b",
+            started_frames=2,
+            completed_frames=2,
+        ),
+    }
+    monkeypatch.setattr(
+        runner, "_capture_data_plane_diagnostics", lambda _owners: before
+    )
+    monkeypatch.setattr(runner, "_wait_for_data_plane_idle", lambda _owners: after)
+    test = PromptTest(
+        name="tts-local-remote",
+        kind="audio_speech_pressure",
+        prompt="hello",
+        audio_response_format="mp3",
+        speech_concurrency=4,
+        speech_owner_count=2,
+        speech_owner_topology="local_remote",
+        speech_assert_data_plane_diagnostics=True,
+        success=SuccessCriteria(
+            min_chars=0,
+            min_audio_bytes=1024,
+            min_stream_chunks=2,
+            min_stream_span_s=0.5,
+        ),
+    )
+
+    result = runner._run_test(
+        client,  # type: ignore[arg-type]
+        model_id="org/TTS",
+        test=test,
+        repetition=1,
+        artifact_dir=tmp_path,
+    )
+
+    assert result.passed is True
+    assert "topology=local_remote" in result.output_text
+    diagnostics = list(tmp_path.glob("*.data-plane.json"))
+    assert len(diagnostics) == 1
+    payload = json.loads(diagnostics[0].read_text())
+    assert [owner["owner"] for owner in payload["owners"]] == [
+        "owner-1-serving_local",
+        "owner-2-remote_owner",
+    ]
+    assert payload["owners"][0]["delta"]["local_short_circuits"] == 8
+    assert payload["owners"][0]["delta"]["remote_frames_published"] == 8
+
+
+def test_speech_pressure_runs_chat_and_tts_concurrently(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _FakeClient(
+        models=[{"id": "org/Chat"}],
+        live_placements=[
+            PlacementResult(
+                model_id="org/TTS",
+                instance_id="tts-instance",
+                node_ids=["node-a"],
+                ready=True,
+            ),
+            PlacementResult(
+                model_id="org/Chat",
+                instance_id="chat-instance",
+                node_ids=["node-b"],
+                ready=True,
+            ),
+        ],
+    )
+    pressure_clients: list[_FakeClient] = []
+    runner = _runner()
+
+    def client_for_url(_url: str) -> _FakeClient:
+        pressure_client = _FakeClient()
+        pressure_clients.append(pressure_client)
+        return pressure_client
+
+    monkeypatch.setattr(runner, "_client_for_url", client_for_url)
+    test = PromptTest(
+        name="tts-chat-mixed",
+        kind="audio_speech_pressure",
+        prompt="hello",
+        audio_response_format="mp3",
+        max_tokens=64,
+        speech_concurrency=2,
+        speech_owner_count=2,
+        speech_chat_model_id="org/Chat",
+        speech_chat_concurrency=2,
+        speech_chat_prompt="Reply with a short healthy response.",
+        success=SuccessCriteria(
+            min_chars=2,
+            min_audio_bytes=1024,
+            min_stream_chunks=2,
+            min_stream_span_s=0.5,
+        ),
+    )
+    spec = RunSpec(model_set="speech", test_set="pressure", mode="execute")
+    report = RunReport.start("run-mixed", spec, [])
+
+    result = runner._run_test(
+        client,  # type: ignore[arg-type]
+        model_id="org/TTS",
+        test=test,
+        repetition=1,
+        artifact_dir=tmp_path,
+        spec=spec,
+        report=report,
+    )
+
+    assert result.passed is True
+    assert "speech_requests=2 speech_successes=2" in result.output_text
+    assert "chat_requests=2 chat_successes=2 failures=0" in result.output_text
+    assert sum(len(item.speech_requests) for item in pressure_clients) == 2
+    assert sum(len(item.thinking_seen) for item in pressure_clients) == 2
+
+
+def test_speech_pressure_releases_secondary_placement_after_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _FakeClient()
+    runner = _runner()
+    placement = PlacementResult(
+        model_id="org/Chat",
+        instance_id="chat-instance",
+        created_by_harness=True,
+        ready=True,
+    )
+
+    def fail_after_placement(_client: object, **kwargs: object) -> Never:
+        secondary = kwargs["secondary_placements"]
+        assert isinstance(secondary, list)
+        secondary.append(("org/Chat", placement))
+        raise RuntimeError("mixed pressure failed")
+
+    monkeypatch.setattr(
+        runner, "_run_audio_speech_pressure_test_inner", fail_after_placement
+    )
+    test = PromptTest(name="mixed", kind="audio_speech_pressure", prompt="hello")
+    spec = RunSpec(
+        model_set="speech",
+        test_set="pressure",
+        mode="execute",
+        retain_instances=False,
+    )
+    report = RunReport.start("run-cleanup", spec, [])
+
+    with pytest.raises(RuntimeError, match="mixed pressure failed"):
+        runner._run_audio_speech_pressure_test(
+            client,  # type: ignore[arg-type]
+            model_id="org/TTS",
+            test=test,
+            repetition=1,
+            artifact_dir=tmp_path,
+            spec=spec,
+            report=report,
+            writer=None,
+        )
+
+    assert client.deleted == ["chat-instance"]
 
 
 def test_score_streaming_audio_output_rejects_burst_chunks() -> None:

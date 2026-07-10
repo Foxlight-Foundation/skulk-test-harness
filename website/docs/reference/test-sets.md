@@ -38,7 +38,7 @@ Each map key must match the test set's `name`.
 | `embedding` | Embeddings endpoint behavior |
 | `audio_speech` | Text-to-speech endpoint behavior; generated audio is saved as an artifact |
 | `audio_speech_streaming` | Experimental text-to-speech streaming behavior; generated audio and timing sidecar are saved as artifacts |
-| `audio_speech_pressure` | Concurrent streaming TTS across discovered API owners, with optional slow readers and one audio/timing artifact per request |
+| `audio_speech_pressure` | Concurrent streaming TTS across discovered API owners, with deterministic local/remote routing, DATA diagnostics, optional chat workers, and one audio/timing artifact per speech request |
 | `audio_transcription` | Speech-to-text endpoint behavior with an audio fixture |
 | `speech_roundtrip` | TTS output saved as an artifact and piped into a mounted STT model |
 
@@ -76,6 +76,11 @@ Each map key must match the test set's `name`.
 | `speech_concurrency` | Concurrent workers for `kind: audio_speech_pressure` |
 | `speech_requests_per_worker` | Sequential requests issued by each pressure worker |
 | `speech_owner_count` | Distinct reachable API owners selected from cluster diagnostics |
+| `speech_owner_topology` | `any` or `local_remote`; the latter selects one owner on the TTS serving node and the rest away from it |
+| `speech_assert_data_plane_diagnostics` | Require lifecycle/egress counters to cover successful requests, drain to zero, and record no new anomalies; saves a sanitized diagnostics sidecar |
+| `speech_chat_model_id` | Optional secondary text model mounted for mixed chat-plus-TTS pressure |
+| `speech_chat_concurrency` | Concurrent streaming chat workers run beside speech pressure |
+| `speech_chat_prompt` | Prompt sent by mixed-pressure chat workers |
 | `speech_slow_workers` | Leading pressure workers that intentionally delay stream reads |
 | `speech_slow_reader_delay_s` | Delay after each received chunk for slow pressure workers |
 | `input_audio_path` | Local fixture path for `kind: audio_transcription` |
@@ -124,6 +129,7 @@ Each map key must match the test set's `name`.
 | `embeddings` | Embeddings endpoint coverage |
 | `speech-synthesis` | Text-to-speech endpoint coverage |
 | `speech-synthesis-streaming` | Experimental text-to-speech streaming coverage |
+| `speech-data-pressure` | Concurrent local/remote TTS pressure with DATA diagnostics |
 | `speech-roundtrip` | TTS-to-STT endpoint coverage |
 | `vision` | Multimodal image input coverage |
 | `served-speculation` | Served speculation correctness and throughput |
