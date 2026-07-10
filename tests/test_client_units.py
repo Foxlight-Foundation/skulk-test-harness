@@ -6,6 +6,30 @@ import pytest
 from skulk_test_harness.client import SkulkApiError, SkulkClient
 
 
+def test_cluster_api_urls_include_local_and_reachable_peers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = SkulkClient("http://local.test/")
+    monkeypatch.setattr(
+        client,
+        "_request_json",
+        lambda *_args, **_kwargs: {
+            "nodes": [
+                {"nodeId": "local", "url": None, "ok": True},
+                {"nodeId": "peer-a", "url": "http://peer-a.test/", "ok": True},
+                {"nodeId": "peer-b", "url": "http://peer-b.test", "ok": False},
+            ]
+        },
+    )
+    try:
+        assert client.get_cluster_api_urls() == [
+            "http://local.test",
+            "http://peer-a.test",
+        ]
+    finally:
+        client.close()
+
+
 def test_request_json_retries_read_timeout_for_get(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -159,6 +183,48 @@ def test_audio_speech_streams_bytes_and_records_chunk_timings(
     assert execution.chunk_sizes == [3, 3]
     assert execution.chunk_arrival_s == pytest.approx([0.2, 0.6])
     assert execution.streaming is True
+
+
+def test_audio_speech_can_intentionally_delay_stream_reads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = SkulkClient("http://skulk.test")
+    delays: list[float] = []
+
+    class _Stream:
+        status_code = 200
+        headers = {"content-type": "audio/mpeg"}
+
+        def __enter__(self) -> "_Stream":
+            return self
+
+        def __exit__(self, *_exc: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return b""
+
+        def iter_bytes(self):
+            yield b"abc"
+            yield b"def"
+
+    monkeypatch.setattr(client._client, "stream", lambda *_args, **_kwargs: _Stream())
+    monkeypatch.setattr(
+        "skulk_test_harness.client.time.sleep", lambda seconds: delays.append(seconds)
+    )
+    try:
+        execution = client.audio_speech(
+            model_id="org/TTS",
+            input_text="hello",
+            response_format="mp3",
+            stream=True,
+            read_delay_s=0.25,
+        )
+    finally:
+        client.close()
+
+    assert execution.audio == b"abcdef"
+    assert delays == [0.25, 0.25]
 
 
 def test_audio_speech_rejects_streaming_interval_without_stream() -> None:

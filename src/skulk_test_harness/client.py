@@ -195,6 +195,24 @@ class SkulkClient:
             raise TypeError("Expected /state to return an object")
         return payload
 
+    def get_cluster_api_urls(self) -> list[str]:
+        """Return this API URL plus reachable peer API URLs from diagnostics."""
+
+        payload = self._request_json("GET", "/v1/diagnostics/cluster")
+        urls = [self.base_url]
+        if not isinstance(payload, dict):
+            return urls
+        nodes = payload.get("nodes")
+        if not isinstance(nodes, list):
+            return urls
+        for node in nodes:
+            if not isinstance(node, dict) or node.get("ok") is not True:
+                continue
+            url = node.get("url")
+            if isinstance(url, str) and url and url.rstrip("/") not in urls:
+                urls.append(url.rstrip("/"))
+        return urls
+
     def resolve_node_ids(self, names: list[str]) -> list[str]:
         """Resolve friendly node names (e.g. ``kite5``) to live libp2p node IDs.
 
@@ -689,11 +707,14 @@ class SkulkClient:
         speed: float | None = None,
         stream: bool = False,
         streaming_interval: float | None = None,
+        read_delay_s: float = 0.0,
     ) -> AudioSpeechExecution:
         """Generate speech audio with OpenAI's speech endpoint."""
 
         if streaming_interval is not None and not stream:
             raise ValueError("streaming_interval requires stream=True")
+        if read_delay_s < 0:
+            raise ValueError("read_delay_s must be non-negative")
         payload: dict[str, object] = {
             "model": model_id,
             "input": input_text,
@@ -744,6 +765,8 @@ class SkulkClient:
                         audio_parts.append(chunk)
                         chunk_sizes.append(len(chunk))
                         chunk_arrival_s.append(arrived_at)
+                        if read_delay_s > 0:
+                            time.sleep(read_delay_s)
             except (httpx.TimeoutException, httpx.TransportError) as exc:
                 raise SkulkApiError(
                     "POST",

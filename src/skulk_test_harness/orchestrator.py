@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import mimetypes
 import re
+import statistics
 import time
 from collections.abc import Mapping
 from pathlib import Path
@@ -668,6 +670,14 @@ class HarnessRunner:
                 artifact_dir=artifact_dir,
                 stream=test.kind == "audio_speech_streaming",
             )
+        if test.kind == "audio_speech_pressure":
+            return self._run_audio_speech_pressure_test(
+                client,
+                model_id=model_id,
+                test=test,
+                repetition=repetition,
+                artifact_dir=artifact_dir,
+            )
         if test.kind == "audio_transcription":
             return self._run_audio_transcription_test(
                 client, model_id=model_id, test=test, repetition=repetition
@@ -789,6 +799,16 @@ class HarnessRunner:
     def _client(self) -> SkulkClient:
         return SkulkClient(
             self.config.api_base_url,
+            request_timeout_s=self.config.request_timeout_s,
+            generation_timeout_s=self.config.generation_timeout_s,
+            stream_read_timeout_s=self.config.stream_read_timeout_s,
+        )
+
+    def _client_for_url(self, base_url: str) -> SkulkClient:
+        """Create an isolated client for one API owner in a pressure test."""
+
+        return SkulkClient(
+            base_url,
             request_timeout_s=self.config.request_timeout_s,
             generation_timeout_s=self.config.generation_timeout_s,
             stream_read_timeout_s=self.config.stream_read_timeout_s,
@@ -1232,6 +1252,178 @@ class HarnessRunner:
             ),
             issues=issues,
             artifact_path=artifact_path,
+        )
+
+    def _run_audio_speech_pressure_test(
+        self,
+        client: SkulkClient,
+        *,
+        model_id: str,
+        test: PromptTest,
+        repetition: int,
+        artifact_dir: Path,
+    ) -> TestResult:
+        """Drive concurrent streaming TTS through one or more API owners."""
+
+        issues: list[Issue] = []
+        owner_urls = client.get_cluster_api_urls()
+        if len(owner_urls) < test.speech_owner_count:
+            issues.append(
+                Issue(
+                    severity="error",
+                    model_id=model_id,
+                    test_name=test.name,
+                    message="Not enough reachable API owners for speech pressure test",
+                    evidence={
+                        "required_owner_count": test.speech_owner_count,
+                        "reachable_owner_count": len(owner_urls),
+                    },
+                )
+            )
+            return TestResult(
+                model_id=model_id,
+                test_name=test.name,
+                repetition=repetition,
+                passed=False,
+                output_text="speech pressure did not start",
+                metrics=GenerationMetrics(elapsed_s=0.0),
+                issues=issues,
+            )
+        selected_owners = owner_urls[: test.speech_owner_count]
+        started_at = time.monotonic()
+
+        def run_worker(
+            worker_index: int,
+        ) -> list[tuple[int, AudioSpeechExecution | None, str | None]]:
+            owner_url = selected_owners[worker_index % len(selected_owners)]
+            samples: list[tuple[int, AudioSpeechExecution | None, str | None]] = []
+            read_delay_s = (
+                test.speech_slow_reader_delay_s
+                if worker_index < test.speech_slow_workers
+                else 0.0
+            )
+            with self._client_for_url(owner_url) as owner_client:
+                for request_index in range(test.speech_requests_per_worker):
+                    try:
+                        execution = owner_client.audio_speech(
+                            model_id=model_id,
+                            input_text=_expanded_prompt(test),
+                            response_format=test.audio_response_format,
+                            voice=test.speech_voice,
+                            speed=test.speech_speed,
+                            stream=True,
+                            streaming_interval=test.speech_streaming_interval,
+                            read_delay_s=read_delay_s,
+                        )
+                    except (SkulkApiError, httpx.HTTPError, TypeError, ValueError) as exc:
+                        samples.append((request_index, None, str(exc)))
+                    else:
+                        samples.append((request_index, execution, None))
+            return samples
+
+        worker_samples: list[
+            tuple[int, list[tuple[int, AudioSpeechExecution | None, str | None]]]
+        ] = []
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=test.speech_concurrency
+        ) as pool:
+            futures = {
+                pool.submit(run_worker, worker_index): worker_index
+                for worker_index in range(test.speech_concurrency)
+            }
+            for future in concurrent.futures.as_completed(futures):
+                worker_samples.append((futures[future], future.result()))
+
+        elapsed_s = time.monotonic() - started_at
+        executions: list[AudioSpeechExecution] = []
+        artifacts: list[Path] = []
+        failures = 0
+        for worker_index, samples in sorted(worker_samples):
+            for request_index, execution, error in samples:
+                sample_name = (
+                    f"{test.name}-worker-{worker_index + 1}-"
+                    f"request-{request_index + 1}"
+                )
+                if execution is None:
+                    failures += 1
+                    issues.append(
+                        Issue(
+                            severity="error",
+                            model_id=model_id,
+                            test_name=test.name,
+                            message="Concurrent speech synthesis request failed",
+                            evidence={
+                                "worker": worker_index + 1,
+                                "request": request_index + 1,
+                                "error": error or "unknown failure",
+                            },
+                        )
+                    )
+                    continue
+                executions.append(execution)
+                issues.extend(
+                    _score_audio_output(
+                        model_id,
+                        sample_name,
+                        execution.audio,
+                        test.success,
+                        response_format=test.audio_response_format,
+                        media_type=execution.media_type,
+                    )
+                )
+                issues.extend(
+                    _score_streaming_audio_output(
+                        model_id,
+                        sample_name,
+                        execution,
+                        test.success,
+                    )
+                )
+                artifact = _audio_artifact_path(
+                    artifact_dir,
+                    model_id,
+                    sample_name,
+                    repetition,
+                    execution.response_format,
+                    execution.audio,
+                )
+                artifacts.append(artifact)
+                _audio_stream_metadata_path(
+                    artifact,
+                    execution.chunks,
+                    execution.first_byte_s,
+                    _stream_span_s(execution.chunk_arrival_s),
+                    execution.chunk_sizes,
+                    execution.chunk_arrival_s,
+                )
+
+        first_bytes = [
+            execution.first_byte_s
+            for execution in executions
+            if execution.first_byte_s is not None
+        ]
+        request_count = test.speech_concurrency * test.speech_requests_per_worker
+        output = (
+            f"requests={request_count} successes={len(executions)} "
+            f"failures={failures} owners={len(selected_owners)} "
+            f"slow_workers={test.speech_slow_workers} "
+            f"artifacts={len(artifacts)}"
+        )
+        return TestResult(
+            model_id=model_id,
+            test_name=test.name,
+            repetition=repetition,
+            passed=not any(issue.severity == "error" for issue in issues),
+            output_text=output,
+            metrics=GenerationMetrics(
+                elapsed_s=elapsed_s,
+                ttft_s=statistics.median(first_bytes) if first_bytes else None,
+                chunks=sum(execution.chunks for execution in executions),
+                output_chars=len(output),
+                generated_chars=len(output),
+            ),
+            issues=issues,
+            artifact_path=artifacts[0] if artifacts else None,
         )
 
     def _run_audio_transcription_test(

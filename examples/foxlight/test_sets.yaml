@@ -605,6 +605,45 @@ test_sets:
           min_stream_chunks: 2
           min_stream_span_s: 0.5
 
+  speech-data-pressure:
+    name: speech-data-pressure
+    description: >
+      Concurrent streaming TTS coverage for DATA-plane queue isolation. The
+      harness discovers reachable API owners, distributes workers round-robin,
+      intentionally slows one reader, and persists every audio stream plus its
+      chunk timing sidecar.
+    tests:
+      - name: tts-concurrent-single-owner
+        kind: audio_speech_pressure
+        prompt: >
+          Skulk concurrent speech pressure validates progressive audio delivery
+          without cross-command stalls.
+        audio_response_format: mp3
+        speech_streaming_interval: 0.25
+        speech_concurrency: 4
+        speech_requests_per_worker: 2
+        speech_owner_count: 1
+        success:
+          min_chars: 0
+          min_audio_bytes: 1024
+          min_stream_chunks: 2
+      - name: tts-concurrent-multi-owner-slow-reader
+        kind: audio_speech_pressure
+        prompt: >
+          Skulk multi-owner speech pressure validates that a slow reader cannot
+          collapse unrelated speech streams into a late burst.
+        audio_response_format: mp3
+        speech_streaming_interval: 0.25
+        speech_concurrency: 6
+        speech_requests_per_worker: 1
+        speech_owner_count: 3
+        speech_slow_workers: 1
+        speech_slow_reader_delay_s: 0.25
+        success:
+          min_chars: 0
+          min_audio_bytes: 1024
+          min_stream_chunks: 2
+
   speech-roundtrip:
     name: speech-roundtrip
     description: >

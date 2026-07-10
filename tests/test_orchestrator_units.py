@@ -3,6 +3,7 @@ import math
 from pathlib import Path
 
 import httpx
+import pytest
 
 from skulk_test_harness.client import (
     AudioSpeechExecution,
@@ -601,6 +602,7 @@ def test_public_default_sets_are_cluster_neutral() -> None:
         "embeddings",
         "speech-synthesis",
         "speech-synthesis-streaming",
+        "speech-data-pressure",
         "speech-roundtrip",
         "vision",
         "served-speculation",
@@ -786,6 +788,15 @@ class _FakeClient:
         self.speech_requests: list[dict[str, object]] = []
         self.transcription_requests: list[dict[str, object]] = []
 
+    def __enter__(self) -> "_FakeClient":
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        return None
+
+    def get_cluster_api_urls(self) -> list[str]:
+        return ["http://owner-a", "http://owner-b"]
+
     def find_placements_for_model(self, model_id: str) -> list[PlacementResult]:
         return [p for p in self._live if p.model_id == model_id]
 
@@ -813,6 +824,7 @@ class _FakeClient:
         speed: float | None = None,
         stream: bool = False,
         streaming_interval: float | None = None,
+        read_delay_s: float = 0.0,
     ) -> AudioSpeechExecution:
         self.speech_requests.append(
             {
@@ -823,6 +835,7 @@ class _FakeClient:
                 "speed": speed,
                 "stream": stream,
                 "streaming_interval": streaming_interval,
+                "read_delay_s": read_delay_s,
             }
         )
         audio = (
@@ -1047,6 +1060,59 @@ def test_run_test_dispatches_streaming_audio_speech(tmp_path: Path) -> None:
         "chunk_sizes": [3, 1024, 1024],
         "chunk_arrival_s": [0.01, 0.35, 0.75],
     }
+
+
+def test_run_test_drives_multi_owner_speech_pressure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _FakeClient()
+    pressure_clients: list[_FakeClient] = []
+    runner = _runner()
+
+    def client_for_url(_url: str) -> _FakeClient:
+        pressure_client = _FakeClient()
+        pressure_clients.append(pressure_client)
+        return pressure_client
+
+    monkeypatch.setattr(runner, "_client_for_url", client_for_url)
+    test = PromptTest(
+        name="tts-pressure",
+        kind="audio_speech_pressure",
+        prompt="hello",
+        audio_response_format="mp3",
+        speech_concurrency=4,
+        speech_requests_per_worker=2,
+        speech_owner_count=2,
+        speech_slow_workers=1,
+        speech_slow_reader_delay_s=0.25,
+        success=SuccessCriteria(
+            min_chars=0,
+            min_audio_bytes=1024,
+            min_stream_chunks=2,
+            min_stream_span_s=0.5,
+        ),
+    )
+
+    result = runner._run_test(
+        client,  # type: ignore[arg-type]
+        model_id="org/TTS",
+        test=test,
+        repetition=1,
+        artifact_dir=tmp_path,
+    )
+
+    assert result.passed is True
+    assert "requests=8 successes=8 failures=0 owners=2" in result.output_text
+    assert len(pressure_clients) == 4
+    assert sum(len(item.speech_requests) for item in pressure_clients) == 8
+    assert sum(
+        request["read_delay_s"] == 0.25
+        for item in pressure_clients
+        for request in item.speech_requests
+    ) == 2
+    assert len(list(tmp_path.glob("*.mp3"))) == 8
+    assert len(list(tmp_path.glob("*.stream.json"))) == 8
 
 
 def test_score_streaming_audio_output_rejects_burst_chunks() -> None:

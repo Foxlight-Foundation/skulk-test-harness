@@ -42,6 +42,7 @@ cell smoke            cancellation
 cell context-admission context-admission
 cell embeddings       embeddings
 cell speech-tts       speech-synthesis
+cell speech-pressure  speech-data-pressure
 cell speech-roundtrip-tts speech-roundtrip
 cell vision           vision
 

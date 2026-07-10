@@ -222,6 +222,32 @@ test_sets:
           min_stream_span_s: 0.5
 ```
 
+Pressure tests distribute independent streaming clients across API owners
+discovered from `/v1/diagnostics/cluster`. Every request is scored and saved as
+audio plus a timing sidecar. Slow-reader workers exercise isolation without
+making the whole suite destructive:
+
+```yaml
+test_sets:
+  my-speech-pressure:
+    name: my-speech-pressure
+    description: Concurrent multi-owner TTS streaming.
+    tests:
+      - name: tts-multi-owner-pressure
+        kind: audio_speech_pressure
+        prompt: Skulk progressive speech pressure.
+        audio_response_format: mp3
+        speech_concurrency: 6
+        speech_requests_per_worker: 1
+        speech_owner_count: 3
+        speech_slow_workers: 1
+        speech_slow_reader_delay_s: 0.25
+        success:
+          min_chars: 0
+          min_audio_bytes: 1024
+          min_stream_chunks: 2
+```
+
 Roundtrip tests use a mounted TTS model as the primary target, persist that
 generated audio, then place a speech-to-text model through the normal Skulk
 store-backed lifecycle and transcribe the generated audio:

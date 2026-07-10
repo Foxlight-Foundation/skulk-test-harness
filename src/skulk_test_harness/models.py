@@ -25,6 +25,7 @@ TestKind = Literal[
     "embedding",
     "audio_speech",
     "audio_speech_streaming",
+    "audio_speech_pressure",
     "audio_transcription",
     "speech_roundtrip",
 ]
@@ -422,6 +423,36 @@ class PromptTest(HarnessBaseModel):
             "Optional streaming_interval hint passed to `/v1/audio/speech` for "
             "`kind: audio_speech_streaming`."
         ),
+    )
+    speech_concurrency: int = Field(
+        default=4,
+        ge=1,
+        le=64,
+        description="Concurrent workers for `kind: audio_speech_pressure`.",
+    )
+    speech_requests_per_worker: int = Field(
+        default=1,
+        ge=1,
+        le=100,
+        description="Streaming TTS requests issued sequentially by each worker.",
+    )
+    speech_owner_count: int = Field(
+        default=1,
+        ge=1,
+        description=(
+            "Distinct reachable API owners used by a pressure test. Owners are "
+            "discovered from cluster diagnostics and assigned round-robin."
+        ),
+    )
+    speech_slow_workers: int = Field(
+        default=0,
+        ge=0,
+        description="Leading pressure workers that intentionally read audio slowly.",
+    )
+    speech_slow_reader_delay_s: float = Field(
+        default=0.0,
+        ge=0,
+        description="Delay after each received audio chunk for slow workers.",
     )
     input_audio_path: Path | None = Field(
         default=None,
