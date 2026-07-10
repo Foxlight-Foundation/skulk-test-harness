@@ -1,5 +1,6 @@
 import json
 import math
+import shlex
 from pathlib import Path
 
 import httpx
@@ -646,6 +647,25 @@ def test_foxlight_gpt_oss_complete_suite_loads_tool_tests() -> None:
     assert len(tool_tests) == 3
     assert all(test.tools for test in tool_tests)
     assert sum(1 for test in tool_tests if test.tool_mocks) == 2
+
+
+def test_foxlight_e2e_battery_references_defined_sets() -> None:
+    root = Path(__file__).parents[1]
+    model_sets = load_model_sets(
+        root / "examples/foxlight/model_sets.yaml"
+    ).model_sets
+    test_sets = load_test_sets(root / "examples/foxlight/test_sets.yaml").test_sets
+    battery = root / "examples/foxlight/run_e2e_battery.sh"
+
+    cells = [
+        shlex.split(line.strip())
+        for line in battery.read_text().splitlines()
+        if line.strip().startswith("cell ")
+    ]
+
+    assert cells
+    assert all(cell[1] in model_sets for cell in cells)
+    assert all(cell[2] in test_sets for cell in cells)
 
 
 def test_score_output_require_logprobs_fails_when_absent() -> None:
