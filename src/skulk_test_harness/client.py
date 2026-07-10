@@ -801,6 +801,7 @@ class SkulkClient:
             audio_parts: list[bytes] = []
             chunk_sizes: list[int] = []
             chunk_arrival_s: list[float] = []
+            intentional_read_delay_s = 0.0
             try:
                 with self._client.stream(
                     "POST",
@@ -825,7 +826,10 @@ class SkulkClient:
                     for chunk in response.iter_bytes():
                         if not chunk:
                             continue
-                        arrived_at = time.monotonic() - start
+                        arrived_at = max(
+                            0.0,
+                            time.monotonic() - start - intentional_read_delay_s,
+                        )
                         if first_byte_at is None:
                             first_byte_at = arrived_at
                         audio_parts.append(chunk)
@@ -833,6 +837,7 @@ class SkulkClient:
                         chunk_arrival_s.append(arrived_at)
                         if read_delay_s > 0:
                             time.sleep(read_delay_s)
+                            intentional_read_delay_s += read_delay_s
             except (httpx.TimeoutException, httpx.TransportError) as exc:
                 raise SkulkApiError(
                     "POST",

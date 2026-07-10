@@ -246,6 +246,7 @@ test_sets:
           min_chars: 0
           min_audio_bytes: 1024
           min_stream_chunks: 2
+          min_stream_span_s: 0.25
 ```
 
 Roundtrip tests use a mounted TTS model as the primary target, persist that

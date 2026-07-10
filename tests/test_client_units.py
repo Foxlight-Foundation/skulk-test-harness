@@ -241,6 +241,10 @@ def test_audio_speech_can_intentionally_delay_stream_reads(
 ) -> None:
     client = SkulkClient("http://skulk.test")
     delays: list[float] = []
+    times = iter([100.0, 100.2, 100.7, 101.2])
+    monkeypatch.setattr(
+        "skulk_test_harness.client.time.monotonic", lambda: next(times)
+    )
 
     class _Stream:
         status_code = 200
@@ -276,6 +280,8 @@ def test_audio_speech_can_intentionally_delay_stream_reads(
 
     assert execution.audio == b"abcdef"
     assert delays == [0.25, 0.25]
+    assert execution.chunk_arrival_s == pytest.approx([0.2, 0.45])
+    assert execution.elapsed_s == pytest.approx(1.2)
 
 
 def test_audio_speech_rejects_streaming_interval_without_stream() -> None:
