@@ -38,7 +38,7 @@ def _state() -> dict[str, object]:
             "nodeB": {"ramTotal": {"inBytes": 137438953472}},
         },
         "nodeSystem": {
-            "nodeA": {"accelerator": {"vendor": "apple"}},
+            "nodeA": {"accelerator": {"vendor": "apple", "name": "M4"}},
             "nodeB": {"accelerator": {"vendor": "amd"}},
         },
     }
@@ -62,7 +62,7 @@ def test_gather_fingerprint_populates_cluster_and_runtime() -> None:
     fp, issues = gather_fingerprint(client, spec, run_reason="plan")  # type: ignore[arg-type]
 
     assert issues == []
-    assert fp.schema_version == "2.0"
+    assert fp.schema_version == "2.1"
     assert fp.runtime.skulk_version == "1.4.2"
     assert fp.runtime.skulk_commit == "984179e2"
     assert fp.runtime.python  # populated from the running interpreter
@@ -76,7 +76,10 @@ def test_gather_fingerprint_populates_cluster_and_runtime() -> None:
 
     by_name = {n.friendly_name: n for n in cluster.nodes}
     assert by_name["kite1"].accelerator_vendor == "apple"
+    assert by_name["kite1"].accelerator_name == "M4"
     assert by_name["kite4"].accelerator_vendor == "amd"
+    # No name in telemetry stays None, never a guess.
+    assert by_name["kite4"].accelerator_name is None
     assert by_name["kite4"].ram_total_bytes == 137438953472
     # Uniform version across nodes is the mixed-version detector's clean case.
     assert {n.skulk_version for n in cluster.nodes} == {"1.4.2"}
