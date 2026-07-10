@@ -871,7 +871,11 @@ class _FakeClient:
             chunks=3 if stream else 1,
             first_byte_s=0.01 if stream else None,
             chunk_sizes=[3, 1024, 1024] if stream else [len(audio)],
-            chunk_arrival_s=[0.01, 0.35, 0.75] if stream else [],
+            chunk_arrival_s=(
+                [0.01, 0.02, 0.03]
+                if stream and read_delay_s > 0
+                else ([0.01, 0.35, 0.75] if stream else [])
+            ),
             streaming=stream,
         )
 

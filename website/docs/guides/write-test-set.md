@@ -225,7 +225,9 @@ test_sets:
 Pressure tests distribute independent streaming clients across API owners
 discovered from `/v1/diagnostics/cluster`. Every request is scored and saved as
 audio plus a timing sidecar. Slow-reader workers exercise isolation without
-making the whole suite destructive:
+making the whole suite destructive. Intentional read sleeps are excluded from
+recorded chunk timing, and the span floor applies to normal-reader workers; a
+slow reader cannot reveal when bytes reached the HTTP buffer reliably:
 
 ```yaml
 test_sets:

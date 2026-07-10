@@ -1376,7 +1376,13 @@ class HarnessRunner:
                         model_id,
                         sample_name,
                         execution,
-                        test.success,
+                        (
+                            test.success.model_copy(
+                                update={"min_stream_span_s": 0.0}
+                            )
+                            if worker_index < test.speech_slow_workers
+                            else test.success
+                        ),
                     )
                 )
                 artifact = _audio_artifact_path(
