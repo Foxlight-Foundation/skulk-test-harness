@@ -224,10 +224,13 @@ test_sets:
 
 Pressure tests distribute independent streaming clients across API owners
 discovered from `/v1/diagnostics/cluster`. Every request is scored and saved as
-audio plus a timing sidecar. Slow-reader workers exercise isolation without
-making the whole suite destructive. Intentional read sleeps are excluded from
-recorded chunk timing, and the span floor applies to normal-reader workers; a
-slow reader cannot reveal when bytes reached the HTTP buffer reliably:
+audio plus a timing sidecar. `speech_owner_topology: local_remote` resolves the
+model's actual serving node and selects both routing paths instead of relying on
+discovery order. DATA diagnostics can become pass/fail evidence and are saved in
+a sanitized sidecar. Optional chat workers mount a secondary text model and put
+token and audio streams under pressure together. Slow-reader workers remain a
+non-destructive HTTP-consumer check; intentional read sleeps are excluded from
+recorded chunk timing, and the span floor applies to normal-reader workers:
 
 ```yaml
 test_sets:
@@ -242,6 +245,11 @@ test_sets:
         speech_concurrency: 6
         speech_requests_per_worker: 1
         speech_owner_count: 3
+        speech_owner_topology: local_remote
+        speech_assert_data_plane_diagnostics: true
+        speech_chat_model_id: org/small-chat-model
+        speech_chat_concurrency: 2
+        speech_chat_prompt: Explain independent streaming workloads briefly.
         speech_slow_workers: 1
         speech_slow_reader_delay_s: 0.25
         success:

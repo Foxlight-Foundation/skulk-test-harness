@@ -3,7 +3,12 @@ import json
 import httpx
 import pytest
 
-from skulk_test_harness.client import SkulkApiError, SkulkClient
+from skulk_test_harness.client import (
+    ClusterApiOwner,
+    DataPlaneDiagnosticsSnapshot,
+    SkulkApiError,
+    SkulkClient,
+)
 
 
 def test_cluster_api_urls_include_local_and_reachable_peers(
@@ -47,6 +52,7 @@ def test_cluster_api_urls_prefers_controller_reachable_node_identity(
         client,
         "_request_json",
         lambda *_args, **_kwargs: {
+            "localNodeId": "controller",
             "nodes": [
                 {
                     "nodeId": "peer-a",
@@ -79,6 +85,72 @@ def test_cluster_api_urls_prefers_controller_reachable_node_identity(
         client.close()
 
     assert attempted == ["http://peer-a.overlay.test:52415"]
+
+
+def test_cluster_api_owners_preserve_node_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = SkulkClient("http://controller.test:52415")
+    monkeypatch.setattr(
+        client,
+        "_request_json",
+        lambda *_args, **_kwargs: {
+            "localNodeId": "node-local",
+            "nodes": [
+                {"nodeId": "node-local", "ok": True},
+                {
+                    "nodeId": "node-remote",
+                    "url": "http://remote.test:52415",
+                    "ok": True,
+                },
+            ],
+        },
+    )
+    monkeypatch.setattr(client, "_api_url_reachable", lambda _url: True)
+    try:
+        assert client.get_cluster_api_owners() == [
+            ClusterApiOwner("node-local", "http://controller.test:52415"),
+            ClusterApiOwner("node-remote", "http://remote.test:52415"),
+        ]
+    finally:
+        client.close()
+
+
+def test_data_plane_diagnostics_snapshot_parses_camel_case_payload() -> None:
+    payload: dict[str, object] = {
+        "runtime": {"nodeId": "node-a"},
+        "dataPlane": {
+            "activeStreams": 0,
+            "startedFrames": 4,
+            "completedFrames": 4,
+            "failedFrames": 0,
+            "cancelledFrames": 0,
+            "duplicateFrames": 0,
+            "outOfOrderFrames": 0,
+            "skippedSequences": 0,
+            "lateFrames": 0,
+            "missingStartedStreams": 0,
+            "missingTerminalStreams": 0,
+            "idleTimeouts": 0,
+            "transportFailures": 0,
+            "egress": {
+                "activeStreamQueues": 0,
+                "queueDepth": 0,
+                "localShortCircuits": 8,
+                "remoteFramesEnqueued": 8,
+                "remoteFramesPublished": 8,
+                "remoteFramesDropped": 0,
+                "remotePublishFailures": 0,
+            },
+        },
+    }
+
+    snapshot = DataPlaneDiagnosticsSnapshot.from_payload(payload)
+
+    assert snapshot.node_id == "node-a"
+    assert snapshot.started_frames == 4
+    assert snapshot.local_short_circuits == 8
+    assert snapshot.remote_frames_published == 8
 
 
 def test_request_json_retries_read_timeout_for_get(

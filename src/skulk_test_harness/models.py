@@ -15,6 +15,7 @@ AudioResponseFormat = Literal["mp3", "wav", "flac", "ogg", "opus"]
 TranscriptionResponseFormat = Literal[
     "json", "text", "verbose_json", "srt", "vtt", "ndjson"
 ]
+SpeechOwnerTopology = Literal["any", "local_remote"]
 TestKind = Literal[
     "chat",
     "code",
@@ -443,6 +444,42 @@ class PromptTest(HarnessBaseModel):
             "Distinct reachable API owners used by a pressure test. Owners are "
             "discovered from cluster diagnostics and assigned round-robin."
         ),
+    )
+    speech_owner_topology: SpeechOwnerTopology = Field(
+        default="any",
+        description=(
+            "Owner selection policy for speech pressure. `local_remote` chooses "
+            "one API owner on the TTS serving node and the remaining owners away "
+            "from it, proving both DATA routing paths deterministically."
+        ),
+    )
+    speech_assert_data_plane_diagnostics: bool = Field(
+        default=False,
+        description=(
+            "Capture DATA diagnostics before and after pressure, require drained "
+            "stream/egress gauges, reject new anomaly counters, and persist a "
+            "sanitized diagnostics sidecar."
+        ),
+    )
+    speech_chat_model_id: str | None = Field(
+        default=None,
+        description=(
+            "Optional secondary text-generation model mounted for concurrent "
+            "chat-plus-TTS DATA pressure."
+        ),
+    )
+    speech_chat_concurrency: int = Field(
+        default=0,
+        ge=0,
+        le=32,
+        description=(
+            "Concurrent streaming chat workers run beside TTS pressure. Zero "
+            "keeps the pressure test speech-only."
+        ),
+    )
+    speech_chat_prompt: str | None = Field(
+        default=None,
+        description="Prompt used by concurrent chat workers in mixed pressure tests.",
     )
     speech_slow_workers: int = Field(
         default=0,
