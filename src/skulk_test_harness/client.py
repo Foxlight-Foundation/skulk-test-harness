@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass, field
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit, urlunsplit
 
 import httpx
 
@@ -18,6 +18,14 @@ from skulk_test_harness.models import (
 from skulk_test_harness.utils import unwrap_tagged
 
 QueryParams = dict[str, str | int | float | bool | list[str]]
+
+
+def _replace_url_host(url: str, host: str) -> str:
+    """Replace a URL host while preserving its scheme and explicit port."""
+
+    parsed = urlsplit(url)
+    port = f":{parsed.port}" if parsed.port is not None else ""
+    return urlunsplit((parsed.scheme, f"{host}{port}", "", "", ""))
 
 
 class SkulkApiError(RuntimeError):
@@ -194,6 +202,82 @@ class SkulkClient:
         if not isinstance(payload, dict):
             raise TypeError("Expected /state to return an object")
         return payload
+
+    def get_cluster_api_urls(self) -> list[str]:
+        """Return controller-reachable API URLs for distinct cluster nodes.
+
+        Peer URLs in cluster diagnostics are selected from the serving node's
+        routes and may not be reachable from the harness controller. Prefer a
+        node's advertised overlay DNS or friendly hostname when available, and
+        probe each candidate before assigning pressure traffic to it.
+        """
+
+        payload = self._request_json("GET", "/v1/diagnostics/cluster")
+        urls = [self.base_url]
+        if not isinstance(payload, dict):
+            return urls
+        nodes = payload.get("nodes")
+        if not isinstance(nodes, list):
+            return urls
+        local_node_id = payload.get("localNodeId")
+        for node in nodes:
+            if not isinstance(node, dict) or node.get("ok") is not True:
+                continue
+            if isinstance(local_node_id, str) and node.get("nodeId") == local_node_id:
+                continue
+            for candidate in self._cluster_node_api_candidates(node):
+                if candidate in urls:
+                    break
+                if self._api_url_reachable(candidate):
+                    urls.append(candidate)
+                    break
+        return urls
+
+    def _cluster_node_api_candidates(self, node: dict[str, object]) -> list[str]:
+        """Build preferred API routes for one cluster-diagnostics node."""
+
+        reported_url = node.get("url")
+        route_template = (
+            reported_url
+            if isinstance(reported_url, str) and reported_url
+            else self.base_url
+        )
+        diagnostics = node.get("diagnostics")
+        typed_diagnostics = diagnostics if isinstance(diagnostics, dict) else {}
+        tailscale = typed_diagnostics.get("tailscale")
+        typed_tailscale = tailscale if isinstance(tailscale, dict) else {}
+        identity = typed_diagnostics.get("identity")
+        typed_identity = identity if isinstance(identity, dict) else {}
+
+        hosts = (
+            typed_tailscale.get("dnsName"),
+            typed_tailscale.get("hostname"),
+            typed_identity.get("friendlyName"),
+        )
+        candidates: list[str] = []
+        for host in hosts:
+            if isinstance(host, str) and host:
+                candidate = _replace_url_host(route_template, host)
+                if candidate not in candidates:
+                    candidates.append(candidate)
+        if isinstance(reported_url, str) and reported_url:
+            normalized_reported_url = reported_url.rstrip("/")
+            if normalized_reported_url not in candidates:
+                candidates.append(normalized_reported_url)
+        return candidates
+
+    def _api_url_reachable(self, base_url: str) -> bool:
+        """Return whether the controller can reach a candidate Skulk API."""
+
+        timeout_seconds = min(5.0, self.request_timeout_s)
+        try:
+            response = httpx.get(
+                f"{base_url}/config",
+                timeout=httpx.Timeout(timeout_seconds),
+            )
+        except httpx.HTTPError:
+            return False
+        return response.status_code < 500
 
     def resolve_node_ids(self, names: list[str]) -> list[str]:
         """Resolve friendly node names (e.g. ``kite5``) to live libp2p node IDs.
@@ -689,11 +773,14 @@ class SkulkClient:
         speed: float | None = None,
         stream: bool = False,
         streaming_interval: float | None = None,
+        read_delay_s: float = 0.0,
     ) -> AudioSpeechExecution:
         """Generate speech audio with OpenAI's speech endpoint."""
 
         if streaming_interval is not None and not stream:
             raise ValueError("streaming_interval requires stream=True")
+        if read_delay_s < 0:
+            raise ValueError("read_delay_s must be non-negative")
         payload: dict[str, object] = {
             "model": model_id,
             "input": input_text,
@@ -714,6 +801,7 @@ class SkulkClient:
             audio_parts: list[bytes] = []
             chunk_sizes: list[int] = []
             chunk_arrival_s: list[float] = []
+            intentional_read_delay_s = 0.0
             try:
                 with self._client.stream(
                     "POST",
@@ -738,12 +826,18 @@ class SkulkClient:
                     for chunk in response.iter_bytes():
                         if not chunk:
                             continue
-                        arrived_at = time.monotonic() - start
+                        arrived_at = max(
+                            0.0,
+                            time.monotonic() - start - intentional_read_delay_s,
+                        )
                         if first_byte_at is None:
                             first_byte_at = arrived_at
                         audio_parts.append(chunk)
                         chunk_sizes.append(len(chunk))
                         chunk_arrival_s.append(arrived_at)
+                        if read_delay_s > 0:
+                            time.sleep(read_delay_s)
+                            intentional_read_delay_s += read_delay_s
             except (httpx.TimeoutException, httpx.TransportError) as exc:
                 raise SkulkApiError(
                     "POST",

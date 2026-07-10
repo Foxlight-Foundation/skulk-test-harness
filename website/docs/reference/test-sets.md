@@ -38,6 +38,7 @@ Each map key must match the test set's `name`.
 | `embedding` | Embeddings endpoint behavior |
 | `audio_speech` | Text-to-speech endpoint behavior; generated audio is saved as an artifact |
 | `audio_speech_streaming` | Experimental text-to-speech streaming behavior; generated audio and timing sidecar are saved as artifacts |
+| `audio_speech_pressure` | Concurrent streaming TTS across discovered API owners, with optional slow readers and one audio/timing artifact per request |
 | `audio_transcription` | Speech-to-text endpoint behavior with an audio fixture |
 | `speech_roundtrip` | TTS output saved as an artifact and piped into a mounted STT model |
 
@@ -72,6 +73,11 @@ Each map key must match the test set's `name`.
 | `speech_voice` | Optional voice name for TTS |
 | `speech_speed` | Optional speech speed multiplier for TTS |
 | `speech_streaming_interval` | Optional `streaming_interval` hint for `kind: audio_speech_streaming` |
+| `speech_concurrency` | Concurrent workers for `kind: audio_speech_pressure` |
+| `speech_requests_per_worker` | Sequential requests issued by each pressure worker |
+| `speech_owner_count` | Distinct reachable API owners selected from cluster diagnostics |
+| `speech_slow_workers` | Leading pressure workers that intentionally delay stream reads |
+| `speech_slow_reader_delay_s` | Delay after each received chunk for slow pressure workers |
 | `input_audio_path` | Local fixture path for `kind: audio_transcription` |
 | `input_audio_mime_type` | Optional MIME type for transcription fixture upload; inferred from the fixture extension when omitted |
 | `transcription_model_id` | Optional STT model used by `kind: speech_roundtrip` |

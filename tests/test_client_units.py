@@ -6,6 +6,81 @@ import pytest
 from skulk_test_harness.client import SkulkApiError, SkulkClient
 
 
+def test_cluster_api_urls_include_local_and_reachable_peers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = SkulkClient("http://local.test/")
+    monkeypatch.setattr(
+        client,
+        "_request_json",
+        lambda *_args, **_kwargs: {
+            "localNodeId": "local",
+            "nodes": [
+                {
+                    "nodeId": "local",
+                    "url": None,
+                    "ok": True,
+                    "diagnostics": {
+                        "identity": {"friendlyName": "local.test"}
+                    },
+                },
+                {"nodeId": "peer-a", "url": "http://peer-a.test/", "ok": True},
+                {"nodeId": "peer-b", "url": "http://peer-b.test", "ok": False},
+            ]
+        },
+    )
+    monkeypatch.setattr(client, "_api_url_reachable", lambda _url: True)
+    try:
+        assert client.get_cluster_api_urls() == [
+            "http://local.test",
+            "http://peer-a.test",
+        ]
+    finally:
+        client.close()
+
+
+def test_cluster_api_urls_prefers_controller_reachable_node_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = SkulkClient("http://controller.test:52415")
+    monkeypatch.setattr(
+        client,
+        "_request_json",
+        lambda *_args, **_kwargs: {
+            "nodes": [
+                {
+                    "nodeId": "peer-a",
+                    "url": "http://node-local-route.test:52415",
+                    "ok": True,
+                    "diagnostics": {
+                        "identity": {"friendlyName": "peer-a"},
+                        "tailscale": {
+                            "dnsName": "peer-a.overlay.test",
+                            "hostname": "peer-a",
+                        },
+                    },
+                }
+            ]
+        },
+    )
+    attempted: list[str] = []
+
+    def reachable(url: str) -> bool:
+        attempted.append(url)
+        return url == "http://peer-a.overlay.test:52415"
+
+    monkeypatch.setattr(client, "_api_url_reachable", reachable)
+    try:
+        assert client.get_cluster_api_urls() == [
+            "http://controller.test:52415",
+            "http://peer-a.overlay.test:52415",
+        ]
+    finally:
+        client.close()
+
+    assert attempted == ["http://peer-a.overlay.test:52415"]
+
+
 def test_request_json_retries_read_timeout_for_get(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -159,6 +234,54 @@ def test_audio_speech_streams_bytes_and_records_chunk_timings(
     assert execution.chunk_sizes == [3, 3]
     assert execution.chunk_arrival_s == pytest.approx([0.2, 0.6])
     assert execution.streaming is True
+
+
+def test_audio_speech_can_intentionally_delay_stream_reads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = SkulkClient("http://skulk.test")
+    delays: list[float] = []
+    times = iter([100.0, 100.2, 100.7, 101.2])
+    monkeypatch.setattr(
+        "skulk_test_harness.client.time.monotonic", lambda: next(times)
+    )
+
+    class _Stream:
+        status_code = 200
+        headers = {"content-type": "audio/mpeg"}
+
+        def __enter__(self) -> "_Stream":
+            return self
+
+        def __exit__(self, *_exc: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return b""
+
+        def iter_bytes(self):
+            yield b"abc"
+            yield b"def"
+
+    monkeypatch.setattr(client._client, "stream", lambda *_args, **_kwargs: _Stream())
+    monkeypatch.setattr(
+        "skulk_test_harness.client.time.sleep", lambda seconds: delays.append(seconds)
+    )
+    try:
+        execution = client.audio_speech(
+            model_id="org/TTS",
+            input_text="hello",
+            response_format="mp3",
+            stream=True,
+            read_delay_s=0.25,
+        )
+    finally:
+        client.close()
+
+    assert execution.audio == b"abcdef"
+    assert delays == [0.25, 0.25]
+    assert execution.chunk_arrival_s == pytest.approx([0.2, 0.45])
+    assert execution.elapsed_s == pytest.approx(1.2)
 
 
 def test_audio_speech_rejects_streaming_interval_without_stream() -> None:
