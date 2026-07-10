@@ -703,6 +703,10 @@ class ClusterNodeFingerprint(HarnessBaseModel):
     # nodeResources (participation backends) is deliberately NOT merged into
     # /state, so vendor is our proxy for "MLX node vs llama.cpp node".
     accelerator_vendor: str | None = None
+    # Accelerator marketing name from nodeSystem telemetry ("M4", "Radeon
+    # 8060S", ...). Feeds chip-level hardware classes in the results ledger;
+    # None when the node's telemetry has not landed or predates the field.
+    accelerator_name: str | None = None
     skulk_version: str | None = None
     system_telemetry_present: bool = False
     memory_telemetry_present: bool = False
@@ -736,7 +740,7 @@ class CacheState(HarnessBaseModel):
 class ReportFingerprint(HarnessBaseModel):
     """Durable self-description of a run (results-ledger schema 2.0)."""
 
-    schema_version: str = "2.0"
+    schema_version: str = "2.1"
     source_context: SourceContext = Field(default_factory=SourceContext)
     runtime: RuntimeFingerprint = Field(default_factory=RuntimeFingerprint)
     cluster: ClusterFingerprint = Field(default_factory=ClusterFingerprint)

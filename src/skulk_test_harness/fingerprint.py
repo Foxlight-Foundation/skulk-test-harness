@@ -152,12 +152,14 @@ def _cluster_fingerprint(client: object) -> tuple[ClusterFingerprint, list[Issue
         sysprof = node_system.get(nid, {}) if isinstance(node_system, dict) else {}
         accel = sysprof.get("accelerator") if isinstance(sysprof, dict) else None
         vendor = _as_str(accel.get("vendor")) if isinstance(accel, dict) else None
+        accel_name = _as_str(accel.get("name")) if isinstance(accel, dict) else None
         fp.nodes.append(
             ClusterNodeFingerprint(
                 node_id=nid,
                 friendly_name=name,
                 ram_total_bytes=ram if isinstance(ram, int) else None,
                 accelerator_vendor=vendor,
+                accelerator_name=accel_name,
                 skulk_version=version,
                 system_telemetry_present=isinstance(node_system, dict) and nid in node_system,
                 memory_telemetry_present=isinstance(node_memory, dict) and nid in node_memory,
