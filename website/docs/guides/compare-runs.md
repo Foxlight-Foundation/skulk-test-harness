@@ -118,9 +118,16 @@ before trusting the delta.
 
 ### `decode_tps_unavailable`
 
-**What it means:** at least one side had no usable decode throughput median,
-so the headline metric fell back or is missing. Common on older runs where
-Skulk did not report generation throughput.
+**What it means:** at least one side had no usable decode throughput median
+at all: neither Skulk's reported generation throughput nor a wall-clock
+value survived aggregation, so there is no headline number for that model.
+
+One honest caveat about fallback: when a run lacks Skulk's
+`skulk_generation_tps` but does have `wall_tps`, the comparator uses the
+wall-clock value as the headline WITHOUT raising this guard. Wall throughput
+includes time to first token, so it reads lower than true decode throughput.
+When comparing an old run (wall only) against a new one (real decode
+numbers), treat the delta with suspicion even though no guard fired.
 
 **What to do:** prefer `wall_tps` for that comparison, or re-run the baseline
 on a current Skulk so both sides report real decode numbers.
