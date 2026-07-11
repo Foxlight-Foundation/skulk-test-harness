@@ -126,6 +126,14 @@ model_sets:
     models:
       - mlx-community/parakeet-tdt-0.6b-v3
 
+  speech-stt-realtime:
+    name: speech-stt-realtime
+    description: >-
+      Realtime speech-to-text target whose Skulk card and mlx_audio runtime
+      expose a true incremental streaming session.
+    models:
+      - mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit
+
   vision:
     name: vision
     description: Vision-capable text-generation model for image input coverage.

@@ -125,6 +125,7 @@ harness make sure Skulk knows about the model card.
 | `capabilities_any` | Match any listed capability |
 | `served_spec_types_any` | Match any listed served speculation type |
 | `require_audio_streaming` | Require streaming-capable audio metadata |
+| `require_audio_realtime` | Require truthful streaming plus realtime audio metadata |
 | `max_models` | Stop after this many matches |
 
 ## Check Your Set

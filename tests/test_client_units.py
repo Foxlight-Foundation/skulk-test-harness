@@ -1,14 +1,42 @@
+import base64
 import json
 
 import httpx
 import pytest
 
+from skulk_test_harness import client as client_module
 from skulk_test_harness.client import (
     ClusterApiOwner,
     DataPlaneDiagnosticsSnapshot,
+    ProviderCapabilityDiagnosticsSnapshot,
     SkulkApiError,
     SkulkClient,
 )
+
+
+class _FakeWebSocket:
+    """Synchronous websocket stand-in with a fixed server event sequence."""
+
+    def __init__(self, events: list[dict[str, object]]) -> None:
+        self.events = [json.dumps(event) for event in events]
+        self.sent: list[str] = []
+        self.closed: tuple[int, str] | None = None
+
+    def __enter__(self) -> "_FakeWebSocket":
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        return None
+
+    def recv(self, *, timeout: float | None = None, decode: bool | None = None) -> str:
+        del timeout, decode
+        return self.events.pop(0)
+
+    def send(self, message: str) -> None:
+        self.sent.append(message)
+
+    def close(self, code: int = 1000, reason: str = "") -> None:
+        self.closed = (code, reason)
 
 
 def test_cluster_api_urls_include_local_and_reachable_peers(
@@ -486,6 +514,187 @@ def test_audio_transcription_extracts_ndjson_text(
         client.close()
 
     assert execution.text == "hello world"
+
+
+def test_realtime_transcription_maps_pcm_to_websocket_protocol(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    socket = _FakeWebSocket(
+        [
+            {"type": "session.created", "session": {"type": "transcription"}},
+            {"type": "session.updated"},
+            {"type": "input_audio_buffer.committed"},
+            {
+                "type": "conversation.item.input_audio_transcription.delta",
+                "delta": "hello ",
+            },
+            {
+                "type": "conversation.item.input_audio_transcription.completed",
+                "transcript": "hello world",
+            },
+        ]
+    )
+    connected: dict[str, object] = {}
+
+    def connect(url: str, **kwargs: object) -> _FakeWebSocket:
+        connected["url"] = url
+        connected["kwargs"] = kwargs
+        return socket
+
+    monkeypatch.setattr(client_module.websocket_client, "connect", connect)
+    client = SkulkClient("https://skulk.test:52415")
+    pcm16 = bytes(range(256)) * 3
+    try:
+        execution = client.realtime_transcription(
+            model_id="org/realtime stt",
+            pcm16=pcm16,
+            sample_rate=8_000,
+            frame_duration_ms=20,
+            pace_audio=False,
+        )
+    finally:
+        client.close()
+
+    assert connected["url"] == (
+        "wss://skulk.test:52415/v1/realtime?model=org%2Frealtime%20stt"
+    )
+    assert isinstance(connected["kwargs"], dict)
+    assert connected["kwargs"]["proxy"] is None
+    assert execution.text == "hello world"
+    assert execution.input_bytes == len(pcm16)
+    assert execution.input_frames == 3
+    assert execution.transcript_deltas == 1
+    assert execution.canceled is False
+    payloads = [json.loads(message) for message in socket.sent]
+    assert payloads[0]["type"] == "session.update"
+    append_payloads = [
+        payload
+        for payload in payloads
+        if payload["type"] == "input_audio_buffer.append"
+    ]
+    assert b"".join(base64.b64decode(payload["audio"]) for payload in append_payloads) == pcm16
+    assert payloads[-1] == {"type": "input_audio_buffer.commit"}
+
+
+def test_realtime_transcription_disconnect_probe_closes_without_commit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    socket = _FakeWebSocket(
+        [
+            {"type": "session.created"},
+            {"type": "session.updated"},
+        ]
+    )
+    monkeypatch.setattr(
+        client_module.websocket_client,
+        "connect",
+        lambda *_args, **_kwargs: socket,
+    )
+    client = SkulkClient("http://skulk.test")
+    try:
+        execution = client.realtime_transcription(
+            model_id="org/STT",
+            pcm16=b"\x00\x00" * 640,
+            sample_rate=8_000,
+            frame_duration_ms=20,
+            pace_audio=False,
+            cancel_after_frames=2,
+        )
+    finally:
+        client.close()
+
+    assert execution.canceled is True
+    assert execution.input_frames == 2
+    assert socket.closed == (1000, "harness cancellation probe")
+    assert all(
+        json.loads(message)["type"] != "input_audio_buffer.commit"
+        for message in socket.sent
+    )
+
+
+def test_realtime_transcription_surfaces_server_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    socket = _FakeWebSocket(
+        [{"type": "error", "error": {"message": "realtime unavailable"}}]
+    )
+    monkeypatch.setattr(
+        client_module.websocket_client,
+        "connect",
+        lambda *_args, **_kwargs: socket,
+    )
+    client = SkulkClient("http://skulk.test")
+    try:
+        with pytest.raises(SkulkApiError, match="realtime unavailable") as exc_info:
+            client.realtime_transcription(
+                model_id="org/STT",
+                pcm16=b"\x00\x00" * 160,
+                sample_rate=8_000,
+                pace_audio=False,
+            )
+    finally:
+        client.close()
+
+    assert exc_info.value.method == "WS"
+    assert exc_info.value.path == "/v1/realtime"
+
+
+def test_realtime_transcription_wraps_handshake_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def reject_handshake(*_args: object, **_kwargs: object) -> None:
+        raise client_module.WebSocketException("handshake rejected")
+
+    monkeypatch.setattr(client_module.websocket_client, "connect", reject_handshake)
+    client = SkulkClient("http://skulk.test")
+    try:
+        with pytest.raises(SkulkApiError, match="handshake rejected") as exc_info:
+            client.realtime_transcription(
+                model_id="org/STT",
+                pcm16=b"\x00\x00" * 160,
+                sample_rate=8_000,
+                pace_audio=False,
+            )
+    finally:
+        client.close()
+
+    assert exc_info.value.method == "WS"
+    assert exc_info.value.path == "/v1/realtime"
+    assert exc_info.value.status_code == 0
+
+
+def test_provider_capability_diagnostics_parses_realtime_counters() -> None:
+    snapshot = ProviderCapabilityDiagnosticsSnapshot.from_payload(
+        {
+            "runtime": {"nodeId": "node-a"},
+            "provider": {
+                "streamSlotsInUse": 1,
+                "capabilities": {
+                    "stt.realtime@1.0.0": {
+                        "activeStreams": 1,
+                        "admittedStreams": 4,
+                        "inputQueueDepth": 2,
+                        "inputFrames": 20,
+                        "inputMediaBytes": 6400,
+                        "outputFrames": 8,
+                        "outputMediaBytes": 0,
+                        "completedStreams": 3,
+                        "failedStreams": 0,
+                        "cancelledStreams": 1,
+                        "missingTerminalStreams": 0,
+                        "cancellationRequests": 1,
+                    }
+                },
+            },
+        },
+        "stt.realtime@1.0.0",
+    )
+
+    assert snapshot.node_id == "node-a"
+    assert snapshot.active_streams == 1
+    assert snapshot.input_media_bytes == 6400
+    assert snapshot.completed_streams == 3
+    assert snapshot.cancellation_requests == 1
 
 
 def test_stream_chat_counts_reasoning_for_generated_throughput(

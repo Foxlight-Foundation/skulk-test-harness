@@ -694,6 +694,32 @@ test_sets:
           required_substrings:
             - hello
 
+  realtime-transcription:
+    name: realtime-transcription
+    description: >
+      Fleet realtime STT coverage. Generates semantic PCM16 through the stable
+      TTS fixture model, validates the WebSocket contract from API owners both
+      on and away from the serving node, probes disconnect cancellation, and
+      requires provider lifecycle/media counters to explain the run.
+    tests:
+      - name: realtime-stt-local-remote-roundtrip
+        kind: realtime_transcription
+        prompt: Hello world from the Skulk realtime speech battery.
+        audio_response_format: wav
+        speech_synthesis_model_id: mlx-community/LongCat-AudioDiT-1B-4bit
+        speech_owner_count: 2
+        speech_owner_topology: local_remote
+        realtime_frame_duration_ms: 100
+        realtime_pace_audio: true
+        realtime_cancel_after_frames: 3
+        realtime_assert_provider_diagnostics: true
+        success:
+          min_chars: 5
+          min_audio_bytes: 1024
+          min_transcript_deltas: 1
+          required_substrings:
+            - hello
+
   embeddings:
     name: embeddings
     description: >

@@ -99,6 +99,26 @@ model_sets:
           - SpeechToText
         max_models: 2
 
+  speech-stt-realtime:
+    name: speech-stt-realtime
+    description: Speech-to-text targets that truthfully advertise realtime streaming sessions.
+    selectors:
+      - source: both
+        capabilities_any:
+          - stt
+        require_audio_realtime: true
+        max_models: 1
+      - source: both
+        tags_any:
+          - stt
+        require_audio_realtime: true
+        max_models: 1
+      - source: both
+        tasks_any:
+          - SpeechToText
+        require_audio_realtime: true
+        max_models: 1
+
   vision:
     name: vision
     description: Vision-capable models discovered from catalog/store metadata.

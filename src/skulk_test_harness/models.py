@@ -28,6 +28,7 @@ TestKind = Literal[
     "audio_speech_streaming",
     "audio_speech_pressure",
     "audio_transcription",
+    "realtime_transcription",
     "speech_roundtrip",
 ]
 RunMode = Literal["plan", "execute"]
@@ -160,6 +161,13 @@ class ModelSelector(HarnessBaseModel):
         description=(
             "When true, select only catalog/store entries whose audio metadata "
             "declares supports_streaming=true."
+        ),
+    )
+    require_audio_realtime: bool = Field(
+        default=False,
+        description=(
+            "When true, select only catalog/store entries whose audio metadata "
+            "declares both supports_streaming=true and supports_realtime=true."
         ),
     )
     max_models: int | None = Field(default=None, ge=1)
@@ -306,6 +314,14 @@ class SuccessCriteria(HarnessBaseModel):
             "first and last streamed response chunk. This distinguishes genuine "
             "incremental delivery from a finished response that was merely split "
             "into multiple HTTP chunks."
+        ),
+    )
+    min_transcript_deltas: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "For realtime transcription tests, require at least this many "
+            "incremental transcript delta events before the final transcript."
         ),
     )
 
@@ -511,6 +527,44 @@ class PromptTest(HarnessBaseModel):
             "For `kind: speech_roundtrip`, optional explicit STT model. When "
             "unset, the harness selects the first live catalog model advertising "
             "STT support."
+        ),
+    )
+    speech_synthesis_model_id: str | None = Field(
+        default=None,
+        description=(
+            "For `kind: realtime_transcription`, optional TTS model used to "
+            "generate the semantic PCM16 fixture. When unset, the harness "
+            "selects the first live catalog model advertising TTS support."
+        ),
+    )
+    realtime_frame_duration_ms: int = Field(
+        default=100,
+        ge=20,
+        le=1000,
+        description=(
+            "PCM16 frame duration sent to `/v1/realtime`. The dashboard uses "
+            "100 ms frames."
+        ),
+    )
+    realtime_pace_audio: bool = Field(
+        default=True,
+        description=(
+            "Send realtime PCM frames at their media cadence instead of as a burst."
+        ),
+    )
+    realtime_cancel_after_frames: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "When positive, run a disconnect probe after this many PCM frames "
+            "before the successful realtime transcription requests."
+        ),
+    )
+    realtime_assert_provider_diagnostics: bool = Field(
+        default=False,
+        description=(
+            "Require stt.realtime provider lifecycle/media counters to cover "
+            "successful and cancelled sessions and drain active gauges to zero."
         ),
     )
     transcription_response_format: TranscriptionResponseFormat = Field(
