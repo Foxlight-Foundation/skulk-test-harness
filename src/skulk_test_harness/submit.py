@@ -14,13 +14,17 @@ hardware attribution, then hashes ids before anything is published.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 from typing import Any
 
 import httpx
+
+from skulk_test_harness.utils import slugify
 
 DEFAULT_INGEST_URL = "https://skulk-ledger-ingest.thomastupper92618.workers.dev"
 
@@ -65,7 +69,36 @@ def slim_and_redact_report(raw: dict[str, Any]) -> dict[str, Any]:
     if isinstance(spec, dict):
         spec.pop("run_name", None)
 
+    _redact_run_id(report)
+
     return report
+
+
+def _redact_run_id(report: dict[str, Any]) -> None:
+    """Strip operator labels from run_id while preserving dedup identity.
+
+    ``_run_id`` embeds the slugified ``--run-name`` when one was given
+    (default runs embed ``<model-set>-<test-set>``), so a custom label can
+    carry a host/lab/customer name into the very field the ledger keys on.
+    Default-shaped suffixes are kept (they are harness vocabulary, not
+    operator identity); anything else becomes a deterministic hash of the
+    original id, so re-submitting the same run still dedups server-side.
+    """
+    run_id = report.get("run_id")
+    if not isinstance(run_id, str):
+        return
+    match = re.match(r"^(\d{8}-\d{6})-(.+)$", run_id)
+    if not match:
+        return
+    stamp, suffix = match.groups()
+    spec = report.get("spec")
+    model_set = spec.get("model_set") if isinstance(spec, dict) else None
+    test_set = spec.get("test_set") if isinstance(spec, dict) else None
+    if isinstance(model_set, str) and isinstance(test_set, str):
+        if suffix == slugify(f"{model_set}-{test_set}"):
+            return
+    digest = hashlib.sha256(run_id.encode()).hexdigest()[:10]
+    report["run_id"] = f"{stamp}-submitted-{digest}"
 
 
 def locate_report(path: Path) -> Path:

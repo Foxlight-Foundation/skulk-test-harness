@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import httpx
@@ -76,6 +77,21 @@ def test_slim_and_redact_strips_text_and_identity_keeps_attribution_facts() -> N
     assert node["node_id"] == "nodeA"
     assert node["accelerator_name"] == "M4"
     assert "run_name" not in payload["spec"]
+
+
+def test_redact_run_id_keeps_default_shape_and_hashes_custom_labels() -> None:
+    default = _raw_report()
+    default["run_id"] = "20260710-120000-m-t"  # slug(model_set-test_set)
+    assert submit.slim_and_redact_report(default)["run_id"] == "20260710-120000-m-t"
+
+    labeled = _raw_report()
+    labeled["run_id"] = "20260710-120000-acme-lab-3-smoketest"
+    out1 = submit.slim_and_redact_report(labeled)["run_id"]
+    out2 = submit.slim_and_redact_report(labeled)["run_id"]
+    assert "acme" not in out1
+    assert re.match(r"^20260710-120000-submitted-[0-9a-f]{10}$", out1)
+    # Deterministic: resubmission dedups server-side.
+    assert out1 == out2
 
 
 def test_slim_and_redact_never_mutates_the_input() -> None:
