@@ -1718,6 +1718,7 @@ def test_realtime_transcription_roundtrip_runs_local_remote_and_cancel(
         f"{result.artifact_path.suffix}.realtime.json"
     )
     metadata = json.loads(metadata_path.read_text())
+    assert metadata["speech_synthesis_model_id"] == "org/TTS"
     assert [session["owner"] for session in metadata["sessions"]] == [
         "owner-1-serving_local",
         "owner-2-remote_owner",

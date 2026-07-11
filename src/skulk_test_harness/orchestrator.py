@@ -2108,6 +2108,7 @@ class HarnessRunner:
             if artifact_path is not None:
                 metadata_path = _realtime_metadata_artifact_path(
                     artifact_path,
+                    speech_synthesis_model_id=tts_model_id,
                     sample_rate=sample_rate,
                     frame_duration_ms=test.realtime_frame_duration_ms,
                     paced=test.realtime_pace_audio,
@@ -3515,6 +3516,7 @@ def _sanitized_realtime_execution(
 def _realtime_metadata_artifact_path(
     audio_path: Path,
     *,
+    speech_synthesis_model_id: str,
     sample_rate: int,
     frame_duration_ms: int,
     paced: bool,
@@ -3528,6 +3530,7 @@ def _realtime_metadata_artifact_path(
     path.write_text(
         json.dumps(
             {
+                "speech_synthesis_model_id": speech_synthesis_model_id,
                 "sample_rate": sample_rate,
                 "frame_duration_ms": frame_duration_ms,
                 "paced": paced,
