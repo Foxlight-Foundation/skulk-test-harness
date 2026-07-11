@@ -6,7 +6,11 @@ import time
 from pathlib import Path
 from typing import Annotated
 
+import json
+
 import typer
+
+from skulk_test_harness import submit as submit_module
 from rich.console import Console
 from rich.table import Table
 
@@ -651,3 +655,41 @@ def _registry_entries(registry: dict[str, object]) -> list[dict[str, object]]:
     if isinstance(entries, list):
         return [entry for entry in entries if isinstance(entry, dict)]
     return []
+
+
+@app.command()
+def submit(
+    run_path: Annotated[Path, typer.Argument(help="Run directory or report.json to submit.")],
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Print the exact payload instead of sending.")
+    ] = False,
+    github_token: Annotated[
+        str | None, typer.Option("--github-token", help="GitHub token for attribution.")
+    ] = None,
+    ingest_url: Annotated[
+        str, typer.Option("--ingest-url", help="Ingest API base URL.")
+    ] = submit_module.DEFAULT_INGEST_URL,
+) -> None:
+    """Submit a run to the Foxlight community benchmarks ledger.
+
+    Slims and redacts the report CLIENT-side (no generated text and no
+    operator identifiers ever leave the machine), authenticates with your
+    GitHub account for attribution, and queues the run for manual review.
+    Use --dry-run to inspect the exact payload first. Never contacts a
+    Skulk cluster.
+    """
+
+    try:
+        report_path = submit_module.locate_report(run_path)
+        raw = json.loads(report_path.read_text())
+        payload = submit_module.slim_and_redact_report(raw)
+        if dry_run:
+            typer.echo(json.dumps(payload, indent=2))
+            typer.echo(f"[dry-run] would POST to {ingest_url}/v1/submissions", err=True)
+            return
+        token = submit_module.resolve_github_token(github_token)
+        result = submit_module.post_submission(payload, token, ingest_url)
+        typer.echo(json.dumps(result, indent=2))
+    except submit_module.SubmitError as exc:
+        typer.echo(f"submit failed: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
