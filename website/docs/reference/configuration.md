@@ -47,7 +47,7 @@ cluster_nodes: {}
 | `store_delete_timeout_s` | `30` | Max wait for best-effort staged model eviction |
 | `poll_interval_s` | `2` | Delay between repeated state checks |
 | `preview_settle_attempts` | `8` | Retries for transient placement preview gaps |
-| `output_dir` | `runs` | Where reports are written |
+| `output_dir` | `runs` | Where reports are written; also where `compare` resolves run selectors |
 | `model_sets_path` | `configs/model_sets.yaml` | YAML file containing model sets |
 | `test_sets_path` | `configs/test_sets.yaml` | YAML file containing test sets |
 | `cluster_nodes` | `{}` | SSH control settings for stability suites |

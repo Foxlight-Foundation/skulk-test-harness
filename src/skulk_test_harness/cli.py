@@ -283,7 +283,7 @@ def run(
         str | None,
         typer.Option(
             "--exclude-nodes",
-            help="Comma-separated friendly node names (e.g. 'kite4') to exclude "
+            help="Comma-separated friendly node names (e.g. 'node-a') to exclude "
             "from placement. Used to force a model onto a specific node the "
             "planner would not otherwise pick -- e.g. exclude the larger AMD "
             "node so a GGUF/served cell lands on the smaller one for coverage.",
@@ -302,7 +302,7 @@ def run(
     """Run or dry-run a named test set against a named model set."""
 
     cfg, runner = _load_runner(config)
-    # Resolve friendly names (kite4) to live libp2p node IDs before building the
+    # Resolve friendly names to live libp2p node IDs before building the
     # spec: placement exclusion is by node ID, but node IDs are ephemeral so a
     # battery cell can only name a node by its stable friendly name.
     excluded_node_ids: list[str] = []

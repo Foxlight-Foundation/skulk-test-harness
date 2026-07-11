@@ -1,0 +1,24 @@
+name: ci
+
+# Lint + offline test suite. The badge on the README points here, so this
+# workflow is the public signal that the harness is healthy. No cluster is
+# required: the suite is fully offline by design.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Lint
+        run: uv run ruff check
+      - name: Tests
+        run: uv run pytest -q

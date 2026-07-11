@@ -1,33 +1,71 @@
-# skulk-test-harness
+# **skulk-test-harness**
 
-Cluster-neutral test harness tooling for [Skulk](https://github.com/Foxlight-Foundation/Skulk).
+<div align="center">
 
-The harness provides named model sets, named test sets, placement planning,
-OpenAI-compatible chat/tool-call execution, and JSON/Markdown reports without
-coupling experimental test logic into the main Skulk repository.
+[![Version](https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2FFoxlight-Foundation%2Fskulk-test-harness%2Fmain%2Fpyproject.toml&query=%24.project.version&prefix=v&label=version&color=blue&style=flat-square)](https://github.com/Foxlight-Foundation/skulk-test-harness/releases)
+[![Tests](https://img.shields.io/github/actions/workflow/status/Foxlight-Foundation/skulk-test-harness/ci.yml?branch=main&label=tests&style=flat-square&logo=github)](https://github.com/Foxlight-Foundation/skulk-test-harness/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-MIT-4c72b0?style=flat-square)](LICENSE)
 
-## Quick Start
+[![Documentation](https://img.shields.io/badge/docs-documentation-2ea44f?style=flat-square&logo=readthedocs&logoColor=white)](https://foxlight-foundation.github.io/skulk-test-harness/)
+[![Quickstart](https://img.shields.io/badge/docs-quickstart-2ea44f?style=flat-square&logo=readthedocs&logoColor=white)](https://foxlight-foundation.github.io/skulk-test-harness/quickstart)
+[![CLI Reference](https://img.shields.io/badge/docs-CLI_reference-2ea44f?style=flat-square&logo=readthedocs&logoColor=white)](https://foxlight-foundation.github.io/skulk-test-harness/reference/cli)
+
+</div>
+
+---
+
+You have a [Skulk](https://github.com/Foxlight-Foundation/Skulk) cluster.
+This tool answers two questions about it: **does it actually work**, and
+**how fast is it?**
+
+Point the harness at your cluster's API and it will place models, run real
+chat/tool/vision/speech requests against them, measure time-to-first-token
+and decode throughput, check the answers, and write an honest report you can
+keep, compare against later runs, and (if you want) publish to the public
+[Skulk benchmarks ledger](https://benchmarks.foxlight.ai).
+
+## What you can do with it
+
+- **Smoke-test a cluster**: "every model I care about serves a correct answer."
+- **Benchmark**: wall-clock TTFT and tokens/second per model, per run, with
+  the noise called out instead of hidden.
+- **Compare runs**: like-for-like deltas between two runs, with trust guards
+  that warn when a comparison is not actually fair.
+- **Stress it**: soak, failover, churn, and refusal suites for operators who
+  want to know what breaks first.
+- **Share results**: one command submits a run to the community benchmarks
+  ledger, redacted on your machine before anything leaves it.
+
+## Five-minute start
+
+You need: a running Skulk node (its API defaults to `http://localhost:52415`)
+and [uv](https://docs.astral.sh/uv/).
 
 ```bash
+git clone https://github.com/Foxlight-Foundation/skulk-test-harness
+cd skulk-test-harness
 uv sync
-cp skulk-harness.example.yaml skulk-harness.yaml
-uv run skulk-harness doctor
-uv run skulk-harness models sets
-uv run skulk-harness tests sets
-uv run skulk-harness plan --model-set store-smoke --test-set chat-tests
 ```
 
-For a more careful walkthrough, see the Docusaurus docs in `website/docs/`.
-To preview them locally:
+First, confirm the harness can see your cluster:
 
 ```bash
-cd website
-npm ci
-npm run start
+uv run skulk-harness doctor
 ```
 
-`run` defaults to dry-run. Pass `--execute` only when you want the harness to
-place models and issue live requests:
+`doctor` prints a compact summary of your nodes and models. If it cannot
+reach the API, copy `skulk-harness.example.yaml` to `skulk-harness.yaml` and
+set `api_base_url` to wherever your Skulk API lives.
+
+Now preview a run. Nothing touches the cluster yet: `run` is a **dry run by
+default**.
+
+```bash
+uv run skulk-harness run --model-set store-smoke --test-set chat-tests
+```
+
+That prints what WOULD happen: which models resolve, where they would be
+placed, which tests would execute. When it looks right, let it actually run:
 
 ```bash
 uv run skulk-harness run \
@@ -37,107 +75,98 @@ uv run skulk-harness run \
   --delete-created-instances
 ```
 
-If `skulk-harness.yaml` is absent, the CLI falls back to safe defaults pointed
-at `http://localhost:52415`.
+`--delete-created-instances` cleans up after itself: any model instance the
+harness started gets torn down at the end, leaving your cluster as it found
+it.
 
-## Public Defaults
+## Where the results go
 
-The default configs are intentionally generic:
+Every run writes a directory under `runs/`:
 
-- model sets in `configs/model_sets.yaml`
-- test sets in `configs/test_sets.yaml`
-- example local config in `skulk-harness.example.yaml`
+- `report.json`: the machine-readable record of every request, every metric,
+  pass/fail, plus a **fingerprint** of exactly what ran it (Skulk version,
+  node hardware, cache state), so a number is never separated from its
+  context.
+- `summary.md`: the same story for humans.
+- `events.jsonl` and `artifacts/`: the raw trail (speech tests keep their
+  generated audio here).
 
-Built-in model sets include:
+Compare any two runs later:
 
-- `store-smoke`
-- `store-all`
-- `catalog-small-text`
-- `embeddings`
-- `speech-tts`
-- `speech-tts-streaming`
-- `speech-roundtrip-tts`
-- `speech-stt`
-- `vision`
-- `served-spec-draft-simple`
-- `served-spec-draft-eagle3`
+```bash
+uv run skulk-harness compare -b runs/<baseline> -n runs/<candidate>
+```
 
-Built-in test sets include:
+`compare` shows per-model throughput deltas and refuses to pretend: if the
+runs used different node sets, cache states, or too few samples, it says so.
 
-- `chat-tests`
-- `code-tests`
-- `tool-tests`
-- `throughput`
-- `cancellation`
-- `context-admission`
-- `embeddings`
-- `speech-synthesis`
-- `speech-synthesis-streaming`
-- `speech-roundtrip`
-- `vision`
-- `served-speculation`
+## Share your results
 
-## What Requires a Live Cluster?
+The public [benchmarks ledger](https://benchmarks.foxlight.ai) collects runs
+from the community, labeled by submitter and by the hardware that produced
+them. Submitting is one command:
 
-Commands that list local config, model sets, or test sets do not need a live
-Skulk cluster. Commands that call `doctor`, inspect live catalog/store models,
-plan placements, run tests, or request downloads need a reachable Skulk API.
+```bash
+uv run skulk-harness submit runs/<your-run> --dry-run   # inspect the payload
+uv run skulk-harness submit runs/<your-run>             # send it
+```
 
-The stability commands are advanced operational checks. `failover`, `churn`,
-and `refusal` require `--execute-destructive` before they perform any API or SSH
-side effects. Configure `cluster_nodes` with SSH hosts and explicit
-`kill_command` / `relaunch_command` values before using them.
+Redaction happens **on your machine, before anything is sent**: generated
+text, operator notes, run names, repo paths, API URLs, and node names never
+leave it. `--dry-run` prints the exact payload so you can verify that
+yourself. Submissions authenticate with your GitHub account (via the `gh`
+CLI or a `GH_TOKEN`) and wait for manual approval before appearing on the
+site.
 
-## Reports
+## Model sets and test sets
 
-Runs write JSON, JSONL, Markdown summaries, and artifacts under `runs/` by
-default. Speech synthesis, streaming speech synthesis, and speech roundtrip
-tests persist generated audio under the run's `artifacts/` directory. Streaming
-speech tests also write a `.stream.json` timing sidecar next to the audio with
-chunk count, first-byte latency, stream span, and per-chunk timing. The `runs/`
-directory is ignored by git.
+Runs are named combinations of a **model set** (which models) and a **test
+set** (which checks). List what is available:
 
-## Foxlight Profile
+```bash
+uv run skulk-harness models sets
+uv run skulk-harness tests sets
+```
 
-Foxlight's production e2e matrix lives under `examples/foxlight/`. The root
+The built-in sets in `configs/` cover chat, code, tool calling, embeddings,
+vision, speech (TTS/STT, streaming, roundtrip), throughput, cancellation,
+context admission, and served speculative decoding. Defining your own is a
+few lines of YAML: see
+[writing a model set](https://foxlight-foundation.github.io/skulk-test-harness/guides/write-model-set)
+and
+[writing a test set](https://foxlight-foundation.github.io/skulk-test-harness/guides/write-test-set).
+
+## Safety defaults
+
+- `run` and `goal` are dry runs unless you pass `--execute`.
+- The stability suites (`failover`, `churn`, `refusal`) additionally require
+  `--execute-destructive` plus explicit SSH process-control configuration
+  before they will touch anything. Soaks are non-destructive.
+- Listing sets and configs never needs a live cluster; the offline test suite
+  (`uv run pytest`) never touches one either.
+
+## Learn more
+
+| | |
+| --- | --- |
+| [Quickstart](https://foxlight-foundation.github.io/skulk-test-harness/quickstart) | The five-minute start, with more hand-holding |
+| [Concepts](https://foxlight-foundation.github.io/skulk-test-harness/concepts/harness-model) | How runs, sets, placements, and reports fit together |
+| [Guides](https://foxlight-foundation.github.io/skulk-test-harness/guides/first-local-run) | First local run, custom sets, stability suites, submitting to the ledger |
+| [CLI reference](https://foxlight-foundation.github.io/skulk-test-harness/reference/cli) | Every command and flag |
+| [Troubleshooting](https://foxlight-foundation.github.io/skulk-test-harness/troubleshooting) | When something looks wrong |
+
+The site sources live under `website/` (Docusaurus); PRs build them, pushes
+publish them.
+
+## The Foxlight profile
+
+Foxlight's own production test matrix lives under `examples/foxlight/`: the
 `run_e2e_battery.sh`, `run_mtp_battery.sh`, `run_throughput_battery.sh`, and
-`run_stability_battery.sh` entrypoints are compatibility wrappers for existing
-Foxlight automation.
-
-Foxlight operators can also invoke the profile directly:
-
-```bash
-uv run skulk-harness tests sets --config examples/foxlight/skulk-harness.yaml
-uv run skulk-harness models sets --config examples/foxlight/skulk-harness.yaml
-./run_e2e_battery.sh
-./run_stability_battery.sh              # soaks (MLX + AMD engines), non-destructive
-./run_stability_battery.sh --destructive  # + failover/churn/refusal
-```
-
-`run_stability_battery.sh` orchestrates the stability suites where
-`run_e2e_battery.sh` proves each model works once: it soaks the MLX engine, the
-AMD llama.cpp engine, and the AMD served-MTP engine under sustained concurrent
-load, then (with `--destructive`) runs failover/churn/refusal. The AMD soaks are
-the point for AMD Strix Halo deployments, whose single GPU node takes the load a
-Mac cluster spreads across many. It pre-stages each model into the store first,
-so a soak spends its window on load, not a first download. See
-[Stability Suites](website/docs/guides/stability-suites.md).
-
-The Foxlight stability example is intentionally separate at
-`examples/foxlight/skulk-harness.stability.example.yaml` because it contains
-destructive SSH process-control settings that each operator must adapt.
-
-## Documentation Site
-
-The user-facing documentation site lives under `website/` and is built with
-Docusaurus. Pull requests build the site and upload an artifact. Pushes publish
-to the `gh-pages` branch, with branch previews for non-main pushes.
-
-```bash
-cd website
-npm ci
-npm run build
-```
+`run_stability_battery.sh` entrypoints drive the fleet that feeds the public
+ledger. They are ordinary harness invocations and double as worked examples
+of a serious configuration. See
+[stability suites](https://foxlight-foundation.github.io/skulk-test-harness/guides/stability-suites)
+for what the destructive ones do before running them anywhere.
 
 ## License
 
