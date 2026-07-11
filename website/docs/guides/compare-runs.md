@@ -46,14 +46,16 @@ over model-scoring runs.
 
 ## What the numbers mean
 
-For each model that appears on both sides, `compare` prints the median of
-each metric, the delta, and any guards:
+The comparison record computes three metrics per model. The terminal table
+prints ONLY the headline, `decode_tps`; the other two are included when you
+write the full record with `--out comparison.json`, so use `--out` when you
+are hunting latency or wall-throughput regressions rather than decode speed:
 
-| Metric | Meaning | Better is |
-| --- | --- | --- |
-| `decode_tps` | Steady-state decode tokens per second. Uses Skulk's own generation throughput when the run recorded it (it excludes prompt processing time); falls back to wall-clock throughput otherwise | Higher |
-| `ttft_s` | Time to first token, in seconds | Lower |
-| `wall_tps` | Tokens per second over the whole request wall clock, including prompt processing | Higher |
+| Metric | Meaning | Better is | Where shown |
+| --- | --- | --- | --- |
+| `decode_tps` | Steady-state decode tokens per second. Uses Skulk's own generation throughput when the run recorded it (it excludes prompt processing time); falls back to wall-clock throughput otherwise | Higher | Terminal table + JSON |
+| `ttft_s` | Time to first token, in seconds | Lower | JSON (`--out`) only |
+| `wall_tps` | Tokens per second over the whole request wall clock, including prompt processing | Higher | JSON (`--out`) only |
 
 Two aggregation rules keep the medians honest:
 
