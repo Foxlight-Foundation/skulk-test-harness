@@ -60,6 +60,90 @@ arrival offsets.
 | `generated_chars` | Visible plus separated reasoning character count |
 | `chunks` | Number of streamed chunks observed |
 
+## The Fingerprint
+
+Every `report.json` from a plan or run carries a top-level `fingerprint`
+block (current `schema_version`: `2.1`). It exists for one reason: **a number
+should never be separated from what produced it**. A "45 tok/s" without the
+Skulk version, the nodes, and the cache conditions behind it is not a
+measurement; the fingerprint makes each report self-describing, so it stays
+meaningful in a comparison next month or on the public ledger next year.
+
+Every fingerprint probe is best-effort: a probe that fails records `null` or
+`"unknown"` (plus a warning issue) rather than failing the report write.
+
+The four sections:
+
+### `source_context`
+
+Why the run happened and from which code.
+
+| Field | Meaning |
+| --- | --- |
+| `run_reason` | Free-form reason string (`"unspecified"` unless provided) |
+| `visibility` | `private` or `public` |
+| `operator_note` | Optional free-form note (the run name, when one was given) |
+| `repositories` | Git provenance: the harness checkout (name, path, branch, short commit, dirty flag) and, when the cluster reports it, the Skulk commit |
+
+### `runtime`
+
+The harness process's own runtime plus the cluster's Skulk version.
+
+| Field | Meaning |
+| --- | --- |
+| `python` | Python version running the harness |
+| `platform` | Harness OS, kernel release, and machine architecture |
+| `harness_packages` | Versions of the harness and its key client packages |
+| `skulk_version`, `skulk_commit` | Read from the API node's diagnostics (the harness is an HTTP client; Skulk and MLX run on the nodes, not here) |
+
+### `cluster`
+
+The cluster the run executed against, as seen in `/state` at run time.
+
+| Field | Meaning |
+| --- | --- |
+| `api_base_url` | The API the harness talked to |
+| `api_node_id`, `master_node_id` | Which node answered, and which was master |
+| `node_count` | Nodes visible in cluster state |
+| `nodes` | One entry per node, see below |
+| `topology_label` | Sorted, joined friendly names, a human-readable cluster shape |
+
+Each entry in `nodes` describes one machine:
+
+| Field | Meaning |
+| --- | --- |
+| `node_id` | The node's cluster identifier |
+| `friendly_name` | The operator-given node name, when known |
+| `ram_total_bytes` | Total RAM from memory telemetry |
+| `accelerator_vendor` | GPU/accelerator vendor from system telemetry (`apple`, `amd`, ...) |
+| `accelerator_name` | Accelerator marketing name (`M4`, `Radeon 8060S`, ...), `null` when telemetry has not landed or predates the field |
+| `skulk_version` | That node's reported Skulk version |
+| `system_telemetry_present` | Whether system telemetry existed for this node at fingerprint time |
+| `memory_telemetry_present` | Whether memory telemetry existed for this node at fingerprint time |
+
+The report's `placements[].node_ids` list the exact nodes that served each
+model. Joining those ids against `fingerprint.cluster.nodes` attributes every
+result to the machines that produced it; this is how the
+[community ledger](../guides/submit-to-the-ledger.md) labels a submitted run
+with its real hardware.
+
+### `cache_state`
+
+The store and instance cache conditions, recorded from the run's own flags.
+
+| Field | Meaning |
+| --- | --- |
+| `ensure_store_downloads` | Whether the run forced store downloads |
+| `reuse_existing_instances` | Whether existing instances could be reused |
+| `retain_instances` | Whether created instances were left running |
+| `delete_staged_models` | Whether staged weights were evicted afterwards |
+| `classification` | One of `cold`, `warm`, `mixed`, `unknown` |
+
+The classification is deliberately conservative: it distinguishes what the
+run REQUESTED from any claim of controlled conditions, and it never asserts
+`cold` from flags alone. `compare` uses it
+to flag [cache-mismatched comparisons](../guides/compare-runs.md#cache_mismatch).
+
 ## A Small Result Example
 
 ```json
@@ -103,3 +187,10 @@ Common failure patterns:
 | Tool call missing | Confirm the model and backend support tool calls |
 | Throughput below floor | Compare with a recent known-good benchmark |
 | Context error expected but absent | Check Skulk context admission behavior |
+
+## Using Reports Beyond One Run
+
+- [Compare runs](../guides/compare-runs.md): like-for-like deltas between two
+  run sets, with trust guards.
+- [Submit to the ledger](../guides/submit-to-the-ledger.md): publish a run to
+  the community benchmarks ledger, redacted client-side.

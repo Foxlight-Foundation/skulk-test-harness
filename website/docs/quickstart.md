@@ -2,59 +2,89 @@
 title: Quickstart
 ---
 
-This quickstart gets you from a fresh checkout to your first safe harness
-commands. It assumes you are new to both Skulk and cluster testing.
+This page takes you from "I have a Skulk node running" to "I have a report
+that says my cluster works". It assumes no prior knowledge of the harness.
 
-## Requirements
+## What you need
 
-| Requirement | Why you need it |
+| Requirement | Why |
 | --- | --- |
-| Python 3.13 or newer | The harness package targets Python 3.13 |
+| A running Skulk node | The harness tests a live cluster through its API (default `http://localhost:52415`); it cannot start Skulk for you |
 | [`uv`](https://docs.astral.sh/uv/) | Installs dependencies and runs the CLI |
-| A local checkout of this repository | Contains the configs, tests, and examples |
-| Node.js 20 or newer | Only needed if you edit or build this docs site |
-| A reachable Skulk API | Only needed for `doctor`, `plan`, `run`, model store commands, and stability suites |
+| Python 3.13 or newer | The harness package targets Python 3.13; `uv` will fetch it if needed |
+| At least one model in Skulk's model store | The first run uses whatever model your cluster already has |
 
-## 1. Install The Harness
+If you do not have Skulk running yet, set it up first with the
+[Skulk documentation](https://github.com/Foxlight-Foundation/Skulk). Come back
+when a node is up and its dashboard or API answers.
 
-From the repository root:
+## 1. Clone and install
 
 ```bash
+git clone https://github.com/Foxlight-Foundation/skulk-test-harness
+cd skulk-test-harness
 uv sync
 ```
 
-This installs the local package into the project environment. You will run the
-CLI with `uv run skulk-harness ...`.
+`uv sync` installs the harness into a project-local environment. Every command
+on this site is run as `uv run skulk-harness ...` from the repository root.
 
-## 2. Inspect Local YAML Without A Cluster
-
-These commands do not call Skulk. They only load the public example config and
-print the model and test set names it points at:
+To confirm the install worked without touching any cluster:
 
 ```bash
 uv run skulk-harness models sets --config skulk-harness.example.yaml
 uv run skulk-harness tests sets --config skulk-harness.example.yaml
 ```
 
-You should see tables named `Model Sets` and `Test Sets`.
+These only read YAML and print two tables. The first lists the built-in
+**model sets**: named groups of models to test, such as `store-smoke` (the
+first model in your Skulk model store). The second lists the built-in **test
+sets**: named groups of prompts and pass/fail checks, such as `chat-tests`
+(basic chat questions with expected answers). Every harness run is one model
+set paired with one test set.
 
-:::tip
-If these commands fail, fix your local Python environment before thinking about
-Skulk. The cluster is not involved yet.
-:::
+## 2. Check the harness can see your cluster
 
-## 3. Make A Private Local Config
+```bash
+uv run skulk-harness doctor
+```
 
-Copy the example config:
+`doctor` calls your Skulk API and prints a compact table:
+
+| Field | What it means | Good sign |
+| --- | --- | --- |
+| API | The URL the harness is using | It is your cluster |
+| API node | The id of the node answering | Present |
+| Known models | Models in Skulk's catalog | Greater than zero |
+| Cluster memory nodes | Nodes reporting memory telemetry | Matches your node count |
+| Instances | Model instances currently placed | Any value is fine |
+| Runner states | Runner processes known to the cluster | Any value is fine |
+| State drift issues | Inconsistencies between instances and runners | Zero |
+
+If `doctor` prints this table, you are ready for step 4.
+
+### If doctor cannot connect
+
+`doctor` fails when the API is not reachable at the configured URL. Without a
+config file, the harness assumes `http://localhost:52415`. Check, in order:
+
+1. Is Skulk actually running? (Its own logs or dashboard will tell you.)
+2. Is it on this machine, or on another host on your network?
+3. Is it listening on a different port?
+
+If the API lives anywhere other than `localhost:52415`, you need a config
+file. That is step 3, which you should do anyway.
+
+## 3. Create your config file
+
+Copy the example:
 
 ```bash
 cp skulk-harness.example.yaml skulk-harness.yaml
 ```
 
-`skulk-harness.yaml` is ignored by git. Put your private cluster URL or local
-paths there.
-
-For a local Skulk API, the default is already correct:
+`skulk-harness.yaml` is ignored by git, so your cluster address and any
+private settings stay on your machine. The defaults look like:
 
 ```yaml
 api_base_url: http://localhost:52415
@@ -64,49 +94,52 @@ output_dir: runs
 cluster_nodes: {}
 ```
 
-If your Skulk API runs somewhere else, change only `api_base_url` first.
+If your Skulk API runs on another host or port, change `api_base_url` and
+nothing else, then run `doctor` again until it connects. The other fields are
+explained in the [configuration reference](reference/configuration.md).
 
-## 4. Check A Live Skulk API
+## 4. Your first dry run
 
-Now you need a reachable Skulk cluster:
-
-```bash
-uv run skulk-harness doctor
-```
-
-`doctor` prints a compact table with the configured API, node id, model count,
-memory node count, instance count, runner state count, and runner drift warning
-count.
-
-If your cluster is down, skip to [Troubleshooting](troubleshooting.md). The
-harness cannot start Skulk for you.
-
-## 5. Plan A Run
-
-Planning asks Skulk what is available and writes a report, but it does not run
-the prompts:
+`run` is a **dry run by default**: it reads cluster state and reports what it
+WOULD do, but does not place models or send prompts.
 
 ```bash
-uv run skulk-harness plan \
-  --model-set store-smoke \
-  --test-set chat-tests
+uv run skulk-harness run --model-set store-smoke --test-set chat-tests
 ```
 
-The `store-smoke` model set chooses one model from the Skulk model store. The
-`chat-tests` test set checks basic chat behavior.
+- `store-smoke` is a model set that selects the first model currently in your
+  Skulk model store.
+- `chat-tests` is a test set with small chat prompts and simple checks (for
+  example: "answer with the capital of France" must contain "Paris").
 
-You will get a report directory like this:
+The command ends with a summary table like:
 
 ```text
-runs/harness-2026-06-30t12-00-00/
-  report.json
-  events.jsonl
-  summary.md
+       Harness Run 20260709-141530-store-smoke-chat-tests
+  Field            Value
+  Models           1
+  Placements       1
+  Results passed   0
+  Results failed   0
+  Issues           0
+  Report dir       runs/20260709-141530-store-smoke-chat-tests
 ```
 
-## 6. Run Real Requests
+Read it like this:
 
-When the plan looks sane, execute the same pair:
+- **Models: 1** means the model set resolved to one real model id from your
+  store. If it is 0, your store is empty; see
+  [First local run](guides/first-local-run.md) for adding a model.
+- **Placements: 1** means the harness found a way to place (or reuse) that
+  model on your cluster.
+- **Results passed/failed are 0** because nothing executed. A dry run plans;
+  it does not prompt.
+- **Report dir** is where the plan was written. Every run, even a dry one,
+  writes a report directory under `runs/`.
+
+## 5. Your first real run
+
+When the dry run looks sane, add two flags:
 
 ```bash
 uv run skulk-harness run \
@@ -116,34 +149,68 @@ uv run skulk-harness run \
   --delete-created-instances
 ```
 
-The key flag is `--execute`. Without it, `run` behaves like a dry-run plan.
+- `--execute` is the switch from planning to doing: the harness will place the
+  model (or reuse an existing instance), wait for it to become ready, send
+  each test prompt, and score the streamed answers.
+- `--delete-created-instances` cleans up after itself: any model instance the
+  harness started gets torn down at the end, leaving your cluster as it found
+  it. Instances that already existed are left alone.
 
-`--delete-created-instances` tells the harness to clean up instances it created
-for the run. That is usually the right first choice because it leaves the
-cluster closer to how it started.
+The first execute run can take a few minutes if Skulk needs to load the model
+into memory. The summary table now shows real pass/fail counts.
 
-## 7. Read The Summary
+## 6. Read the report
 
-Open the printed report directory and read `summary.md` first. It is the
-human-readable result:
+The run wrote a directory like:
 
-| Section | What it means |
+```text
+runs/20260709-141530-store-smoke-chat-tests/
+  report.json
+  events.jsonl
+  summary.md
+  artifacts/
+```
+
+Open `summary.md` first. It is the human-readable result:
+
+| Section | What it tells you |
 | --- | --- |
-| Models | Which model ids were selected |
-| Placements | Which instances and nodes were used |
-| Results | One row per model, test, and repetition |
-| Issues | Failures, warnings, and useful evidence |
+| Header | Run id, model set, test set, mode, start/finish times |
+| Models | Which model ids were selected and how |
+| Placements | Which instance and nodes served each model, and whether they were reused |
+| Results | One row per model, test, and repetition: pass/fail, time to first token, tokens per second |
+| Issues | Anything that went wrong, with severity and evidence |
 
-Use `report.json` when you need structured data for automation.
+If everything passed: your cluster placed a model, served real requests,
+streamed answers, and gave correct ones. That is the whole point.
 
-## The Short Version
+If something failed, the `Issues` section usually has the most direct clue,
+and [Troubleshooting](troubleshooting.md) covers the common cases.
+
+`report.json` is the same run in machine-readable form, including a
+**fingerprint** of exactly what produced the numbers (Skulk version, node
+hardware, cache state). The [reports reference](reference/reports.md) explains
+every field.
+
+## The short version
 
 ```bash
+git clone https://github.com/Foxlight-Foundation/skulk-test-harness
+cd skulk-test-harness
 uv sync
-cp skulk-harness.example.yaml skulk-harness.yaml
-uv run skulk-harness models sets
-uv run skulk-harness tests sets
+cp skulk-harness.example.yaml skulk-harness.yaml   # set api_base_url if not localhost
 uv run skulk-harness doctor
-uv run skulk-harness plan --model-set store-smoke --test-set chat-tests
+uv run skulk-harness run --model-set store-smoke --test-set chat-tests
 uv run skulk-harness run --model-set store-smoke --test-set chat-tests --execute --delete-created-instances
 ```
+
+## Where to next
+
+| You want to... | Read this |
+| --- | --- |
+| Understand what just happened in more depth | [First local run](guides/first-local-run.md) |
+| Test your own list of models | [Write a model set](guides/write-model-set.md) |
+| Write your own checks | [Write a test set](guides/write-test-set.md) |
+| Benchmark and compare two runs | [Compare runs](guides/compare-runs.md) |
+| Share your results with the community | [Submit to the ledger](guides/submit-to-the-ledger.md) |
+| Stress-test the cluster itself | [Stability suites](guides/stability-suites.md) |

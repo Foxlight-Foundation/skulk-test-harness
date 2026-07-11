@@ -28,7 +28,7 @@ api_base_url: http://localhost:52415
 For a remote or forwarded API, it might look like:
 
 ```yaml
-api_base_url: http://kite1:52415
+api_base_url: http://node-a.local:52415
 ```
 
 or:
@@ -124,7 +124,7 @@ Open `summary.md` in the printed report directory.
 A small passing run might show:
 
 ```md
-# Skulk Harness Run: harness-2026-06-30t12-00-00
+# Skulk Harness Run: 20260630-120000-store-smoke-chat-tests
 
 - Model set: `store-smoke`
 - Test set: `chat-tests`
@@ -163,3 +163,13 @@ uv run skulk-harness run \
 
 Tool tests need a model and serving path that support tool calling. If they
 fail on a plain chat model, that may be expected.
+
+## 8. Keep Going
+
+Once you have a couple of executed runs under `runs/`, two commands become
+useful:
+
+- [Compare runs](compare-runs.md): like-for-like deltas between two runs,
+  with trust guards that flag unfair comparisons.
+- [Submit to the ledger](submit-to-the-ledger.md): share a run on the public
+  community benchmarks ledger, redacted on your machine first.

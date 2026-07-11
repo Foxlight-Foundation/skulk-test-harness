@@ -73,12 +73,12 @@ Destructive suites need SSH control surfaces in `cluster_nodes`.
 
 ```yaml
 cluster_nodes:
-  kite1:
-    ssh_host: kite1
+  node-a:
+    ssh_host: node-a
     kill_command: pkill -f "skulk"
     relaunch_command: cd /opt/skulk && ./scripts/run-skulk.sh
-  kite2:
-    ssh_host: kite2
+  node-b:
+    ssh_host: node-b
     kill_command: pkill -f "skulk"
     relaunch_command: cd /opt/skulk && ./scripts/run-skulk.sh
 ```
@@ -126,3 +126,8 @@ Stability reports write:
 
 The report has a top-level `passed` value. Any error-severity issue marks the
 suite as failed.
+
+Stability reports assert cluster properties rather than scoring model output,
+so they cannot be submitted to the
+[community benchmarks ledger](submit-to-the-ledger.md) and are skipped by
+[`compare`](compare-runs.md).

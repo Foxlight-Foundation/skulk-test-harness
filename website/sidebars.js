@@ -20,6 +20,8 @@ module.exports = {
         "guides/first-local-run",
         "guides/write-model-set",
         "guides/write-test-set",
+        "guides/compare-runs",
+        "guides/submit-to-the-ledger",
         "guides/run-foxlight-profile",
         "guides/stability-suites",
       ],

@@ -3,9 +3,11 @@ title: Run The Foxlight Profile
 ---
 
 Foxlight's production harness profile lives under `examples/foxlight/`. It is a
-real profile, not a placeholder. It keeps Foxlight-specific model matrices,
-test batteries, and benchmark notes out of the public defaults while preserving
-existing automation.
+real profile, not a placeholder: these batteries drive the fleet whose runs
+feed the public [benchmarks ledger](https://benchmarks.foxlight.ai). It keeps
+Foxlight-specific model matrices, test batteries, and benchmark notes out of
+the public defaults while preserving existing automation, and it doubles as a
+worked example of a serious configuration.
 
 ## The Important Files
 

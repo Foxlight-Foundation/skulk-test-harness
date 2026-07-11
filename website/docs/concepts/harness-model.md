@@ -95,8 +95,14 @@ Every normal plan or run writes:
 
 | File | Purpose |
 | --- | --- |
-| `report.json` | Complete structured report |
+| `report.json` | Complete structured report, including a fingerprint of what produced it |
 | `events.jsonl` | One event per line for automation |
 | `summary.md` | Human-readable summary |
 
 Stability suites write `report.json` and `summary.md`.
+
+Reports are durable inputs, not just output: two run sets can be
+[compared like-for-like](../guides/compare-runs.md), and an executed run can
+be [submitted to the community benchmarks ledger](../guides/submit-to-the-ledger.md).
+The fingerprint inside `report.json` is what makes both trustworthy; see the
+[reports reference](../reference/reports.md).

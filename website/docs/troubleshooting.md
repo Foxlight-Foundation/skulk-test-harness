@@ -16,6 +16,9 @@ This page starts with the most common first-run problems.
 | Test fails but model answered | Success criteria may be too strict or wrong for the model |
 | Tool test fails | Backend or model may not support tool calls |
 | Report directory missing | Check `output_dir` and command exit output |
+| `submit` fails with no token | GitHub auth: `gh auth login` or `GH_TOKEN` |
+| `submit` rejected with 422 | The run fails a ledger validation gate |
+| `compare` warns `missing fingerprint` | One side is an old run without a fingerprint |
 
 ## Config Does Not Load
 
@@ -122,6 +125,58 @@ uv run skulk-harness stability failover --execute-destructive
 For destructive suites, also confirm `cluster_nodes` contains the right
 `ssh_host`, `kill_command`, and `relaunch_command` for every node the suite may
 touch.
+
+## Submit Says No GitHub Token
+
+```text
+submit failed: no GitHub token: pass --github-token, set GH_TOKEN, or log in with the gh CLI
+```
+
+`submit` needs a GitHub token to attribute the submission. It looks, in
+order, at `--github-token`, `GH_TOKEN`, `GITHUB_TOKEN`, and finally the `gh`
+CLI. The simplest fix:
+
+```bash
+gh auth login
+```
+
+or export a token:
+
+```bash
+export GH_TOKEN=<your token>
+```
+
+A `401` from the ingest means a token was found but rejected; check that it
+is valid and not expired.
+
+## Submit Rejected With 422
+
+A `422` means the payload failed one of the ledger's validation gates. The
+error message names the gate. The common ones:
+
+| Gate | Meaning | Fix |
+| --- | --- | --- |
+| Run id shape | `run_id` is not harness-shaped | Submit an unmodified harness `report.json` |
+| Results present | The report has no test results | You submitted a dry-run plan; rerun with `--execute` |
+| Fingerprint with nodes | No fingerprint, or no nodes in it | Rerun on a current harness against a reachable cluster |
+| Schema 2.x | The fingerprint schema is too old | Update the harness and rerun |
+
+A `409` is different and benign: the ledger already has this exact run.
+
+See [Submit to the ledger](guides/submit-to-the-ledger.md) for the full
+submission flow and what gets redacted.
+
+## Compare Warns About A Missing Fingerprint
+
+`compare` prints a `missing fingerprint` guard when at least one side has no
+fingerprint block in its `report.json`. This is normal for runs recorded by
+older harness versions: there is nothing to verify the cluster, Skulk
+version, or cache conditions against, so the delta is indicative rather than
+conclusive.
+
+If the baseline matters, reproduce it on the current harness so both sides
+carry fingerprints. The other guards are explained in
+[Compare runs](guides/compare-runs.md).
 
 ## Report Says Failed
 
