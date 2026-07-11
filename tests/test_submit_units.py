@@ -43,7 +43,7 @@ def _raw_report() -> dict:
             "schema_version": "2.1",
             "source_context": {
                 "operator_note": "ran from the attic box",
-                "repositories": [{"name": "skulk", "path": "/Users/someone/skulk", "commit": "abc"}],
+                "repositories": [{"name": "skulk", "path": "/Users/someone/skulk", "branch": "acme-lab-tuning", "commit": "abc"}],
             },
             "cluster": {
                 "api_base_url": "http://10.0.0.5:52415",
@@ -75,7 +75,10 @@ def test_slim_and_redact_strips_text_and_identity_keeps_attribution_facts() -> N
 
     fp = payload["fingerprint"]
     assert "operator_note" not in fp["source_context"]
-    assert "path" not in fp["source_context"]["repositories"][0]
+    repo = fp["source_context"]["repositories"][0]
+    assert "path" not in repo
+    assert "branch" not in repo
+    assert repo["commit"] == "abc"
     cluster = fp["cluster"]
     assert "api_base_url" not in cluster
     assert "topology_label" not in cluster

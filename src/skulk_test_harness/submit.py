@@ -67,6 +67,9 @@ def slim_and_redact_report(raw: dict[str, Any]) -> dict[str, Any]:
             for repo in source.get("repositories") or []:
                 if isinstance(repo, dict):
                     repo.pop("path", None)
+                    # Branch names can carry operator labels; the commit hash
+                    # is the precise provenance and stays.
+                    repo.pop("branch", None)
         cluster = fingerprint.get("cluster")
         if isinstance(cluster, dict):
             cluster.pop("api_base_url", None)
