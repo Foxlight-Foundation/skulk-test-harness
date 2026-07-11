@@ -345,6 +345,30 @@ test_sets:
           required_substrings:
             - hello
 
+  realtime-transcription:
+    name: realtime-transcription
+    description: >
+      Semantic realtime STT coverage. Generates a PCM16 WAV fixture through a
+      mounted TTS model, sends microphone-shaped frames through /v1/realtime,
+      verifies incremental and final transcripts, disconnect recovery, and
+      provider diagnostics.
+    tests:
+      - name: realtime-stt-semantic-roundtrip
+        kind: realtime_transcription
+        prompt: Hello world from the Skulk realtime speech battery.
+        audio_response_format: wav
+        speech_owner_count: 1
+        realtime_frame_duration_ms: 100
+        realtime_pace_audio: true
+        realtime_cancel_after_frames: 3
+        realtime_assert_provider_diagnostics: true
+        success:
+          min_chars: 5
+          min_audio_bytes: 1024
+          min_transcript_deltas: 1
+          required_substrings:
+            - hello
+
   embeddings:
     name: embeddings
     description: Embeddings endpoint coverage with vector shape and norm checks.

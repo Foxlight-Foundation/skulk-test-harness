@@ -1,6 +1,8 @@
+import io
 import json
 import math
 import shlex
+import wave
 from pathlib import Path
 from typing import Never
 
@@ -13,6 +15,8 @@ from skulk_test_harness.client import (
     ChatExecution,
     ClusterApiOwner,
     DataPlaneDiagnosticsSnapshot,
+    ProviderCapabilityDiagnosticsSnapshot,
+    RealtimeTranscriptionExecution,
     SkulkApiError,
     SkulkClient,
     _extract_stream_delta,
@@ -39,12 +43,15 @@ from skulk_test_harness.models import (
 )
 from skulk_test_harness.orchestrator import (
     HarnessRunner,
+    _catalog_entry_supports_realtime_audio,
     _clear_deferred_placement_issues,
     _first_stt_model_id,
     _messages_for_test,
+    _pcm16_from_wav,
     _placement_from_preview,
     _score_audio_output,
     _score_output,
+    _score_realtime_provider_diagnostics,
     _score_streaming_audio_output,
     _select_catalog_models,
     _store_registry_entries,
@@ -52,6 +59,19 @@ from skulk_test_harness.orchestrator import (
 )
 from skulk_test_harness.reporting import ReportWriter
 from skulk_test_harness.specs import load_config, load_model_sets, load_test_sets
+
+
+def _wav_bytes(*, channels: int = 1, sample_rate: int = 8_000) -> bytes:
+    """Build a small valid PCM16 WAV fixture for speech unit tests."""
+
+    output = io.BytesIO()
+    with wave.open(output, "wb") as writer:
+        writer.setnchannels(channels)
+        writer.setsampwidth(2)
+        writer.setframerate(sample_rate)
+        frame = b"\x00\x01" * channels
+        writer.writeframes(frame * 800)
+    return output.getvalue()
 
 
 def test_store_registry_entries_supports_live_entries_shape() -> None:
@@ -578,6 +598,37 @@ def test_first_stt_model_id_reads_speech_metadata() -> None:
     )
 
 
+def test_realtime_audio_selector_requires_truthful_streaming_metadata() -> None:
+    realtime = {
+        "id": "org/realtime",
+        "audio": {
+            "kind": "stt",
+            "supports_streaming": True,
+            "supports_realtime": True,
+        },
+    }
+    batch = {
+        "id": "org/batch",
+        "audio": {
+            "kind": "stt",
+            "supports_streaming": False,
+            "supports_realtime": False,
+        },
+    }
+
+    selected = _select_catalog_models(
+        [batch, realtime],
+        ModelSelector(
+            capabilities_any=[],
+            require_audio_realtime=True,
+        ),
+    )
+
+    assert selected == [realtime]
+    assert _catalog_entry_supports_realtime_audio(realtime) is True
+    assert _catalog_entry_supports_realtime_audio(batch) is False
+
+
 def test_public_default_sets_are_cluster_neutral() -> None:
     root = Path(__file__).parents[1]
     model_sets = load_model_sets(root / "configs/model_sets.yaml").model_sets
@@ -592,6 +643,7 @@ def test_public_default_sets_are_cluster_neutral() -> None:
         "speech-tts-streaming",
         "speech-roundtrip-tts",
         "speech-stt",
+        "speech-stt-realtime",
         "vision",
         "served-spec-draft-simple",
         "served-spec-draft-eagle3",
@@ -608,6 +660,7 @@ def test_public_default_sets_are_cluster_neutral() -> None:
         "speech-synthesis-streaming",
         "speech-data-pressure",
         "speech-roundtrip",
+        "realtime-transcription",
         "vision",
         "served-speculation",
     } <= set(test_sets)
@@ -615,14 +668,23 @@ def test_public_default_sets_are_cluster_neutral() -> None:
     assert model_sets["speech-tts"].models == []
     assert model_sets["speech-roundtrip-tts"].models == []
     assert model_sets["speech-stt"].models == []
+    assert model_sets["speech-stt-realtime"].models == []
     assert model_sets["speech-tts"].selectors
     assert model_sets["speech-roundtrip-tts"].selectors
     assert model_sets["speech-stt"].selectors
+    assert all(
+        selector.require_audio_realtime
+        for selector in model_sets["speech-stt-realtime"].selectors
+    )
     roundtrip_test = test_sets["speech-roundtrip"].tests[0]
     assert roundtrip_test.transcription_model_id is None
     pressure_tests = test_sets["speech-data-pressure"].tests
     assert all(test.speech_assert_data_plane_diagnostics for test in pressure_tests)
     assert pressure_tests[1].speech_owner_topology == "local_remote"
+    realtime_test = test_sets["realtime-transcription"].tests[0]
+    assert realtime_test.kind == "realtime_transcription"
+    assert realtime_test.realtime_cancel_after_frames > 0
+    assert realtime_test.realtime_assert_provider_diagnostics is True
 
     tool_suite = test_sets["tool-tests"]
     node_test = next(
@@ -673,6 +735,25 @@ def test_foxlight_speech_pressure_closes_data_plane_coverage() -> None:
     assert mixed.speech_owner_topology == "local_remote"
     assert mixed.speech_chat_concurrency == 2
     assert mixed.speech_chat_model_id == "mlx-community/Qwen3.5-9B-MLX-4bit"
+
+
+def test_foxlight_realtime_suite_requires_local_remote_provider_evidence() -> None:
+    root = Path(__file__).parents[1]
+    model_sets = load_model_sets(
+        root / "examples/foxlight/model_sets.yaml"
+    ).model_sets
+    test_sets = load_test_sets(root / "examples/foxlight/test_sets.yaml").test_sets
+
+    assert model_sets["speech-stt-realtime"].models == [
+        "mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit"
+    ]
+    test = test_sets["realtime-transcription"].tests[0]
+    assert test.speech_synthesis_model_id == (
+        "mlx-community/LongCat-AudioDiT-1B-4bit"
+    )
+    assert test.speech_owner_count == 2
+    assert test.speech_owner_topology == "local_remote"
+    assert test.realtime_assert_provider_diagnostics is True
 
 
 def test_foxlight_e2e_battery_references_defined_sets() -> None:
@@ -833,6 +914,7 @@ class _FakeClient:
         self.thinking_seen: list[bool | None] = []
         self.speech_requests: list[dict[str, object]] = []
         self.transcription_requests: list[dict[str, object]] = []
+        self.realtime_requests: list[dict[str, object]] = []
 
     def __enter__(self) -> "_FakeClient":
         return self
@@ -896,7 +978,7 @@ class _FakeClient:
         audio = (
             b"ID3" + (b"\x00" * 2048)
             if response_format == "mp3"
-            else b"RIFF\x24\x00\x00\x00WAVEfmt " + (b"\x00" * 2048)
+            else _wav_bytes()
         )
         return AudioSpeechExecution(
             audio=audio,
@@ -944,6 +1026,47 @@ class _FakeClient:
             raw_response={"text": "hello world"},
         )
 
+    def realtime_transcription(
+        self,
+        *,
+        model_id: str,
+        pcm16: bytes,
+        sample_rate: int,
+        frame_duration_ms: int = 100,
+        pace_audio: bool = True,
+        cancel_after_frames: int = 0,
+    ) -> RealtimeTranscriptionExecution:
+        self.realtime_requests.append(
+            {
+                "model_id": model_id,
+                "pcm16": pcm16,
+                "sample_rate": sample_rate,
+                "frame_duration_ms": frame_duration_ms,
+                "pace_audio": pace_audio,
+                "cancel_after_frames": cancel_after_frames,
+            }
+        )
+        canceled = cancel_after_frames > 0
+        return RealtimeTranscriptionExecution(
+            text="" if canceled else "hello world",
+            elapsed_s=0.05,
+            first_transcript_s=None if canceled else 0.03,
+            input_bytes=(
+                min(len(pcm16), cancel_after_frames * sample_rate // 10 * 2)
+                if canceled
+                else len(pcm16)
+            ),
+            input_frames=cancel_after_frames if canceled else 10,
+            transcript_deltas=0 if canceled else 2,
+            event_types=["session.created", "session.updated"],
+            canceled=canceled,
+        )
+
+    def get_provider_capability_diagnostics(
+        self, capability_id: str
+    ) -> ProviderCapabilityDiagnosticsSnapshot:
+        return _provider_snapshot("node-a", capability_id=capability_id)
+
     def stream_chat(self, *, enable_thinking=None, **_kwargs) -> ChatExecution:
         self.thinking_seen.append(enable_thinking)
         return ChatExecution(
@@ -987,6 +1110,38 @@ def _data_snapshot(
         remote_frames_published=remote_frames_published,
         remote_frames_dropped=0,
         remote_publish_failures=0,
+    )
+
+
+def _provider_snapshot(
+    node_id: str,
+    *,
+    capability_id: str = "stt.realtime@1.0.0",
+    active_streams: int = 0,
+    admitted_streams: int = 0,
+    input_frames: int = 0,
+    input_media_bytes: int = 0,
+    output_frames: int = 0,
+    completed_streams: int = 0,
+    cancelled_streams: int = 0,
+    cancellation_requests: int = 0,
+) -> ProviderCapabilityDiagnosticsSnapshot:
+    return ProviderCapabilityDiagnosticsSnapshot(
+        node_id=node_id,
+        capability_id=capability_id,
+        active_streams=active_streams,
+        stream_slots_in_use=active_streams,
+        admitted_streams=admitted_streams,
+        input_queue_depth=0,
+        input_frames=input_frames,
+        input_media_bytes=input_media_bytes,
+        output_frames=output_frames,
+        output_media_bytes=0,
+        completed_streams=completed_streams,
+        failed_streams=0,
+        cancelled_streams=cancelled_streams,
+        missing_terminal_streams=0,
+        cancellation_requests=cancellation_requests,
     )
 
 
@@ -1101,9 +1256,7 @@ def test_run_test_dispatches_audio_speech(tmp_path: Path) -> None:
     assert client.speech_requests[0]["model_id"] == "org/TTS"
     assert result.artifact_path is not None
     assert result.artifact_path == tmp_path / "org-tts--tts--rep-1.wav"
-    assert result.artifact_path.read_bytes() == (
-        b"RIFF\x24\x00\x00\x00WAVEfmt " + (b"\x00" * 2048)
-    )
+    assert result.artifact_path.read_bytes() == _wav_bytes()
 
 
 def test_run_test_dispatches_streaming_audio_speech(tmp_path: Path) -> None:
@@ -1480,6 +1633,152 @@ def test_audio_transcription_infers_fixture_media_type(tmp_path: Path) -> None:
 
     assert result.passed is True
     assert client.transcription_requests[0]["media_type"] == "audio/mpeg"
+
+
+def test_pcm16_from_wav_downmixes_stereo() -> None:
+    pcm16, sample_rate = _pcm16_from_wav(_wav_bytes(channels=2, sample_rate=16_000))
+
+    assert sample_rate == 16_000
+    assert len(pcm16) == 800 * 2
+    assert pcm16[:2] == b"\x00\x01"
+
+
+def test_realtime_transcription_roundtrip_runs_local_remote_and_cancel(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stt_placement = PlacementResult(
+        model_id="org/RealtimeSTT",
+        instance_id="stt-instance",
+        node_ids=["node-a"],
+        ready=True,
+    )
+    tts_placement = PlacementResult(
+        model_id="org/TTS",
+        instance_id="tts-instance",
+        node_ids=["node-b"],
+        ready=True,
+    )
+    client = _FakeClient(
+        live_placements=[stt_placement, tts_placement],
+        models=[{"id": "org/RealtimeSTT"}, {"id": "org/TTS"}],
+    )
+    owner_clients: list[_FakeClient] = []
+    runner = _runner()
+
+    def client_for_url(_url: str) -> _FakeClient:
+        owner_client = _FakeClient()
+        owner_clients.append(owner_client)
+        return owner_client
+
+    monkeypatch.setattr(runner, "_client_for_url", client_for_url)
+    test = PromptTest(
+        name="realtime-roundtrip",
+        kind="realtime_transcription",
+        prompt="Hello world from Skulk realtime speech.",
+        speech_synthesis_model_id="org/TTS",
+        speech_owner_count=2,
+        speech_owner_topology="local_remote",
+        realtime_pace_audio=False,
+        realtime_cancel_after_frames=2,
+        success=SuccessCriteria(
+            min_chars=5,
+            min_audio_bytes=1024,
+            min_transcript_deltas=1,
+            required_substrings=["hello"],
+        ),
+    )
+    spec = RunSpec(model_set="m", test_set="t", mode="execute")
+    report = RunReport.start("run-realtime", spec, [])
+
+    result = runner._run_test(
+        client,  # type: ignore[arg-type]
+        model_id="org/RealtimeSTT",
+        test=test,
+        repetition=1,
+        artifact_dir=tmp_path,
+        spec=spec,
+        report=report,
+    )
+
+    assert result.passed is True
+    assert result.output_text.count("hello world") == 2
+    assert len(owner_clients) == 3
+    requests = [
+        request
+        for owner_client in owner_clients
+        for request in owner_client.realtime_requests
+    ]
+    assert requests[0]["cancel_after_frames"] == 2
+    assert [request["cancel_after_frames"] for request in requests[1:]] == [0, 0]
+    assert all(request["model_id"] == "org/RealtimeSTT" for request in requests)
+    assert result.artifact_path is not None
+    assert result.artifact_path.exists()
+    metadata_path = result.artifact_path.with_suffix(
+        f"{result.artifact_path.suffix}.realtime.json"
+    )
+    metadata = json.loads(metadata_path.read_text())
+    assert [session["owner"] for session in metadata["sessions"]] == [
+        "owner-1-serving_local",
+        "owner-2-remote_owner",
+    ]
+    assert metadata["cancellation"]["canceled"] is True
+
+
+def test_realtime_provider_diagnostics_cover_success_and_cancel() -> None:
+    before = {
+        "node-a": _provider_snapshot("node-a"),
+        "node-b": _provider_snapshot("node-b"),
+    }
+    successful = RealtimeTranscriptionExecution(
+        text="hello world",
+        elapsed_s=0.2,
+        first_transcript_s=0.1,
+        input_bytes=3200,
+        input_frames=10,
+        transcript_deltas=2,
+        event_types=[],
+    )
+    cancelled = RealtimeTranscriptionExecution(
+        text="",
+        elapsed_s=0.05,
+        first_transcript_s=None,
+        input_bytes=640,
+        input_frames=2,
+        transcript_deltas=0,
+        event_types=[],
+        canceled=True,
+    )
+    after = {
+        "node-a": _provider_snapshot(
+            "node-a",
+            admitted_streams=2,
+            input_frames=16,
+            input_media_bytes=3840,
+            output_frames=3,
+            completed_streams=1,
+            cancelled_streams=1,
+            cancellation_requests=1,
+        ),
+        "node-b": _provider_snapshot("node-b"),
+    }
+
+    issues, records = _score_realtime_provider_diagnostics(
+        model_id="org/RealtimeSTT",
+        test_name="realtime",
+        owners=[
+            ClusterApiOwner(node_id="node-a", base_url="http://node-a"),
+            ClusterApiOwner(node_id="node-b", base_url="http://node-b"),
+        ],
+        serving_node_id="node-a",
+        before=before,
+        after=after,
+        successful_sessions=[successful],
+        cancellation_session=cancelled,
+    )
+
+    assert issues == []
+    assert len(records) == 2
 
 
 def test_speech_roundtrip_records_secondary_placement_transport_error(

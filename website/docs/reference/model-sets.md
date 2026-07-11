@@ -42,6 +42,7 @@ Each map key must match the model set's `name`.
 | `capabilities_any` | list of strings | Match any listed capability |
 | `served_spec_types_any` | list of strings | Match served speculation metadata |
 | `require_audio_streaming` | boolean | Require `audio.supports_streaming=true` or equivalent resolved streaming-audio metadata |
+| `require_audio_realtime` | boolean | Require truthful streaming plus realtime audio metadata |
 | `max_models` | integer | Stop after this many matches |
 
 ## Hugging Face Seed Fields
@@ -64,6 +65,7 @@ Each map key must match the model set's `name`.
 | `speech-tts-streaming` | Text-to-speech targets whose audio metadata declares streaming support |
 | `speech-roundtrip-tts` | Text-to-speech targets suitable for the TTS-to-STT roundtrip suite |
 | `speech-stt` | Speech-to-text targets resolved through Skulk's store |
+| `speech-stt-realtime` | Speech-to-text targets with true realtime streaming sessions |
 | `vision` | Vision-capable models discovered from metadata |
 | `served-spec-draft-simple` | Models with `draft_simple` served speculation |
 | `served-spec-draft-eagle3` | Models with `draft_eagle3` served speculation |

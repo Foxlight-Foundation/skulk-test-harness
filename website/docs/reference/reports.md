@@ -46,7 +46,10 @@ include an artifact path when they generate audio. Open the recorded path to
 inspect or listen to the exact bytes the harness scored. Streaming speech
 synthesis also writes a `.stream.json` sidecar next to the audio with chunk
 count, first-byte latency, stream span, per-chunk byte sizes, and per-chunk
-arrival offsets.
+arrival offsets. Realtime transcription writes a `.realtime.json` sidecar
+containing PCM frame shape, protocol event types, first-transcript timing,
+cancellation outcome, and sanitized provider counter deltas. It contains no
+audio payload, route, or node identifier.
 
 ## Important Metrics
 

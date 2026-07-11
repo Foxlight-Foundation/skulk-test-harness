@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from urllib.parse import quote, urlsplit, urlunsplit
 
 import httpx
+from websockets.exceptions import ConnectionClosed
+from websockets.sync import client as websocket_client
+from websockets.sync.connection import Connection
 
 from skulk_test_harness.models import (
     GenerationMetrics,
@@ -18,9 +23,10 @@ from skulk_test_harness.models import (
 from skulk_test_harness.utils import unwrap_tagged
 
 QueryParams = dict[str, str | int | float | bool | list[str]]
+_REALTIME_MAX_MESSAGE_BYTES = 2 * 1024 * 1024
 
 
-def _required_int(payload: dict[str, object], key: str) -> int:
+def _required_int(payload: Mapping[str, object], key: str) -> int:
     """Read one required integer counter without accepting booleans."""
 
     value = payload.get(key)
@@ -35,6 +41,18 @@ def _replace_url_host(url: str, host: str) -> str:
     parsed = urlsplit(url)
     port = f":{parsed.port}" if parsed.port is not None else ""
     return urlunsplit((parsed.scheme, f"{host}{port}", "", "", ""))
+
+
+def _realtime_url(base_url: str, model_id: str) -> str:
+    """Build a same-owner realtime WebSocket URL for one mounted model."""
+
+    parsed = urlsplit(base_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError(f"Unsupported Skulk API URL for realtime STT: {base_url!r}")
+    scheme = "wss" if parsed.scheme == "https" else "ws"
+    return urlunsplit(
+        (scheme, parsed.netloc, "/v1/realtime", f"model={quote(model_id, safe='')}", "")
+    )
 
 
 class SkulkApiError(RuntimeError):
@@ -100,6 +118,20 @@ class AudioTranscriptionExecution:
     elapsed_s: float
     response_format: str
     raw_response: dict[str, object] | str
+
+
+@dataclass(frozen=True)
+class RealtimeTranscriptionExecution:
+    """Transcript lifecycle and timing from one realtime WebSocket session."""
+
+    text: str
+    elapsed_s: float
+    first_transcript_s: float | None
+    input_bytes: int
+    input_frames: int
+    transcript_deltas: int
+    event_types: list[str]
+    canceled: bool = False
 
 
 @dataclass(frozen=True)
@@ -178,6 +210,115 @@ class DataPlaneDiagnosticsSnapshot:
             remote_frames_dropped=_required_int(egress, "remoteFramesDropped"),
             remote_publish_failures=_required_int(egress, "remotePublishFailures"),
         )
+
+
+@dataclass(frozen=True)
+class ProviderCapabilityDiagnosticsSnapshot:
+    """Lifecycle and media counters for one provider capability on one node."""
+
+    node_id: str
+    capability_id: str
+    active_streams: int
+    stream_slots_in_use: int
+    admitted_streams: int
+    input_queue_depth: int
+    input_frames: int
+    input_media_bytes: int
+    output_frames: int
+    output_media_bytes: int
+    completed_streams: int
+    failed_streams: int
+    cancelled_streams: int
+    missing_terminal_streams: int
+    cancellation_requests: int
+
+    @classmethod
+    def from_payload(
+        cls,
+        payload: dict[str, object],
+        capability_id: str,
+    ) -> "ProviderCapabilityDiagnosticsSnapshot":
+        """Parse one capability from ``GET /v1/diagnostics/node`` strictly."""
+
+        runtime = payload.get("runtime")
+        provider = payload.get("provider")
+        if not isinstance(runtime, dict) or not isinstance(provider, dict):
+            raise TypeError("Node diagnostics did not include runtime/provider objects")
+        node_id = runtime.get("nodeId")
+        if not isinstance(node_id, str) or not node_id:
+            raise TypeError("Node diagnostics did not include runtime.nodeId")
+        capabilities = provider.get("capabilities")
+        if not isinstance(capabilities, dict):
+            raise TypeError("Node diagnostics did not include provider.capabilities")
+        capability = capabilities.get(capability_id)
+        if capability is None:
+            capability = {
+                "activeStreams": 0,
+                "admittedStreams": 0,
+                "inputQueueDepth": 0,
+                "inputFrames": 0,
+                "inputMediaBytes": 0,
+                "outputFrames": 0,
+                "outputMediaBytes": 0,
+                "completedStreams": 0,
+                "failedStreams": 0,
+                "cancelledStreams": 0,
+                "missingTerminalStreams": 0,
+                "cancellationRequests": 0,
+            }
+        if not isinstance(capability, dict):
+            raise TypeError(
+                f"Provider diagnostics for {capability_id!r} were not an object"
+            )
+        return cls(
+            node_id=node_id,
+            capability_id=capability_id,
+            active_streams=_required_int(capability, "activeStreams"),
+            stream_slots_in_use=_required_int(provider, "streamSlotsInUse"),
+            admitted_streams=_required_int(capability, "admittedStreams"),
+            input_queue_depth=_required_int(capability, "inputQueueDepth"),
+            input_frames=_required_int(capability, "inputFrames"),
+            input_media_bytes=_required_int(capability, "inputMediaBytes"),
+            output_frames=_required_int(capability, "outputFrames"),
+            output_media_bytes=_required_int(capability, "outputMediaBytes"),
+            completed_streams=_required_int(capability, "completedStreams"),
+            failed_streams=_required_int(capability, "failedStreams"),
+            cancelled_streams=_required_int(capability, "cancelledStreams"),
+            missing_terminal_streams=_required_int(
+                capability, "missingTerminalStreams"
+            ),
+            cancellation_requests=_required_int(capability, "cancellationRequests"),
+        )
+
+
+def _receive_realtime_event(
+    connection: Connection,
+    *,
+    timeout_s: float,
+) -> dict[str, object]:
+    """Receive and parse one bounded JSON text event from Skulk realtime."""
+
+    message = connection.recv(timeout=timeout_s, decode=True)
+    if not isinstance(message, str):
+        raise TypeError("Realtime transcription returned a binary event")
+    payload = json.loads(message)
+    if not isinstance(payload, dict):
+        raise TypeError("Realtime transcription returned a non-object JSON event")
+    event_type = payload.get("type")
+    if not isinstance(event_type, str) or not event_type:
+        raise TypeError("Realtime transcription event did not include a type")
+    return payload
+
+
+def _realtime_error_message(event: dict[str, object]) -> str:
+    """Extract a stable failure message from a realtime error event."""
+
+    error = event.get("error")
+    if isinstance(error, dict):
+        message = error.get("message")
+        if isinstance(message, str) and message:
+            return message
+    return f"Realtime transcription failed with event {event.get('type')!r}"
 
 
 class SkulkClient:
@@ -434,6 +575,17 @@ class SkulkClient:
         """Return typed DATA lifecycle and egress counters for this API node."""
 
         return DataPlaneDiagnosticsSnapshot.from_payload(self.get_diagnostics_node())
+
+    def get_provider_capability_diagnostics(
+        self,
+        capability_id: str,
+    ) -> ProviderCapabilityDiagnosticsSnapshot:
+        """Return provider counters for one qualified capability on this node."""
+
+        return ProviderCapabilityDiagnosticsSnapshot.from_payload(
+            self.get_diagnostics_node(),
+            capability_id,
+        )
 
     def get_master_node_id(self) -> str:
         """Return the current master node ID as seen by this API node."""
@@ -1040,6 +1192,201 @@ class SkulkClient:
             response_format=response_format,
             raw_response=raw,
         )
+
+    def realtime_transcription(
+        self,
+        *,
+        model_id: str,
+        pcm16: bytes,
+        sample_rate: int,
+        frame_duration_ms: int = 100,
+        pace_audio: bool = True,
+        cancel_after_frames: int = 0,
+    ) -> RealtimeTranscriptionExecution:
+        """Transcribe ordered mono PCM16 through Skulk's realtime WebSocket.
+
+        Args:
+            model_id: Mounted realtime STT model selected for the session.
+            pcm16: Signed little-endian mono PCM16 bytes without a container.
+            sample_rate: Input sample rate in hertz.
+            frame_duration_ms: Duration represented by each append event.
+            pace_audio: Sleep between frames to reproduce microphone cadence.
+            cancel_after_frames: Close without commit after this many frames.
+
+        Returns:
+            Realtime transcript lifecycle, timing, and input counters.
+
+        Raises:
+            ValueError: If the PCM or framing inputs are invalid.
+            SkulkApiError: If the WebSocket or realtime protocol fails.
+        """
+
+        if not pcm16 or len(pcm16) % 2 != 0:
+            raise ValueError("realtime PCM16 input must contain complete samples")
+        if not 8_000 <= sample_rate <= 96_000:
+            raise ValueError("realtime sample rate must be between 8000 and 96000 Hz")
+        if not 20 <= frame_duration_ms <= 1000:
+            raise ValueError("realtime frame duration must be between 20 and 1000 ms")
+        if cancel_after_frames < 0:
+            raise ValueError("cancel_after_frames must be non-negative")
+
+        samples_per_frame = max(1, sample_rate * frame_duration_ms // 1000)
+        bytes_per_frame = samples_per_frame * 2
+        frames = [
+            pcm16[offset : offset + bytes_per_frame]
+            for offset in range(0, len(pcm16), bytes_per_frame)
+        ]
+        started_at = time.monotonic()
+        first_transcript_s: float | None = None
+        transcript_deltas = 0
+        event_types: list[str] = []
+        path = "/v1/realtime"
+        url = _realtime_url(self.base_url, model_id)
+
+        try:
+            with websocket_client.connect(
+                url,
+                open_timeout=self.request_timeout_s,
+                close_timeout=self.request_timeout_s,
+                ping_interval=20.0,
+                ping_timeout=self.stream_read_timeout_s,
+                max_size=_REALTIME_MAX_MESSAGE_BYTES,
+                proxy=None,
+            ) as connection:
+                created = _receive_realtime_event(
+                    connection,
+                    timeout_s=self.stream_read_timeout_s,
+                )
+                created_type = str(created["type"])
+                event_types.append(created_type)
+                if created_type in {"error", "conversation.item.input_audio_transcription.failed"}:
+                    raise SkulkApiError("WS", path, 0, _realtime_error_message(created))
+                if created_type != "session.created":
+                    raise TypeError(
+                        f"Expected session.created, received {created_type!r}"
+                    )
+
+                connection.send(
+                    json.dumps(
+                        {
+                            "type": "session.update",
+                            "session": {
+                                "type": "transcription",
+                                "audio": {
+                                    "input": {
+                                        "format": {
+                                            "type": "audio/pcm",
+                                            "rate": sample_rate,
+                                        },
+                                        "transcription": {"model": model_id},
+                                        "turn_detection": None,
+                                        "noise_reduction": None,
+                                    }
+                                },
+                                "include": [],
+                            },
+                        },
+                        separators=(",", ":"),
+                    )
+                )
+                updated = _receive_realtime_event(
+                    connection,
+                    timeout_s=self.stream_read_timeout_s,
+                )
+                updated_type = str(updated["type"])
+                event_types.append(updated_type)
+                if updated_type != "session.updated":
+                    if updated_type in {
+                        "error",
+                        "conversation.item.input_audio_transcription.failed",
+                    }:
+                        raise SkulkApiError(
+                            "WS", path, 0, _realtime_error_message(updated)
+                        )
+                    raise TypeError(
+                        f"Expected session.updated, received {updated_type!r}"
+                    )
+
+                for sent_frames, frame in enumerate(frames, start=1):
+                    connection.send(
+                        json.dumps(
+                            {
+                                "type": "input_audio_buffer.append",
+                                "audio": base64.b64encode(frame).decode("ascii"),
+                            },
+                            separators=(",", ":"),
+                        )
+                    )
+                    if cancel_after_frames and sent_frames >= cancel_after_frames:
+                        connection.close(1000, "harness cancellation probe")
+                        return RealtimeTranscriptionExecution(
+                            text="",
+                            elapsed_s=time.monotonic() - started_at,
+                            first_transcript_s=None,
+                            input_bytes=sum(len(item) for item in frames[:sent_frames]),
+                            input_frames=sent_frames,
+                            transcript_deltas=0,
+                            event_types=event_types,
+                            canceled=True,
+                        )
+                    if pace_audio:
+                        time.sleep(len(frame) / (sample_rate * 2))
+
+                connection.send(
+                    json.dumps(
+                        {"type": "input_audio_buffer.commit"},
+                        separators=(",", ":"),
+                    )
+                )
+                while True:
+                    event = _receive_realtime_event(
+                        connection,
+                        timeout_s=self.stream_read_timeout_s,
+                    )
+                    event_type = str(event["type"])
+                    event_types.append(event_type)
+                    if event_type == "input_audio_buffer.committed":
+                        continue
+                    if event_type == "conversation.item.input_audio_transcription.delta":
+                        delta = event.get("delta")
+                        if not isinstance(delta, str):
+                            raise TypeError("Realtime transcript delta was not text")
+                        transcript_deltas += 1
+                        if first_transcript_s is None:
+                            first_transcript_s = time.monotonic() - started_at
+                        continue
+                    if event_type == "conversation.item.input_audio_transcription.completed":
+                        transcript = event.get("transcript")
+                        if not isinstance(transcript, str):
+                            raise TypeError("Realtime final transcript was not text")
+                        if first_transcript_s is None:
+                            first_transcript_s = time.monotonic() - started_at
+                        return RealtimeTranscriptionExecution(
+                            text=transcript,
+                            elapsed_s=time.monotonic() - started_at,
+                            first_transcript_s=first_transcript_s,
+                            input_bytes=len(pcm16),
+                            input_frames=len(frames),
+                            transcript_deltas=transcript_deltas,
+                            event_types=event_types,
+                        )
+                    if event_type in {
+                        "error",
+                        "conversation.item.input_audio_transcription.failed",
+                    }:
+                        raise SkulkApiError(
+                            "WS", path, 0, _realtime_error_message(event)
+                        )
+                    raise TypeError(f"Unexpected realtime event {event_type!r}")
+        except SkulkApiError:
+            raise
+        except (ConnectionClosed, OSError, TimeoutError, TypeError, ValueError) as exc:
+            raise SkulkApiError(
+                "WS",
+                path,
+                0,
+                f"{type(exc).__name__}: {exc}",
+            ) from exc
 
     def bench_chat(
         self,

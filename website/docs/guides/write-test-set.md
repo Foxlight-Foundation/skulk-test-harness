@@ -282,6 +282,39 @@ test_sets:
             - hello
 ```
 
+Realtime transcription tests reverse the primary model: the selected model is a
+truthful realtime STT target, while `speech_synthesis_model_id` supplies a
+semantic WAV fixture through normal Skulk placement. The harness extracts mono
+PCM16, sends dashboard-shaped frames through `/v1/realtime`, and saves the WAV
+plus a payload-free `.realtime.json` sidecar. A local/remote topology proves
+both API ownership paths; the disconnect probe and provider diagnostics prove
+that cancelled sessions release their lifecycle state:
+
+```yaml
+test_sets:
+  my-realtime-stt:
+    name: my-realtime-stt
+    description: Realtime STT through local and remote API owners.
+    tests:
+      - name: realtime-stt-roundtrip
+        kind: realtime_transcription
+        prompt: Hello world from Skulk realtime speech.
+        audio_response_format: wav
+        speech_synthesis_model_id: org/stable-tts-model
+        speech_owner_count: 2
+        speech_owner_topology: local_remote
+        realtime_frame_duration_ms: 100
+        realtime_pace_audio: true
+        realtime_cancel_after_frames: 3
+        realtime_assert_provider_diagnostics: true
+        success:
+          min_chars: 5
+          min_audio_bytes: 1024
+          min_transcript_deltas: 1
+          required_substrings:
+            - hello
+```
+
 ## Success Criteria
 
 | Field | Use it when you need to check... |
@@ -300,6 +333,7 @@ test_sets:
 | `min_reasoning_chars` | separated reasoning output |
 | `min_wall_tps` | a throughput floor for benchmarks |
 | `min_audio_bytes` | encoded TTS audio size |
+| `min_transcript_deltas` | incremental realtime transcript events |
 
 ## Check Your Set
 

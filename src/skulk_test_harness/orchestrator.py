@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import concurrent.futures
+import io
 import json
 import mimetypes
 import re
 import statistics
 import time
+import wave
 from collections.abc import Mapping
 from dataclasses import asdict
 from pathlib import Path
@@ -19,6 +21,8 @@ from skulk_test_harness.client import (
     ChatExecution,
     ClusterApiOwner,
     DataPlaneDiagnosticsSnapshot,
+    ProviderCapabilityDiagnosticsSnapshot,
+    RealtimeTranscriptionExecution,
     SkulkApiError,
     SkulkClient,
 )
@@ -688,6 +692,17 @@ class HarnessRunner:
             return self._run_audio_transcription_test(
                 client, model_id=model_id, test=test, repetition=repetition
             )
+        if test.kind == "realtime_transcription":
+            return self._run_realtime_transcription_test(
+                client,
+                model_id=model_id,
+                test=test,
+                repetition=repetition,
+                artifact_dir=artifact_dir,
+                spec=spec,
+                report=report,
+                writer=writer,
+            )
         if test.kind == "speech_roundtrip":
             return self._run_speech_roundtrip_test(
                 client,
@@ -1320,7 +1335,7 @@ class HarnessRunner:
         """Drive concurrent TTS and optional chat through known API owners."""
 
         issues: list[Issue] = []
-        owners, serving_node_id = self._select_speech_pressure_owners(
+        owners, serving_node_id = self._select_speech_owners(
             client, model_id, test, issues
         )
         if not owners:
@@ -1647,7 +1662,7 @@ class HarnessRunner:
             artifact_path=artifacts[0] if artifacts else None,
         )
 
-    def _select_speech_pressure_owners(
+    def _select_speech_owners(
         self,
         client: SkulkClient,
         model_id: str,
@@ -1712,7 +1727,7 @@ class HarnessRunner:
                     severity="error",
                     model_id=model_id,
                     test_name=test.name,
-                    message="Not enough reachable API owners for speech pressure test",
+                    message="Not enough reachable API owners for speech test",
                     evidence={
                         "required_owner_count": test.speech_owner_count,
                         "reachable_owner_count": len(owners),
@@ -1829,6 +1844,388 @@ class HarnessRunner:
             ),
             issues=issues,
         )
+
+    def _run_realtime_transcription_test(
+        self,
+        client: SkulkClient,
+        *,
+        model_id: str,
+        test: PromptTest,
+        repetition: int,
+        artifact_dir: Path,
+        spec: RunSpec | None,
+        report: RunReport | None,
+        writer: ReportWriter | None,
+    ) -> TestResult:
+        """Generate speech, then exercise realtime STT across selected API owners."""
+
+        secondary_placements: list[tuple[str, PlacementResult]] = []
+        try:
+            return self._run_realtime_transcription_test_inner(
+                client,
+                model_id=model_id,
+                test=test,
+                repetition=repetition,
+                artifact_dir=artifact_dir,
+                spec=spec,
+                report=report,
+                secondary_placements=secondary_placements,
+            )
+        finally:
+            if spec is not None and report is not None and not spec.retain_instances:
+                for secondary_model_id, placement in secondary_placements:
+                    if (
+                        secondary_model_id == model_id
+                        or not placement.created_by_harness
+                    ):
+                        continue
+                    torn_down = self._teardown_harness_instances(
+                        client,
+                        secondary_model_id,
+                        placement.instance_id,
+                        report,
+                    )
+                    if spec.delete_staged_models and torn_down:
+                        self._evict_staged_model(client, secondary_model_id, report)
+                if secondary_placements and writer is not None:
+                    writer.write(report)
+
+    def _run_realtime_transcription_test_inner(
+        self,
+        client: SkulkClient,
+        *,
+        model_id: str,
+        test: PromptTest,
+        repetition: int,
+        artifact_dir: Path,
+        spec: RunSpec | None,
+        report: RunReport | None,
+        secondary_placements: list[tuple[str, PlacementResult]],
+    ) -> TestResult:
+        """Execute the realtime workload after secondary-placement ownership setup."""
+
+        issues: list[Issue] = []
+        if spec is None or report is None:
+            issues.append(
+                Issue(
+                    severity="error",
+                    model_id=model_id,
+                    test_name=test.name,
+                    message="realtime_transcription requires an execution RunSpec/report",
+                )
+            )
+            return _realtime_transcription_result(
+                model_id=model_id,
+                test=test,
+                repetition=repetition,
+                issues=issues,
+            )
+        if test.audio_response_format != "wav":
+            issues.append(
+                Issue(
+                    severity="error",
+                    model_id=model_id,
+                    test_name=test.name,
+                    message="realtime_transcription requires audio_response_format: wav",
+                )
+            )
+            return _realtime_transcription_result(
+                model_id=model_id,
+                test=test,
+                repetition=repetition,
+                issues=issues,
+            )
+
+        tts_model_id = test.speech_synthesis_model_id or _first_tts_model_id(
+            client.list_models(), exclude_model_id=model_id
+        )
+        if tts_model_id is None:
+            issues.append(
+                Issue(
+                    severity="error",
+                    model_id=model_id,
+                    test_name=test.name,
+                    message="No TTS model found for realtime transcription fixture",
+                )
+            )
+            return _realtime_transcription_result(
+                model_id=model_id,
+                test=test,
+                repetition=repetition,
+                issues=issues,
+            )
+
+        tts_placement = self._ensure_model_placed(client, tts_model_id, spec, report)
+        if tts_placement is None or not tts_placement.ready:
+            issues.append(
+                Issue(
+                    severity="error",
+                    model_id=model_id,
+                    test_name=test.name,
+                    message="TTS model could not be made ready for realtime fixture",
+                    evidence={"speech_synthesis_model_id": tts_model_id},
+                )
+            )
+            return _realtime_transcription_result(
+                model_id=model_id,
+                test=test,
+                repetition=repetition,
+                issues=issues,
+            )
+        _append_unique_placement(report, tts_placement)
+        secondary_placements.append((tts_model_id, tts_placement))
+
+        artifact_path: Path | None = None
+        metadata_path: Path | None = None
+        started_at = time.monotonic()
+        executions: list[RealtimeTranscriptionExecution] = []
+        owner_records: list[dict[str, object]] = []
+        cancellation_execution: RealtimeTranscriptionExecution | None = None
+        diagnostic_owners: list[ClusterApiOwner] = []
+        diagnostics_before: dict[str, ProviderCapabilityDiagnosticsSnapshot] = {}
+        diagnostics_after: dict[str, ProviderCapabilityDiagnosticsSnapshot] = {}
+        try:
+            speech = client.audio_speech(
+                model_id=tts_model_id,
+                input_text=_expanded_prompt(test),
+                response_format="wav",
+                voice=test.speech_voice,
+                speed=test.speech_speed,
+            )
+            issues.extend(
+                _score_audio_output(
+                    tts_model_id,
+                    test.name,
+                    speech.audio,
+                    test.success,
+                    response_format="wav",
+                    media_type=speech.media_type,
+                )
+            )
+            artifact_path = _audio_artifact_path(
+                artifact_dir,
+                model_id,
+                test.name,
+                repetition,
+                "wav",
+                speech.audio,
+            )
+            pcm16, sample_rate = _pcm16_from_wav(speech.audio)
+            owners, serving_node_id = self._select_speech_owners(
+                client,
+                model_id,
+                test,
+                issues,
+            )
+            if not owners:
+                return _realtime_transcription_result(
+                    model_id=model_id,
+                    test=test,
+                    repetition=repetition,
+                    issues=issues,
+                    elapsed_s=time.monotonic() - started_at,
+                    artifact_path=artifact_path,
+                )
+
+            if test.realtime_assert_provider_diagnostics:
+                diagnostic_owners = client.get_cluster_api_owners()
+                diagnostics_before = self._capture_provider_diagnostics(
+                    diagnostic_owners
+                )
+
+            if test.realtime_cancel_after_frames > 0:
+                cancel_owner = owners[-1]
+                with self._client_for_url(cancel_owner.base_url) as owner_client:
+                    cancellation_execution = owner_client.realtime_transcription(
+                        model_id=model_id,
+                        pcm16=pcm16,
+                        sample_rate=sample_rate,
+                        frame_duration_ms=test.realtime_frame_duration_ms,
+                        pace_audio=test.realtime_pace_audio,
+                        cancel_after_frames=test.realtime_cancel_after_frames,
+                    )
+                if not cancellation_execution.canceled:
+                    issues.append(
+                        Issue(
+                            severity="error",
+                            model_id=model_id,
+                            test_name=test.name,
+                            message="Realtime disconnect probe did not cancel its session",
+                        )
+                    )
+
+            for owner_index, owner in enumerate(owners, start=1):
+                role = (
+                    "serving_local"
+                    if owner.node_id == serving_node_id
+                    else "remote_owner"
+                )
+                with self._client_for_url(owner.base_url) as owner_client:
+                    execution = owner_client.realtime_transcription(
+                        model_id=model_id,
+                        pcm16=pcm16,
+                        sample_rate=sample_rate,
+                        frame_duration_ms=test.realtime_frame_duration_ms,
+                        pace_audio=test.realtime_pace_audio,
+                    )
+                executions.append(execution)
+                owner_label = f"owner-{owner_index}-{role}"
+                issues.extend(
+                    _score_realtime_transcription(
+                        model_id=model_id,
+                        test_name=f"{test.name}-{owner_label}",
+                        execution=execution,
+                        criteria=test.success,
+                    )
+                )
+                owner_records.append(
+                    _sanitized_realtime_execution(owner_label, execution)
+                )
+
+            diagnostics_records: list[dict[str, object]] = []
+            if test.realtime_assert_provider_diagnostics:
+                diagnostics_after = self._wait_for_provider_diagnostics(
+                    diagnostic_owners,
+                    before=diagnostics_before,
+                    expected_completed=len(executions),
+                    expected_cancelled=(1 if cancellation_execution is not None else 0),
+                )
+                diagnostic_issues, diagnostics_records = (
+                    _score_realtime_provider_diagnostics(
+                        model_id=model_id,
+                        test_name=test.name,
+                        owners=diagnostic_owners,
+                        serving_node_id=serving_node_id,
+                        before=diagnostics_before,
+                        after=diagnostics_after,
+                        successful_sessions=executions,
+                        cancellation_session=cancellation_execution,
+                    )
+                )
+                issues.extend(diagnostic_issues)
+
+            if artifact_path is not None:
+                metadata_path = _realtime_metadata_artifact_path(
+                    artifact_path,
+                    sample_rate=sample_rate,
+                    frame_duration_ms=test.realtime_frame_duration_ms,
+                    paced=test.realtime_pace_audio,
+                    sessions=owner_records,
+                    cancellation=(
+                        _sanitized_realtime_execution(
+                            "disconnect-probe",
+                            cancellation_execution,
+                        )
+                        if cancellation_execution is not None
+                        else None
+                    ),
+                    provider_diagnostics=diagnostics_records,
+                )
+        except (OSError, SkulkApiError, TypeError, ValueError, wave.Error) as exc:
+            issues.append(
+                Issue(
+                    severity="error",
+                    model_id=model_id,
+                    test_name=test.name,
+                    message="Realtime transcription roundtrip failed",
+                    evidence={
+                        "error": str(exc),
+                        "speech_synthesis_model_id": tts_model_id,
+                    },
+                )
+            )
+
+        elapsed_s = time.monotonic() - started_at
+        transcripts = [execution.text for execution in executions]
+        output = "\n".join(transcripts)
+        if metadata_path is not None:
+            output = f"{output}\nrealtime_metadata={metadata_path}".strip()
+        first_transcripts = [
+            execution.first_transcript_s
+            for execution in executions
+            if execution.first_transcript_s is not None
+        ]
+        return TestResult(
+            model_id=model_id,
+            test_name=test.name,
+            repetition=repetition,
+            passed=not any(issue.severity == "error" for issue in issues),
+            output_text=output,
+            metrics=GenerationMetrics(
+                elapsed_s=elapsed_s,
+                ttft_s=(
+                    statistics.median(first_transcripts)
+                    if first_transcripts
+                    else None
+                ),
+                output_chars=sum(len(text) for text in transcripts),
+                generated_chars=sum(len(text) for text in transcripts),
+                chunks=sum(
+                    execution.transcript_deltas + 1 for execution in executions
+                ),
+            ),
+            issues=issues,
+            artifact_path=artifact_path,
+        )
+
+    def _capture_provider_diagnostics(
+        self,
+        owners: list[ClusterApiOwner],
+    ) -> dict[str, ProviderCapabilityDiagnosticsSnapshot]:
+        """Capture realtime STT provider counters from reachable API nodes."""
+
+        snapshots: dict[str, ProviderCapabilityDiagnosticsSnapshot] = {}
+        for owner in owners:
+            with self._client_for_url(owner.base_url) as owner_client:
+                snapshot = owner_client.get_provider_capability_diagnostics(
+                    "stt.realtime@1.0.0"
+                )
+            if snapshot.node_id != owner.node_id:
+                raise ValueError(
+                    "Resolved API route returned provider diagnostics for another node"
+                )
+            snapshots[owner.node_id] = snapshot
+        return snapshots
+
+    def _wait_for_provider_diagnostics(
+        self,
+        owners: list[ClusterApiOwner],
+        *,
+        before: dict[str, ProviderCapabilityDiagnosticsSnapshot],
+        expected_completed: int,
+        expected_cancelled: int,
+    ) -> dict[str, ProviderCapabilityDiagnosticsSnapshot]:
+        """Wait for realtime provider terminal counters and queue gauges to settle."""
+
+        deadline = time.monotonic() + 10.0
+        snapshots = self._capture_provider_diagnostics(owners)
+        while time.monotonic() < deadline:
+            completed = sum(
+                snapshot.completed_streams
+                - before.get(snapshot.node_id, snapshot).completed_streams
+                for snapshot in snapshots.values()
+            )
+            cancelled = sum(
+                snapshot.cancellation_requests
+                - before.get(snapshot.node_id, snapshot).cancellation_requests
+                for snapshot in snapshots.values()
+            )
+            drained = all(
+                snapshot.active_streams
+                <= before.get(snapshot.node_id, snapshot).active_streams
+                and snapshot.input_queue_depth
+                <= before.get(snapshot.node_id, snapshot).input_queue_depth
+                for snapshot in snapshots.values()
+            )
+            if (
+                completed >= expected_completed
+                and cancelled >= expected_cancelled
+                and drained
+            ):
+                return snapshots
+            time.sleep(0.1)
+            snapshots = self._capture_provider_diagnostics(owners)
+        return snapshots
 
     def _run_speech_roundtrip_test(
         self,
@@ -2052,6 +2449,10 @@ def _select_catalog_models(
             model
         ):
             continue
+        if selector.require_audio_realtime and not _catalog_entry_supports_realtime_audio(
+            model
+        ):
+            continue
         selected.append(model)
         if selector.max_models is not None and len(selected) >= selector.max_models:
             break
@@ -2121,6 +2522,40 @@ def _audio_media_type_for_format(response_format: str) -> str:
     if response_format == "opus":
         return "audio/opus"
     return "application/octet-stream"
+
+
+def _pcm16_from_wav(audio: bytes) -> tuple[bytes, int]:
+    """Extract mono little-endian PCM16 and sample rate from a WAV response."""
+
+    with wave.open(io.BytesIO(audio), "rb") as reader:
+        channels = reader.getnchannels()
+        sample_width = reader.getsampwidth()
+        sample_rate = reader.getframerate()
+        compression = reader.getcomptype()
+        frames = reader.readframes(reader.getnframes())
+    if channels < 1:
+        raise ValueError("TTS WAV did not contain an audio channel")
+    if sample_width != 2 or compression != "NONE":
+        raise ValueError("Realtime fixture requires uncompressed 16-bit PCM WAV")
+    frame_width = channels * sample_width
+    if not frames or len(frames) % frame_width != 0:
+        raise ValueError("TTS WAV contained incomplete PCM frames")
+    if channels == 1:
+        return frames, sample_rate
+
+    mono = bytearray()
+    for frame_offset in range(0, len(frames), frame_width):
+        total = 0
+        for channel in range(channels):
+            offset = frame_offset + channel * sample_width
+            total += int.from_bytes(
+                frames[offset : offset + sample_width],
+                byteorder="little",
+                signed=True,
+            )
+        sample = max(-32768, min(32767, round(total / channels)))
+        mono.extend(sample.to_bytes(2, byteorder="little", signed=True))
+    return bytes(mono), sample_rate
 
 
 def _score_audio_output(
@@ -2232,6 +2667,69 @@ def _score_streaming_audio_output(
     return issues
 
 
+def _score_realtime_transcription(
+    *,
+    model_id: str,
+    test_name: str,
+    execution: RealtimeTranscriptionExecution,
+    criteria: SuccessCriteria,
+) -> list[Issue]:
+    """Score realtime transcript semantics, deltas, and first-result latency."""
+
+    issues = _score_output(model_id, test_name, execution.text, criteria)
+    if execution.canceled:
+        issues.append(
+            Issue(
+                severity="error",
+                model_id=model_id,
+                test_name=test_name,
+                message="Successful realtime session was unexpectedly cancelled",
+            )
+        )
+    if execution.input_bytes <= 0 or execution.input_frames <= 0:
+        issues.append(
+            Issue(
+                severity="error",
+                model_id=model_id,
+                test_name=test_name,
+                message="Realtime session sent no PCM audio frames",
+            )
+        )
+    if execution.transcript_deltas < criteria.min_transcript_deltas:
+        issues.append(
+            Issue(
+                severity="error",
+                model_id=model_id,
+                test_name=test_name,
+                message="Realtime session emitted too few transcript deltas",
+                evidence={
+                    "transcript_deltas": execution.transcript_deltas,
+                    "min_transcript_deltas": criteria.min_transcript_deltas,
+                },
+            )
+        )
+    if (
+        criteria.max_first_byte_s is not None
+        and (
+            execution.first_transcript_s is None
+            or execution.first_transcript_s > criteria.max_first_byte_s
+        )
+    ):
+        issues.append(
+            Issue(
+                severity="error",
+                model_id=model_id,
+                test_name=test_name,
+                message="Realtime first transcript exceeded the configured limit",
+                evidence={
+                    "first_transcript_s": execution.first_transcript_s,
+                    "max_first_byte_s": criteria.max_first_byte_s,
+                },
+            )
+        )
+    return issues
+
+
 def _stream_span_s(chunk_arrival_s: list[float]) -> float | None:
     """Return elapsed seconds between first and last streamed chunks."""
 
@@ -2268,6 +2766,29 @@ def _speech_result(
     )
 
 
+def _realtime_transcription_result(
+    *,
+    model_id: str,
+    test: PromptTest,
+    repetition: int,
+    issues: list[Issue],
+    elapsed_s: float = 0.0,
+    artifact_path: Path | None = None,
+) -> TestResult:
+    """Build a failed realtime result for pre-workload validation errors."""
+
+    return TestResult(
+        model_id=model_id,
+        test_name=test.name,
+        repetition=repetition,
+        passed=False,
+        output_text="realtime transcription did not complete",
+        metrics=GenerationMetrics(elapsed_s=elapsed_s),
+        issues=issues,
+        artifact_path=artifact_path,
+    )
+
+
 def _fmt_optional_float(value: float | None) -> str:
     """Format an optional float for compact result text."""
 
@@ -2299,6 +2820,39 @@ def _first_stt_model_id(
     return None
 
 
+def _first_tts_model_id(
+    catalog: list[dict[str, object]], *, exclude_model_id: str
+) -> str | None:
+    """Pick the first catalog model advertising text-to-speech support."""
+
+    for model in catalog:
+        model_id = _model_id_from_catalog_entry(model)
+        if not model_id or model_id == exclude_model_id:
+            continue
+        if _catalog_entry_supports_tts(model):
+            return model_id
+    return None
+
+
+def _catalog_entry_supports_tts(model: dict[str, object]) -> bool:
+    """Return whether a `/models` entry looks usable as a TTS model."""
+
+    resolved = model.get("resolved_capabilities")
+    if isinstance(resolved, dict) and bool(
+        resolved.get("supports_speech_synthesis")
+        or resolved.get("supports_audio_output")
+    ):
+        return True
+    audio = model.get("audio")
+    if isinstance(audio, dict) and str(audio.get("kind") or "").lower() == "tts":
+        return True
+    return (
+        _has_any(model.get("tags"), ["tts"])
+        or _has_any_capability(model, ["tts"])
+        or _has_any(model.get("tasks"), ["TextToSpeech"])
+    )
+
+
 def _catalog_entry_supports_stt(model: dict[str, object]) -> bool:
     """Return whether a `/models` entry looks usable as an STT model."""
 
@@ -2328,6 +2882,23 @@ def _catalog_entry_supports_streaming_audio(model: dict[str, object]) -> bool:
     return isinstance(resolved, dict) and bool(
         resolved.get("supports_audio_output_streaming")
         or resolved.get("supports_speech_synthesis_streaming")
+    )
+
+
+def _catalog_entry_supports_realtime_audio(model: dict[str, object]) -> bool:
+    """Return whether a `/models` entry truthfully declares realtime STT."""
+
+    audio = model.get("audio")
+    if isinstance(audio, dict) and (
+        str(audio.get("kind") or "").lower() == "stt"
+        and audio.get("supports_streaming") is True
+        and audio.get("supports_realtime") is True
+    ):
+        return True
+    resolved = model.get("resolved_capabilities")
+    return isinstance(resolved, dict) and bool(
+        resolved.get("supports_transcription")
+        and resolved.get("supports_realtime_audio")
     )
 
 
@@ -2919,6 +3490,221 @@ def _audio_stream_metadata_path(
         )
     )
     return path
+
+
+def _sanitized_realtime_execution(
+    owner: str,
+    execution: RealtimeTranscriptionExecution,
+) -> dict[str, object]:
+    """Return payload-free realtime evidence without node routes or identifiers."""
+
+    return {
+        "owner": owner,
+        "canceled": execution.canceled,
+        "elapsed_s": execution.elapsed_s,
+        "first_transcript_s": execution.first_transcript_s,
+        "input_bytes": execution.input_bytes,
+        "input_frames": execution.input_frames,
+        "transcript_chars": len(execution.text),
+        "transcript_deltas": execution.transcript_deltas,
+        "event_types": execution.event_types,
+    }
+
+
+def _realtime_metadata_artifact_path(
+    audio_path: Path,
+    *,
+    sample_rate: int,
+    frame_duration_ms: int,
+    paced: bool,
+    sessions: list[dict[str, object]],
+    cancellation: dict[str, object] | None,
+    provider_diagnostics: list[dict[str, object]],
+) -> Path:
+    """Persist sanitized realtime protocol, timing, and provider evidence."""
+
+    path = audio_path.with_suffix(f"{audio_path.suffix}.realtime.json")
+    path.write_text(
+        json.dumps(
+            {
+                "sample_rate": sample_rate,
+                "frame_duration_ms": frame_duration_ms,
+                "paced": paced,
+                "sessions": sessions,
+                "cancellation": cancellation,
+                "provider_diagnostics": provider_diagnostics,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return path
+
+
+_PROVIDER_COUNTER_FIELDS = (
+    "admitted_streams",
+    "input_frames",
+    "input_media_bytes",
+    "output_frames",
+    "output_media_bytes",
+    "completed_streams",
+    "failed_streams",
+    "cancelled_streams",
+    "missing_terminal_streams",
+    "cancellation_requests",
+)
+
+
+def _provider_counter_delta(
+    before: ProviderCapabilityDiagnosticsSnapshot,
+    after: ProviderCapabilityDiagnosticsSnapshot,
+) -> dict[str, int]:
+    """Subtract cumulative provider counters from same-process snapshots."""
+
+    return {
+        field_name: getattr(after, field_name) - getattr(before, field_name)
+        for field_name in _PROVIDER_COUNTER_FIELDS
+    }
+
+
+def _sanitized_provider_snapshot(
+    snapshot: ProviderCapabilityDiagnosticsSnapshot,
+) -> dict[str, int]:
+    """Return provider diagnostics without node or capability identifiers."""
+
+    values = asdict(snapshot)
+    values.pop("node_id")
+    values.pop("capability_id")
+    return {key: value for key, value in values.items() if isinstance(value, int)}
+
+
+def _score_realtime_provider_diagnostics(
+    *,
+    model_id: str,
+    test_name: str,
+    owners: list[ClusterApiOwner],
+    serving_node_id: str | None,
+    before: dict[str, ProviderCapabilityDiagnosticsSnapshot],
+    after: dict[str, ProviderCapabilityDiagnosticsSnapshot],
+    successful_sessions: list[RealtimeTranscriptionExecution],
+    cancellation_session: RealtimeTranscriptionExecution | None,
+) -> tuple[list[Issue], list[dict[str, object]]]:
+    """Require provider lifecycle/media evidence for realtime success and cancel."""
+
+    issues: list[Issue] = []
+    records: list[dict[str, object]] = []
+    deltas: list[dict[str, int]] = []
+    for owner_index, owner in enumerate(owners, start=1):
+        before_snapshot = before.get(owner.node_id)
+        after_snapshot = after.get(owner.node_id)
+        role = "serving_local" if owner.node_id == serving_node_id else "remote_owner"
+        label = f"owner-{owner_index}-{role}"
+        if before_snapshot is None or after_snapshot is None:
+            issues.append(
+                Issue(
+                    severity="error",
+                    model_id=model_id,
+                    test_name=test_name,
+                    message="Provider diagnostics snapshot missing for selected owner",
+                    evidence={"owner": label},
+                )
+            )
+            continue
+        delta = _provider_counter_delta(before_snapshot, after_snapshot)
+        deltas.append(delta)
+        records.append(
+            {
+                "owner": label,
+                "before": _sanitized_provider_snapshot(before_snapshot),
+                "after": _sanitized_provider_snapshot(after_snapshot),
+                "delta": delta,
+            }
+        )
+        negative = {key: value for key, value in delta.items() if value < 0}
+        if negative:
+            issues.append(
+                Issue(
+                    severity="error",
+                    model_id=model_id,
+                    test_name=test_name,
+                    message="Provider diagnostics counters reset during realtime test",
+                    evidence={"owner": label, "negative_deltas": negative},
+                )
+            )
+        if (
+            after_snapshot.active_streams > before_snapshot.active_streams
+            or after_snapshot.input_queue_depth > before_snapshot.input_queue_depth
+        ):
+            issues.append(
+                Issue(
+                    severity="error",
+                    model_id=model_id,
+                    test_name=test_name,
+                    message="Realtime provider streams or input queues did not drain",
+                    evidence={
+                        "owner": label,
+                        "active_streams_before": before_snapshot.active_streams,
+                        "active_streams_after": after_snapshot.active_streams,
+                        "input_queue_depth_before": before_snapshot.input_queue_depth,
+                        "input_queue_depth_after": after_snapshot.input_queue_depth,
+                    },
+                )
+            )
+        anomalies = {
+            key: delta[key]
+            for key in ("failed_streams", "missing_terminal_streams")
+            if delta[key] > 0
+        }
+        if anomalies:
+            issues.append(
+                Issue(
+                    severity="error",
+                    model_id=model_id,
+                    test_name=test_name,
+                    message="Realtime provider diagnostics recorded lifecycle anomalies",
+                    evidence={"owner": label, "anomalies": anomalies},
+                )
+            )
+
+    totals = {
+        field_name: sum(delta[field_name] for delta in deltas)
+        for field_name in _PROVIDER_COUNTER_FIELDS
+    }
+    expected_sessions = len(successful_sessions) + (
+        1 if cancellation_session is not None else 0
+    )
+    expected_input_bytes = sum(
+        execution.input_bytes for execution in successful_sessions
+    ) + (cancellation_session.input_bytes if cancellation_session is not None else 0)
+    expected_input_frames = sum(
+        execution.input_frames for execution in successful_sessions
+    ) + (cancellation_session.input_frames if cancellation_session is not None else 0)
+
+    requirements = {
+        "admitted_streams": expected_sessions,
+        "completed_streams": len(successful_sessions),
+        "input_media_bytes": expected_input_bytes,
+        "input_frames": expected_input_frames,
+        "output_frames": len(successful_sessions) * 2,
+    }
+    if cancellation_session is not None:
+        requirements["cancellation_requests"] = 1
+    missing = {
+        field_name: {"actual": totals[field_name], "minimum": minimum}
+        for field_name, minimum in requirements.items()
+        if totals[field_name] < minimum
+    }
+    if missing:
+        issues.append(
+            Issue(
+                severity="error",
+                model_id=model_id,
+                test_name=test_name,
+                message="Provider diagnostics did not cover realtime sessions",
+                evidence={"missing_counter_evidence": missing},
+            )
+        )
+    return issues, records
 
 
 _DATA_PLANE_COUNTER_FIELDS = (

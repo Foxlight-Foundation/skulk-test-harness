@@ -129,9 +129,9 @@ uv run skulk-harness tests sets
 ```
 
 The built-in sets in `configs/` cover chat, code, tool calling, embeddings,
-vision, speech (TTS/STT, streaming, roundtrip), throughput, cancellation,
-context admission, and served speculative decoding. Defining your own is a
-few lines of YAML: see
+vision, speech (TTS/STT, streaming, realtime WebSocket, roundtrip), throughput,
+cancellation, context admission, and served speculative decoding. Defining your
+own is a few lines of YAML: see
 [writing a model set](https://foxlight-foundation.github.io/skulk-test-harness/guides/write-model-set)
 and
 [writing a test set](https://foxlight-foundation.github.io/skulk-test-harness/guides/write-test-set).

@@ -40,6 +40,7 @@ Each map key must match the test set's `name`.
 | `audio_speech_streaming` | Experimental text-to-speech streaming behavior; generated audio and timing sidecar are saved as artifacts |
 | `audio_speech_pressure` | Concurrent streaming TTS across discovered API owners, with deterministic local/remote routing, DATA diagnostics, optional chat workers, and one audio/timing artifact per speech request |
 | `audio_transcription` | Speech-to-text endpoint behavior with an audio fixture |
+| `realtime_transcription` | Semantic TTS-to-realtime-STT WebSocket roundtrip, disconnect recovery, local/remote ownership, and provider diagnostics |
 | `speech_roundtrip` | TTS output saved as an artifact and piped into a mounted STT model |
 
 ## Prompt Test Fields
@@ -86,8 +87,13 @@ Each map key must match the test set's `name`.
 | `input_audio_path` | Local fixture path for `kind: audio_transcription` |
 | `input_audio_mime_type` | Optional MIME type for transcription fixture upload; inferred from the fixture extension when omitted |
 | `transcription_model_id` | Optional STT model used by `kind: speech_roundtrip` |
+| `speech_synthesis_model_id` | Optional TTS fixture model used by `kind: realtime_transcription` |
 | `transcription_response_format` | STT response format, such as `json` or `text` |
 | `transcription_language` | Optional STT language hint |
+| `realtime_frame_duration_ms` | PCM16 append-frame duration; defaults to the dashboard's 100 ms |
+| `realtime_pace_audio` | Send frames at media cadence instead of bursting them |
+| `realtime_cancel_after_frames` | Run a disconnect probe after this many uncommitted frames |
+| `realtime_assert_provider_diagnostics` | Require lifecycle/media counters and drained realtime provider gauges |
 | `top_logprobs` | Request ranked logprob alternatives |
 | `repetitions` | Number of times to repeat the test |
 | `success` | Scoring rules |
@@ -115,6 +121,7 @@ Each map key must match the test set's `name`.
 | `min_stream_chunks` | Minimum streamed response chunk count |
 | `max_first_byte_s` | Optional maximum time to first streamed byte/token |
 | `min_stream_span_s` | Minimum elapsed seconds between first and last streamed chunks |
+| `min_transcript_deltas` | Minimum incremental transcript events before the realtime final transcript |
 
 ## Public Built-In Sets
 
@@ -131,6 +138,7 @@ Each map key must match the test set's `name`.
 | `speech-synthesis-streaming` | Experimental text-to-speech streaming coverage |
 | `speech-data-pressure` | Concurrent local/remote TTS pressure with DATA diagnostics |
 | `speech-roundtrip` | TTS-to-STT endpoint coverage |
+| `realtime-transcription` | Realtime WebSocket STT, semantic transcript, cancellation, and provider diagnostics |
 | `vision` | Multimodal image input coverage |
 | `served-speculation` | Served speculation correctness and throughput |
 
