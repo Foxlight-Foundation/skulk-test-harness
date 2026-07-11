@@ -1725,6 +1725,47 @@ def test_realtime_transcription_roundtrip_runs_local_remote_and_cancel(
     assert metadata["cancellation"]["canceled"] is True
 
 
+def test_realtime_transcription_releases_unready_secondary_placement(
+    tmp_path: Path,
+) -> None:
+    client = _FakeClient(models=[{"id": "org/RealtimeSTT"}, {"id": "org/TTS"}])
+    runner = _runner()
+    runner._ensure_model_placed = lambda *_args, **_kwargs: PlacementResult(  # type: ignore[method-assign]
+        model_id="org/TTS",
+        instance_id="tts-instance",
+        created_by_harness=True,
+        ready=False,
+    )
+    test = PromptTest(
+        name="realtime-roundtrip",
+        kind="realtime_transcription",
+        prompt="Hello world from Skulk realtime speech.",
+        speech_synthesis_model_id="org/TTS",
+    )
+    spec = RunSpec(
+        model_set="m",
+        test_set="t",
+        mode="execute",
+        retain_instances=False,
+    )
+    report = RunReport.start("run-realtime-cleanup", spec, [])
+
+    result = runner._run_realtime_transcription_test(
+        client,  # type: ignore[arg-type]
+        model_id="org/RealtimeSTT",
+        test=test,
+        repetition=1,
+        artifact_dir=tmp_path,
+        spec=spec,
+        report=report,
+        writer=None,
+    )
+
+    assert result.passed is False
+    assert client.deleted == ["tts-instance"]
+    assert client.speech_requests == []
+
+
 def test_realtime_provider_diagnostics_cover_success_and_cancel() -> None:
     before = {
         "node-a": _provider_snapshot("node-a"),

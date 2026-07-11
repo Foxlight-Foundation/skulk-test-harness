@@ -1956,6 +1956,8 @@ class HarnessRunner:
             )
 
         tts_placement = self._ensure_model_placed(client, tts_model_id, spec, report)
+        if tts_placement is not None:
+            secondary_placements.append((tts_model_id, tts_placement))
         if tts_placement is None or not tts_placement.ready:
             issues.append(
                 Issue(
@@ -1973,7 +1975,6 @@ class HarnessRunner:
                 issues=issues,
             )
         _append_unique_placement(report, tts_placement)
-        secondary_placements.append((tts_model_id, tts_placement))
 
         artifact_path: Path | None = None
         metadata_path: Path | None = None
