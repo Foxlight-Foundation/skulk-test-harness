@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="generator" content="Docusaurus v3.10.1">
 <title data-rh="true">Compare Runs | Skulk Test Harness</title><meta data-rh="true" name="viewport" content="width=device-width,initial-scale=1"><meta data-rh="true" name="twitter:card" content="summary_large_image"><meta data-rh="true" property="og:url" content="https://foxlight-foundation.github.io/skulk-test-harness/previews/docs-public-pass/guides/compare-runs"><meta data-rh="true" property="og:locale" content="en"><meta data-rh="true" name="docusaurus_locale" content="en"><meta data-rh="true" name="docsearch:language" content="en"><meta data-rh="true" name="docusaurus_version" content="current"><meta data-rh="true" name="docusaurus_tag" content="docs-default-current"><meta data-rh="true" name="docsearch:version" content="current"><meta data-rh="true" name="docsearch:docusaurus_tag" content="docs-default-current"><meta data-rh="true" property="og:title" content="Compare Runs | Skulk Test Harness"><meta data-rh="true" name="description" content="You ran a benchmark last week. You changed something (a Skulk version, a"><meta data-rh="true" property="og:description" content="You ran a benchmark last week. You changed something (a Skulk version, a"><link data-rh="true" rel="icon" href="/skulk-test-harness/previews/docs-public-pass/img/skulk-logo.svg"><link data-rh="true" rel="canonical" href="https://foxlight-foundation.github.io/skulk-test-harness/previews/docs-public-pass/guides/compare-runs"><link data-rh="true" rel="alternate" href="https://foxlight-foundation.github.io/skulk-test-harness/previews/docs-public-pass/guides/compare-runs" hreflang="en"><link data-rh="true" rel="alternate" href="https://foxlight-foundation.github.io/skulk-test-harness/previews/docs-public-pass/guides/compare-runs" hreflang="x-default"><script data-rh="true" type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Compare Runs","item":"https://foxlight-foundation.github.io/skulk-test-harness/previews/docs-public-pass/guides/compare-runs"}]}</script><link rel="stylesheet" href="/skulk-test-harness/previews/docs-public-pass/assets/css/styles.9fe42a7d.css">
-<script src="/skulk-test-harness/previews/docs-public-pass/assets/js/runtime~main.6d4f95c8.js" defer="defer"></script>
+<script src="/skulk-test-harness/previews/docs-public-pass/assets/js/runtime~main.c016370e.js" defer="defer"></script>
 <script src="/skulk-test-harness/previews/docs-public-pass/assets/js/main.06ee2e96.js" defer="defer"></script>
 </head>
 <body>
@@ -76,9 +76,15 @@ for this model. A run that struggled is not a clean measurement.</p>
 <p><strong>What to do:</strong> open the run&#x27;s <code>summary.md</code>, resolve the issues, and re-run
 before trusting the delta.</p>
 <h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="decode_tps_unavailable"><code>decode_tps_unavailable</code><a href="#decode_tps_unavailable" class="hash-link" aria-label="Direct link to decode_tps_unavailable" title="Direct link to decode_tps_unavailable" translate="no">​</a></h3>
-<p><strong>What it means:</strong> at least one side had no usable decode throughput median,
-so the headline metric fell back or is missing. Common on older runs where
-Skulk did not report generation throughput.</p>
+<p><strong>What it means:</strong> at least one side had no usable decode throughput median
+at all: neither Skulk&#x27;s reported generation throughput nor a wall-clock
+value survived aggregation, so there is no headline number for that model.</p>
+<p>One honest caveat about fallback: when a run lacks Skulk&#x27;s
+<code>skulk_generation_tps</code> but does have <code>wall_tps</code>, the comparator uses the
+wall-clock value as the headline WITHOUT raising this guard. Wall throughput
+includes time to first token, so it reads lower than true decode throughput.
+When comparing an old run (wall only) against a new one (real decode
+numbers), treat the delta with suspicion even though no guard fired.</p>
 <p><strong>What to do:</strong> prefer <code>wall_tps</code> for that comparison, or re-run the baseline
 on a current Skulk so both sides report real decode numbers.</p>
 <h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="missing_fingerprint"><code>missing_fingerprint</code><a href="#missing_fingerprint" class="hash-link" aria-label="Direct link to missing_fingerprint" title="Direct link to missing_fingerprint" translate="no">​</a></h3>
