@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from urllib.parse import quote, urlsplit, urlunsplit
 
 import httpx
-from websockets.exceptions import ConnectionClosed
+from websockets.exceptions import WebSocketException
 from websockets.sync import client as websocket_client
 from websockets.sync.connection import Connection
 
@@ -1380,7 +1380,13 @@ class SkulkClient:
                     raise TypeError(f"Unexpected realtime event {event_type!r}")
         except SkulkApiError:
             raise
-        except (ConnectionClosed, OSError, TimeoutError, TypeError, ValueError) as exc:
+        except (
+            WebSocketException,
+            OSError,
+            TimeoutError,
+            TypeError,
+            ValueError,
+        ) as exc:
             raise SkulkApiError(
                 "WS",
                 path,

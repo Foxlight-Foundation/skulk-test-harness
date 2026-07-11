@@ -639,6 +639,30 @@ def test_realtime_transcription_surfaces_server_error(
     assert exc_info.value.path == "/v1/realtime"
 
 
+def test_realtime_transcription_wraps_handshake_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def reject_handshake(*_args: object, **_kwargs: object) -> None:
+        raise client_module.WebSocketException("handshake rejected")
+
+    monkeypatch.setattr(client_module.websocket_client, "connect", reject_handshake)
+    client = SkulkClient("http://skulk.test")
+    try:
+        with pytest.raises(SkulkApiError, match="handshake rejected") as exc_info:
+            client.realtime_transcription(
+                model_id="org/STT",
+                pcm16=b"\x00\x00" * 160,
+                sample_rate=8_000,
+                pace_audio=False,
+            )
+    finally:
+        client.close()
+
+    assert exc_info.value.method == "WS"
+    assert exc_info.value.path == "/v1/realtime"
+    assert exc_info.value.status_code == 0
+
+
 def test_provider_capability_diagnostics_parses_realtime_counters() -> None:
     snapshot = ProviderCapabilityDiagnosticsSnapshot.from_payload(
         {
