@@ -48,6 +48,8 @@ def slim_and_redact_report(raw: dict[str, Any]) -> dict[str, Any]:
         if isinstance(result, dict):
             for field in _RESULT_STRIP_FIELDS:
                 result.pop(field, None)
+            _strip_issue_evidence(result.get("issues"))
+    _strip_issue_evidence(report.get("issues"))
 
     fingerprint = report.get("fingerprint")
     if isinstance(fingerprint, dict):
@@ -72,6 +74,17 @@ def slim_and_redact_report(raw: dict[str, Any]) -> dict[str, Any]:
     _redact_run_id(report)
 
     return report
+
+
+def _strip_issue_evidence(issues: Any) -> None:
+    """Drop issue evidence wholesale: it can embed generated content (e.g.
+    ``actual_tool_calls`` with argument text on failed tool-call tests), and
+    the ledger only ever renders an issue's severity and message."""
+    if not isinstance(issues, list):
+        return
+    for issue in issues:
+        if isinstance(issue, dict):
+            issue.pop("evidence", None)
 
 
 def _redact_run_id(report: dict[str, Any]) -> None:

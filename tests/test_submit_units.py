@@ -26,7 +26,17 @@ def _raw_report() -> dict:
                 "tool_calls": [{"name": "x"}],
                 "artifact_path": "/Users/someone/runs/x",
                 "metrics": {"ttft_s": 0.4, "skulk_generation_tps": 40.0},
+                "issues": [
+                    {
+                        "severity": "warning",
+                        "message": "tool call mismatch",
+                        "evidence": {"actual_tool_calls": [{"arguments_text": "PRIVATE ARGS"}]},
+                    }
+                ],
             }
+        ],
+        "issues": [
+            {"severity": "info", "message": "run-level note", "evidence": {"stdout": "PRIVATE"}}
         ],
         "placements": [{"model_id": "org/model", "node_ids": ["nodeA"]}],
         "fingerprint": {
@@ -76,6 +86,12 @@ def test_slim_and_redact_strips_text_and_identity_keeps_attribution_facts() -> N
     assert node["node_id"] == "nodeA"
     assert node["accelerator_name"] == "M4"
     assert "run_name" not in payload["spec"]
+    # Issue evidence can embed generated content (tool-call args, output
+    # snippets); it is dropped everywhere while severity/message survive.
+    result_issue = payload["results"][0]["issues"][0]
+    assert "evidence" not in result_issue
+    assert result_issue["message"] == "tool call mismatch"
+    assert "evidence" not in payload["issues"][0]
 
 
 def test_redact_run_id_keeps_default_shape_and_hashes_custom_labels() -> None:
