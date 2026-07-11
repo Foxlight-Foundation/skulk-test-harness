@@ -94,9 +94,12 @@ def _redact_run_id(report: dict[str, Any]) -> None:
     spec = report.get("spec")
     model_set = spec.get("model_set") if isinstance(spec, dict) else None
     test_set = spec.get("test_set") if isinstance(spec, dict) else None
-    if isinstance(model_set, str) and isinstance(test_set, str):
-        if suffix == slugify(f"{model_set}-{test_set}"):
-            return
+    if (
+        isinstance(model_set, str)
+        and isinstance(test_set, str)
+        and suffix == slugify(f"{model_set}-{test_set}")
+    ):
+        return
     digest = hashlib.sha256(run_id.encode()).hexdigest()[:10]
     report["run_id"] = f"{stamp}-submitted-{digest}"
 

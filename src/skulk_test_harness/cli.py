@@ -2,19 +2,17 @@
 
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 from typing import Annotated
 
-import json
-
 import typer
-
-from skulk_test_harness import submit as submit_module
 from rich.console import Console
 from rich.table import Table
 
 from skulk_test_harness import stability
+from skulk_test_harness import submit as submit_module
 from skulk_test_harness.client import SkulkClient
 from skulk_test_harness.compare import compare, load_reports, select_run_dirs
 from skulk_test_harness.goal_parser import parse_goal
