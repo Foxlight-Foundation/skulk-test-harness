@@ -109,6 +109,14 @@ def test_redact_run_id_keeps_default_shape_and_hashes_custom_labels() -> None:
     assert out1 == out2
 
 
+def test_stability_reports_are_rejected_before_any_output() -> None:
+    stability = _raw_report()
+    stability["suite"] = "failover"
+    stability["observations"] = {"original_master": {"friendly": "attic1"}}
+    with pytest.raises(submit.SubmitError, match="stability-suite"):
+        submit.slim_and_redact_report(stability)
+
+
 def test_slim_and_redact_never_mutates_the_input() -> None:
     raw = _raw_report()
     submit.slim_and_redact_report(raw)

@@ -42,6 +42,14 @@ def slim_and_redact_report(raw: dict[str, Any]) -> dict[str, Any]:
     Works on the raw ``report.json`` dict so it never depends on the report
     having been produced by this exact harness version.
     """
+    # Stability-suite reports are not submittable (the ingest rejects them
+    # anyway), and their observations embed friendly cluster names; reject
+    # BEFORE anything is printed or sent so those names never leave redaction.
+    if raw.get("suite") is not None:
+        raise SubmitError(
+            "stability-suite reports are not accepted by the community ledger"
+        )
+
     report = json.loads(json.dumps(raw))  # deep copy; payload must not alias input
 
     for result in report.get("results") or []:
