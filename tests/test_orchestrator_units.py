@@ -1767,6 +1767,41 @@ def test_realtime_transcription_releases_unready_secondary_placement(
     assert client.speech_requests == []
 
 
+def test_realtime_transcription_records_secondary_placement_transport_error(
+    tmp_path: Path,
+) -> None:
+    client = _FakeClient(models=[{"id": "org/RealtimeSTT"}, {"id": "org/TTS"}])
+    runner = _runner()
+
+    def raise_timeout(*_args: object, **_kwargs: object) -> Never:
+        raise httpx.ReadTimeout("preview timed out")
+
+    runner._ensure_model_placed = raise_timeout  # type: ignore[method-assign]
+    test = PromptTest(
+        name="realtime-roundtrip",
+        kind="realtime_transcription",
+        prompt="Hello world from Skulk realtime speech.",
+        speech_synthesis_model_id="org/TTS",
+    )
+    spec = RunSpec(model_set="m", test_set="t", mode="execute")
+    report = RunReport.start("run-realtime-timeout", spec, [])
+
+    result = runner._run_test(
+        client,  # type: ignore[arg-type]
+        model_id="org/RealtimeSTT",
+        test=test,
+        repetition=1,
+        artifact_dir=tmp_path,
+        spec=spec,
+        report=report,
+    )
+
+    assert result.passed is False
+    assert result.issues[0].message == "Realtime transcription roundtrip failed"
+    assert "preview timed out" in str(result.issues[0].evidence["error"])
+    assert result.issues[0].evidence["speech_synthesis_model_id"] == "org/TTS"
+
+
 def test_realtime_provider_diagnostics_cover_success_and_cancel() -> None:
     before = {
         "node-a": _provider_snapshot("node-a"),

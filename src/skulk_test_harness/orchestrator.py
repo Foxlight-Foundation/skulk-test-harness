@@ -1955,7 +1955,38 @@ class HarnessRunner:
                 issues=issues,
             )
 
-        tts_placement = self._ensure_model_placed(client, tts_model_id, spec, report)
+        try:
+            tts_placement = self._ensure_model_placed(
+                client,
+                tts_model_id,
+                spec,
+                report,
+            )
+        except (
+            OSError,
+            SkulkApiError,
+            httpx.HTTPError,
+            TypeError,
+            ValueError,
+        ) as exc:
+            issues.append(
+                Issue(
+                    severity="error",
+                    model_id=model_id,
+                    test_name=test.name,
+                    message="Realtime transcription roundtrip failed",
+                    evidence={
+                        "error": str(exc),
+                        "speech_synthesis_model_id": tts_model_id,
+                    },
+                )
+            )
+            return _realtime_transcription_result(
+                model_id=model_id,
+                test=test,
+                repetition=repetition,
+                issues=issues,
+            )
         if tts_placement is not None:
             secondary_placements.append((tts_model_id, tts_placement))
         if tts_placement is None or not tts_placement.ready:
