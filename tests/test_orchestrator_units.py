@@ -29,6 +29,7 @@ from skulk_test_harness.models import (
     Issue,
     ModelRef,
     ModelSelector,
+    ModelSet,
     PlacementResult,
     PromptImage,
     PromptTest,
@@ -2272,3 +2273,58 @@ def test_eviction_skipped_when_placement_never_appears(tmp_path: Path) -> None:
     assert placed is False
     assert client.deleted == []
     assert client.evicted == []
+
+
+def test_resolve_model_set_explicit_list_never_touches_store() -> None:
+    """Explicit models: lists must resolve on store-less nodes (issue #47).
+
+    A node without a configured model store answers /store/registry with 503;
+    resolution of an explicit list has no reason to make that request at all.
+    """
+
+    class _StorelessClient(_FakeClient):
+        def get_store_registry(self) -> dict[str, object] | None:
+            raise AssertionError("explicit-list resolution must not query the store")
+
+    runner = HarnessRunner(
+        config=HarnessConfig(),
+        model_sets={
+            "explicit-only": ModelSet(
+                name="explicit-only",
+                models=["org/ModelA", "org/ModelB"],
+            )
+        },
+        test_sets={},
+    )
+
+    refs = runner.resolve_model_set("explicit-only", _StorelessClient())  # type: ignore[arg-type]
+
+    assert [ref.model_id for ref in refs] == ["org/ModelA", "org/ModelB"]
+    assert all(ref.source == "explicit" for ref in refs)
+
+
+def test_resolve_model_set_store_selector_still_queries_store() -> None:
+    """Store-targeting selectors keep hitting the registry (lazily)."""
+
+    calls: list[str] = []
+
+    class _StoreClient(_FakeClient):
+        def get_store_registry(self) -> dict[str, object] | None:
+            calls.append("registry")
+            return {"entries": [{"model_id": "org/StoreModel"}]}
+
+    runner = HarnessRunner(
+        config=HarnessConfig(),
+        model_sets={
+            "store-set": ModelSet(
+                name="store-set",
+                selectors=[ModelSelector(source="store")],
+            )
+        },
+        test_sets={},
+    )
+
+    refs = runner.resolve_model_set("store-set", _StoreClient())  # type: ignore[arg-type]
+
+    assert calls == ["registry"]
+    assert [ref.model_id for ref in refs] == ["org/StoreModel"]

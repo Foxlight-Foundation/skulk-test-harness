@@ -635,9 +635,21 @@ class SkulkClient:
         return payload if isinstance(payload, dict) else None
 
     def get_store_registry(self) -> dict[str, object] | None:
-        """Return the model-store registry when available."""
+        """Return the model-store registry, or ``None`` on store-less nodes.
 
-        payload = self._request_json("GET", "/store/registry")
+        A node without a configured model store answers ``/store/registry``
+        with HTTP 503 and a "Store not configured" body. That is a valid,
+        supported Skulk deployment (any node that is not the store host), so
+        it maps to ``None`` ("no store here") rather than an exception. Any
+        other error status still raises :class:`SkulkApiError`.
+        """
+
+        try:
+            payload = self._request_json("GET", "/store/registry")
+        except SkulkApiError as exc:
+            if exc.status_code == 503 and "store not configured" in exc.body.lower():
+                return None
+            raise
         return payload if isinstance(payload, dict) else None
 
     def request_store_download(self, model_id: str) -> dict[str, object] | None:

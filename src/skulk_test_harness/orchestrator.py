@@ -374,7 +374,10 @@ class HarnessRunner:
 
         model_set = self._model_set(name)
         catalog = client.list_models()
-        store_entries = _store_registry_entries(client.get_store_registry())
+        # Fetched lazily: only selectors that target the store need it, and a
+        # store-less node (a valid deployment) must not fail explicit-list or
+        # catalog-only resolution over an endpoint it never needed.
+        store_entries: list[dict[str, object]] | None = None
         refs: list[ModelRef] = []
         seen: set[str] = set()
 
@@ -398,6 +401,8 @@ class HarnessRunner:
             if selector.source in {"catalog", "both"}:
                 candidate_sources.extend(catalog)
             if selector.source in {"store", "both"}:
+                if store_entries is None:
+                    store_entries = _store_registry_entries(client.get_store_registry())
                 candidate_sources.extend(store_entries)
             for model in _select_catalog_models(candidate_sources, selector):
                 model_id = _model_id_from_catalog_entry(model)
