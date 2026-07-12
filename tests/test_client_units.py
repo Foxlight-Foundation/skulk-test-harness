@@ -179,6 +179,42 @@ def test_data_plane_diagnostics_snapshot_parses_camel_case_payload() -> None:
     assert snapshot.remote_frames_published == 8
 
 
+def test_get_store_registry_maps_storeless_503_to_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A store-less node's 503 means "no store here", not a fatal error."""
+
+    client = SkulkClient("http://skulk.test")
+
+    def request(method: str, path: str, **_kwargs: object) -> httpx.Response:
+        assert (method, path) == ("GET", "/store/registry")
+        return httpx.Response(503, json={"error": {"message": "Store not configured"}})
+
+    monkeypatch.setattr(client._client, "request", request)
+    try:
+        assert client.get_store_registry() is None
+    finally:
+        client.close()
+
+
+def test_get_store_registry_still_raises_other_503(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only the explicit storeless body maps to None; other 503s stay fatal."""
+
+    client = SkulkClient("http://skulk.test")
+
+    def request(method: str, path: str, **_kwargs: object) -> httpx.Response:
+        return httpx.Response(503, text="registry rebuilding, try again")
+
+    monkeypatch.setattr(client._client, "request", request)
+    try:
+        with pytest.raises(SkulkApiError):
+            client.get_store_registry()
+    finally:
+        client.close()
+
+
 def test_request_json_retries_read_timeout_for_get(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
