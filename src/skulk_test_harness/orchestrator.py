@@ -2007,8 +2007,12 @@ class HarnessRunner:
             )
         _append_unique_placement(report, tts_placement)
 
-        response_model_id = test.realtime_response_model_id
-        response_tts_model_id = test.realtime_response_tts_model_id
+        catalog = client.list_models()
+        response_tts_model_id = test.realtime_response_tts_model_id or tts_model_id
+        response_model_id = test.realtime_response_model_id or _first_chat_model_id(
+            catalog,
+            exclude_model_ids={model_id, tts_model_id, response_tts_model_id},
+        )
         if test.kind == "fabric_speech_chain":
             if response_model_id is None or response_tts_model_id is None:
                 issues.append(
@@ -3112,6 +3116,20 @@ def _first_tts_model_id(
         if not model_id or model_id == exclude_model_id:
             continue
         if _catalog_entry_supports_tts(model):
+            return model_id
+    return None
+
+
+def _first_chat_model_id(
+    catalog: list[dict[str, object]], *, exclude_model_ids: set[str]
+) -> str | None:
+    """Pick the first catalog model advertising text-generation support."""
+
+    for model in catalog:
+        model_id = _model_id_from_catalog_entry(model)
+        if not model_id or model_id in exclude_model_ids:
+            continue
+        if _has_any(model.get("tasks"), ["TextGeneration"]):
             return model_id
     return None
 

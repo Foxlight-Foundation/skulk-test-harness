@@ -45,6 +45,7 @@ from skulk_test_harness.orchestrator import (
     HarnessRunner,
     _catalog_entry_supports_realtime_audio,
     _clear_deferred_placement_issues,
+    _first_chat_model_id,
     _first_stt_model_id,
     _messages_for_test,
     _pcm16_from_wav,
@@ -598,6 +599,19 @@ def test_first_stt_model_id_reads_speech_metadata() -> None:
     )
 
 
+def test_first_chat_model_id_uses_text_generation_task_and_exclusions() -> None:
+    catalog = [
+        {"id": "org/STT", "tasks": ["SpeechToText"]},
+        {"id": "org/excluded-chat", "tasks": ["TextGeneration"]},
+        {"id": "org/selected-chat", "tasks": ["TextGeneration"]},
+    ]
+
+    assert _first_chat_model_id(
+        catalog,
+        exclude_model_ids={"org/STT", "org/excluded-chat"},
+    ) == "org/selected-chat"
+
+
 def test_realtime_audio_selector_requires_truthful_streaming_metadata() -> None:
     realtime = {
         "id": "org/realtime",
@@ -688,8 +702,8 @@ def test_public_default_sets_are_cluster_neutral() -> None:
     assert realtime_test.realtime_assert_provider_diagnostics is True
     fabric_test = test_sets["fabric-speech-chain"].tests[0]
     assert fabric_test.kind == "fabric_speech_chain"
-    assert fabric_test.realtime_response_model_id
-    assert fabric_test.realtime_response_tts_model_id
+    assert fabric_test.realtime_response_model_id is None
+    assert fabric_test.realtime_response_tts_model_id is None
 
     tool_suite = test_sets["tool-tests"]
     node_test = next(

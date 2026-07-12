@@ -380,9 +380,6 @@ test_sets:
         kind: fabric_speech_chain
         prompt: Hello world from the Skulk realtime speech battery.
         audio_response_format: wav
-        speech_synthesis_model_id: mlx-community/LongCat-AudioDiT-1B-4bit
-        realtime_response_model_id: mlx-community/Qwen3.5-9B-MLX-4bit
-        realtime_response_tts_model_id: mlx-community/LongCat-AudioDiT-1B-4bit
         speech_owner_count: 1
         realtime_frame_duration_ms: 100
         realtime_pace_audio: true
