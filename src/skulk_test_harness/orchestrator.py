@@ -703,7 +703,7 @@ class HarnessRunner:
                 report=report,
                 writer=writer,
             )
-        if test.kind == "speech_roundtrip":
+        if test.kind in {"speech_roundtrip", "speech_translation_roundtrip"}:
             return self._run_speech_roundtrip_test(
                 client,
                 model_id=model_id,
@@ -713,6 +713,7 @@ class HarnessRunner:
                 spec=spec,
                 report=report,
                 writer=writer,
+                translate_to_english=test.kind == "speech_translation_roundtrip",
             )
 
         messages = _messages_for_test(test)
@@ -2347,6 +2348,7 @@ class HarnessRunner:
         spec: RunSpec | None,
         report: RunReport | None,
         writer: ReportWriter | None,
+        translate_to_english: bool = False,
     ) -> TestResult:
         """Generate speech with a TTS model, then transcribe it with an STT model."""
 
@@ -2447,7 +2449,12 @@ class HarnessRunner:
                 speech.response_format,
                 speech.audio,
             )
-            transcript = client.audio_transcription(
+            transcription_method = (
+                client.audio_translation
+                if translate_to_english
+                else client.audio_transcription
+            )
+            transcript = transcription_method(
                 model_id=transcription_model_id,
                 audio=speech.audio,
                 filename=f"{slugify(test.name)}.{test.audio_response_format}",

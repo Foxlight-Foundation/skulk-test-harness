@@ -723,6 +723,29 @@ test_sets:
             # transport suite into a first-token accuracy benchmark.
             - battery
 
+  speech-translation:
+    name: speech-translation
+    description: >
+      Synthesizes a deterministic French utterance, stages and mounts Canary
+      through the normal model-store path, then requires an English translation.
+    tests:
+      - name: french-to-english-roundtrip
+        kind: speech_translation_roundtrip
+        prompt: Bonjour. Le projet Skulk transforme la parole en texte anglais.
+        audio_response_format: wav
+        transcription_model_id: CogniSoftOrg/canary-1b-v2-mlx-bf16
+        transcription_response_format: json
+        transcription_language: fr
+        success:
+          min_chars: 12
+          min_audio_bytes: 1024
+          required_substrings:
+            - transforms
+            - text
+          forbidden_substrings:
+            - Bonjour
+            - parole
+
   embeddings:
     name: embeddings
     description: >

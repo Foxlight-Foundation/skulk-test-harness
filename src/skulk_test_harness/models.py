@@ -30,6 +30,7 @@ TestKind = Literal[
     "audio_transcription",
     "realtime_transcription",
     "speech_roundtrip",
+    "speech_translation_roundtrip",
 ]
 RunMode = Literal["plan", "execute"]
 IssueSeverity = Literal["info", "warning", "error"]
@@ -524,7 +525,8 @@ class PromptTest(HarnessBaseModel):
     transcription_model_id: str | None = Field(
         default=None,
         description=(
-            "For `kind: speech_roundtrip`, optional explicit STT model. When "
+            "For speech transcription/translation roundtrips, optional explicit "
+            "STT model. When "
             "unset, the harness selects the first live catalog model advertising "
             "STT support."
         ),

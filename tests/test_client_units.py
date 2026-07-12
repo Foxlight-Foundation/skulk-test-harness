@@ -489,6 +489,45 @@ def test_audio_transcription_wraps_transport_failures(
     assert "RemoteProtocolError: server disconnected" in exc_info.value.body
 
 
+def test_audio_translation_posts_multipart_to_translation_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = SkulkClient("http://skulk.test")
+    seen: dict[str, object] = {}
+
+    def post(path: str, **kwargs: object) -> httpx.Response:
+        seen["path"] = path
+        seen["data"] = kwargs["data"]
+        seen["files"] = kwargs["files"]
+        return httpx.Response(
+            200,
+            json={"text": "hello project"},
+            headers={"content-type": "application/json"},
+        )
+
+    monkeypatch.setattr(client._client, "post", post)
+    try:
+        execution = client.audio_translation(
+            model_id="org/Canary",
+            audio=b"RIFF....WAVE",
+            filename="french.wav",
+            media_type="audio/wav",
+            response_format="json",
+            language="fr",
+        )
+    finally:
+        client.close()
+
+    assert seen["path"] == "/v1/audio/translations"
+    assert seen["data"] == {
+        "model": "org/Canary",
+        "response_format": "json",
+        "language": "fr",
+    }
+    assert seen["files"] == {"file": ("french.wav", b"RIFF....WAVE", "audio/wav")}
+    assert execution.text == "hello project"
+
+
 def test_audio_transcription_extracts_ndjson_text(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

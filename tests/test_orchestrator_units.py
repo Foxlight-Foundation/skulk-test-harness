@@ -915,6 +915,7 @@ class _FakeClient:
         self.thinking_seen: list[bool | None] = []
         self.speech_requests: list[dict[str, object]] = []
         self.transcription_requests: list[dict[str, object]] = []
+        self.translation_requests: list[dict[str, object]] = []
         self.realtime_requests: list[dict[str, object]] = []
 
     def __enter__(self) -> "_FakeClient":
@@ -1025,6 +1026,36 @@ class _FakeClient:
             elapsed_s=0.03,
             response_format=response_format,
             raw_response={"text": "hello world"},
+        )
+
+    def audio_translation(
+        self,
+        *,
+        model_id: str,
+        audio: bytes,
+        filename: str,
+        media_type: str,
+        response_format: str = "json",
+        language: str | None = None,
+        prompt: str | None = None,
+    ) -> AudioTranscriptionExecution:
+        self.translation_requests.append(
+            {
+                "model_id": model_id,
+                "audio": audio,
+                "filename": filename,
+                "media_type": media_type,
+                "response_format": response_format,
+                "language": language,
+                "prompt": prompt,
+            }
+        )
+        return AudioTranscriptionExecution(
+            text="hello project",
+            media_type="application/json",
+            elapsed_s=0.03,
+            response_format=response_format,
+            raw_response={"text": "hello project"},
         )
 
     def realtime_transcription(
@@ -2023,6 +2054,50 @@ def test_speech_roundtrip_persists_generated_audio_artifact(
     audio = result.artifact_path.read_bytes()
     assert audio.startswith(b"RIFF")
     assert client.transcription_requests[0]["audio"] == audio
+
+
+def test_speech_translation_roundtrip_uses_translation_endpoint(
+    tmp_path: Path,
+) -> None:
+    """Translation roundtrips should synthesize, translate, score, and persist."""
+
+    client = _FakeClient()
+    runner = _runner()
+    runner._ensure_model_placed = lambda *_args, **_kwargs: PlacementResult(  # type: ignore[method-assign]
+        model_id="org/Canary",
+        instance_id="translation-instance",
+        ready=True,
+        created_by_harness=False,
+    )
+    test = PromptTest(
+        name="translation-roundtrip",
+        kind="speech_translation_roundtrip",
+        prompt="Bonjour du projet Skulk.",
+        transcription_model_id="org/Canary",
+        transcription_language="fr",
+        success=SuccessCriteria(
+            min_chars=5,
+            min_audio_bytes=1024,
+            required_substrings=["project"],
+        ),
+    )
+
+    result = runner._run_test(
+        client,  # type: ignore[arg-type]
+        model_id="org/TTS",
+        test=test,
+        repetition=1,
+        artifact_dir=tmp_path,
+        spec=RunSpec(model_set="m", test_set="t", mode="execute"),
+        report=_report(),
+    )
+
+    assert result.passed is True
+    assert result.output_text == "hello project"
+    assert client.translation_requests[0]["model_id"] == "org/Canary"
+    assert client.translation_requests[0]["language"] == "fr"
+    assert result.artifact_path is not None
+    assert result.artifact_path.read_bytes().startswith(b"RIFF")
 
 
 def test_ensure_model_placed_fast_fails_when_instance_never_appears() -> None:

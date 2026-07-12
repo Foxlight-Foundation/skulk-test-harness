@@ -1193,6 +1193,59 @@ class SkulkClient:
             raw_response=raw,
         )
 
+    def audio_translation(
+        self,
+        *,
+        model_id: str,
+        audio: bytes,
+        filename: str,
+        media_type: str,
+        response_format: str = "json",
+        language: str | None = None,
+        prompt: str | None = None,
+    ) -> AudioTranscriptionExecution:
+        """Translate one audio payload to English with the audio translations API."""
+
+        data: dict[str, str] = {
+            "model": model_id,
+            "response_format": response_format,
+        }
+        if language is not None:
+            data["language"] = language
+        if prompt:
+            data["prompt"] = prompt
+        start = time.monotonic()
+        try:
+            response = self._client.post(
+                "/v1/audio/translations",
+                data=data,
+                files={"file": (filename, audio, media_type)},
+                timeout=self.generation_timeout_s,
+            )
+        except (httpx.TimeoutException, httpx.TransportError) as exc:
+            raise SkulkApiError(
+                "POST",
+                "/v1/audio/translations",
+                0,
+                f"{type(exc).__name__}: {exc}",
+            ) from exc
+        elapsed = time.monotonic() - start
+        if response.status_code >= 400:
+            raise SkulkApiError(
+                "POST",
+                "/v1/audio/translations",
+                response.status_code,
+                response.text,
+            )
+        raw, text = _transcription_payload_text(response, response_format)
+        return AudioTranscriptionExecution(
+            text=text,
+            media_type=_base_media_type(response.headers.get("content-type", "")),
+            elapsed_s=elapsed,
+            response_format=response_format,
+            raw_response=raw,
+        )
+
     def realtime_transcription(
         self,
         *,
