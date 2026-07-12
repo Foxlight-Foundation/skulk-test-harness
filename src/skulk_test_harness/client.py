@@ -7,6 +7,7 @@ import json
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from typing import cast
 from urllib.parse import quote, urlsplit, urlunsplit
 
 import httpx
@@ -118,6 +119,21 @@ class AudioTranscriptionExecution:
     elapsed_s: float
     response_format: str
     raw_response: dict[str, object] | str
+
+
+@dataclass(frozen=True)
+class StreamingAudioTranscriptionExecution:
+    """Typed SSE transcript lifecycle and timing from one uploaded audio clip."""
+
+    text: str
+    elapsed_s: float
+    first_transcript_s: float | None
+    input_bytes: int
+    transcript_deltas: int
+    event_types: list[str]
+    event_arrival_s: list[float]
+    events: list[dict[str, object]]
+    canceled: bool = False
 
 
 @dataclass(frozen=True)
@@ -1191,6 +1207,111 @@ class SkulkClient:
             elapsed_s=elapsed,
             response_format=response_format,
             raw_response=raw,
+        )
+
+    def streaming_audio_transcription(
+        self,
+        *,
+        model_id: str,
+        audio: bytes,
+        filename: str,
+        media_type: str,
+        language: str | None = None,
+        prompt: str | None = None,
+        cancel_after_deltas: int = 0,
+    ) -> StreamingAudioTranscriptionExecution:
+        """Stream typed SSE transcript events for one bounded audio upload."""
+
+        if cancel_after_deltas < 0:
+            raise ValueError("cancel_after_deltas must be non-negative")
+        data: dict[str, str] = {"model": model_id, "stream": "true"}
+        if language is not None:
+            data["language"] = language
+        if prompt:
+            data["prompt"] = prompt
+
+        start = time.monotonic()
+        events: list[dict[str, object]] = []
+        event_types: list[str] = []
+        event_arrival_s: list[float] = []
+        text_parts: list[str] = []
+        first_transcript_s: float | None = None
+        canceled = False
+        try:
+            with self._client.stream(
+                "POST",
+                "/v1/audio/transcriptions",
+                data=data,
+                files={"file": (filename, audio, media_type)},
+                timeout=httpx.Timeout(
+                    timeout=None,
+                    connect=self.request_timeout_s,
+                    read=self.stream_read_timeout_s,
+                    write=self.request_timeout_s,
+                    pool=self.request_timeout_s,
+                ),
+            ) as response:
+                if response.status_code >= 400:
+                    body = response.read().decode("utf-8", errors="replace")
+                    raise SkulkApiError(
+                        "POST", "/v1/audio/transcriptions", response.status_code, body
+                    )
+                if _base_media_type(response.headers.get("content-type", "")) != "text/event-stream":
+                    raise TypeError("Streaming transcription did not return SSE")
+                for line in response.iter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    payload = json.loads(line.removeprefix("data: "))
+                    if not isinstance(payload, dict):
+                        raise TypeError("Streaming transcription event was not an object")
+                    event = cast(dict[str, object], payload)
+                    event_type = event.get("type")
+                    if not isinstance(event_type, str):
+                        raise TypeError("Streaming transcription event omitted type")
+                    arrival = time.monotonic() - start
+                    events.append(event)
+                    event_types.append(event_type)
+                    event_arrival_s.append(arrival)
+                    if event_type == "transcription.error":
+                        raise SkulkApiError(
+                            "POST",
+                            "/v1/audio/transcriptions",
+                            200,
+                            str(event.get("message") or event),
+                        )
+                    if event_type == "transcription.delta":
+                        delta = event.get("delta")
+                        if not isinstance(delta, str):
+                            raise TypeError("Transcription delta omitted text")
+                        if first_transcript_s is None:
+                            first_transcript_s = arrival
+                        text_parts.append(delta)
+                        if cancel_after_deltas and len(text_parts) >= cancel_after_deltas:
+                            canceled = True
+                            break
+                    if event_type == "transcription.completed":
+                        completed_text = event.get("text")
+                        if isinstance(completed_text, str):
+                            text_parts = [completed_text]
+        except (httpx.TimeoutException, httpx.TransportError) as exc:
+            raise SkulkApiError(
+                "POST",
+                "/v1/audio/transcriptions",
+                0,
+                f"{type(exc).__name__}: {exc}",
+            ) from exc
+        return StreamingAudioTranscriptionExecution(
+            text="".join(text_parts),
+            elapsed_s=time.monotonic() - start,
+            first_transcript_s=first_transcript_s,
+            input_bytes=len(audio),
+            transcript_deltas=sum(
+                event_type == "transcription.delta" for event_type in event_types
+            ),
+            event_types=event_types,
+            event_arrival_s=event_arrival_s,
+            events=events,
+            canceled=canceled,
         )
 
     def realtime_transcription(

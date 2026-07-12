@@ -516,6 +516,78 @@ def test_audio_transcription_extracts_ndjson_text(
     assert execution.text == "hello world"
 
 
+def test_streaming_audio_transcription_records_typed_sse_lifecycle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = SkulkClient("http://skulk.test")
+    seen: dict[str, object] = {}
+    times = iter([100.0, 100.1, 100.2, 100.3, 100.4, 100.5])
+    monkeypatch.setattr(
+        "skulk_test_harness.client.time.monotonic", lambda: next(times)
+    )
+
+    class _Stream:
+        status_code = 200
+        headers = {"content-type": "text/event-stream"}
+
+        def __enter__(self) -> "_Stream":
+            return self
+
+        def __exit__(self, *_exc: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return b""
+
+        def iter_lines(self):
+            yield ': keep-alive'
+            yield 'data: {"type":"transcription.delta","delta":"hello "}'
+            yield 'data: {"type":"transcription.delta","delta":"world"}'
+            yield 'data: {"type":"transcription.completed","text":"hello world"}'
+            yield 'data: {"type":"transcription.usage","input_bytes":5}'
+
+    def stream(method: str, path: str, **kwargs: object) -> _Stream:
+        seen["method"] = method
+        seen["path"] = path
+        seen["data"] = kwargs["data"]
+        seen["files"] = kwargs["files"]
+        return _Stream()
+
+    monkeypatch.setattr(client._client, "stream", stream)
+    try:
+        execution = client.streaming_audio_transcription(
+            model_id="org/STT",
+            audio=b"audio",
+            filename="sample.wav",
+            media_type="audio/wav",
+            language="en",
+            prompt="hint",
+        )
+    finally:
+        client.close()
+
+    assert seen == {
+        "method": "POST",
+        "path": "/v1/audio/transcriptions",
+        "data": {
+            "model": "org/STT",
+            "stream": "true",
+            "language": "en",
+            "prompt": "hint",
+        },
+        "files": {"file": ("sample.wav", b"audio", "audio/wav")},
+    }
+    assert execution.text == "hello world"
+    assert execution.first_transcript_s == pytest.approx(0.1)
+    assert execution.transcript_deltas == 2
+    assert execution.event_types[-2:] == [
+        "transcription.completed",
+        "transcription.usage",
+    ]
+    assert execution.event_arrival_s == pytest.approx([0.1, 0.2, 0.3, 0.4])
+    assert execution.elapsed_s == pytest.approx(0.5)
+
+
 def test_realtime_transcription_maps_pcm_to_websocket_protocol(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

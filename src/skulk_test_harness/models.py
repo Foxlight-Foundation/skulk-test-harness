@@ -28,6 +28,7 @@ TestKind = Literal[
     "audio_speech_streaming",
     "audio_speech_pressure",
     "audio_transcription",
+    "audio_transcription_streaming",
     "realtime_transcription",
     "speech_roundtrip",
 ]
@@ -574,6 +575,14 @@ class PromptTest(HarnessBaseModel):
     transcription_language: str | None = Field(
         default=None,
         description="Optional language hint for transcription requests.",
+    )
+    transcription_cancel_after_deltas: int = Field(
+        default=1,
+        ge=0,
+        description=(
+            "For streaming audio transcription, close a secondary probe after "
+            "this many transcript deltas. Zero disables the cancellation probe."
+        ),
     )
     top_logprobs: int | None = Field(
         default=None,
