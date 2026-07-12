@@ -307,7 +307,7 @@ Realtime transcription tests reverse the primary model: the selected model is a
 truthful realtime STT target, while `speech_synthesis_model_id` supplies a
 semantic WAV fixture through normal Skulk placement. The harness extracts mono
 PCM16, sends dashboard-shaped frames through `/v1/realtime`, and saves the WAV
-plus a payload-free `.realtime.json` sidecar. A local/remote topology proves
+plus a media-bounded `.realtime.json` sidecar. A local/remote topology proves
 both API ownership paths; the disconnect probe and provider diagnostics prove
 that cancelled sessions release their lifecycle state:
 
@@ -334,6 +334,33 @@ test_sets:
           min_transcript_deltas: 1
           required_substrings:
             - hello
+```
+
+Use `kind: realtime_conversation` to keep that socket open across automatic
+server-VAD turns and compose mounted chat/TTS participants. With
+`realtime_barge_in: true`, the harness sends the next utterance after response
+audio begins and requires the superseded response to terminate as cancelled:
+
+```yaml
+test_sets:
+  my-realtime-conversation:
+    name: my-realtime-conversation
+    tests:
+      - name: vad-multi-turn-barge-in
+        kind: realtime_conversation
+        prompt: Explain why interruption handling matters in a voice loop.
+        audio_response_format: wav
+        speech_synthesis_model_id: org/stable-tts-model
+        realtime_response_model_id: org/chat-model
+        realtime_response_tts_model_id: org/stable-tts-model
+        realtime_server_vad: true
+        realtime_turn_count: 2
+        realtime_barge_in: true
+        realtime_assert_provider_diagnostics: true
+        success:
+          min_chars: 5
+          min_audio_bytes: 1024
+          min_transcript_deltas: 1
 ```
 
 ## Success Criteria

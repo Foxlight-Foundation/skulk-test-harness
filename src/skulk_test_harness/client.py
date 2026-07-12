@@ -7,6 +7,7 @@ import json
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from threading import Event, Lock, Thread
 from typing import cast
 from urllib.parse import quote, urlsplit, urlunsplit
 
@@ -156,6 +157,16 @@ class RealtimeTranscriptionExecution:
     response_audio: bytes = b""
     response_audio_chunks: int = 0
     response_status: str | None = None
+    transcripts: list[str] = field(default_factory=list)
+    assistant_turns: list[str] = field(default_factory=list)
+    response_audio_turns: list[bytes] = field(default_factory=list)
+    response_statuses: list[str] = field(default_factory=list)
+    speech_started_events: int = 0
+    speech_stopped_events: int = 0
+    provider_sessions: int = 1
+    provider_input_bytes_min: int | None = None
+    barge_in_sent: bool = False
+    events: list[dict[str, object]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -1448,6 +1459,9 @@ class SkulkClient:
         response_model_id: str | None = None,
         response_tts_model_id: str | None = None,
         response_voice: str | None = None,
+        server_vad: bool = False,
+        turn_count: int = 1,
+        barge_in: bool = False,
     ) -> RealtimeTranscriptionExecution:
         """Transcribe PCM16 through realtime STT or a typed Fabric speech chain.
 
@@ -1462,6 +1476,9 @@ class SkulkClient:
             response_model_id: Optional mounted chat participant.
             response_tts_model_id: Optional mounted TTS participant.
             response_voice: Optional voice selected for response TTS.
+            server_vad: Enable server-owned VAD and automatic turn commits.
+            turn_count: Number of utterances sent over the persistent socket.
+            barge_in: Send the next turn after response audio begins.
 
         Returns:
             Realtime transcript lifecycle, timing, and input counters.
@@ -1483,6 +1500,16 @@ class SkulkClient:
             raise ValueError("fabric speech chain requires response_model_id")
         if response_tts_model_id and not response_model_id:
             raise ValueError("response TTS requires response_model_id")
+        if not 1 <= turn_count <= 4:
+            raise ValueError("realtime turn count must be between 1 and 4")
+        if turn_count > 1 and not server_vad:
+            raise ValueError("multi-turn realtime sessions require server VAD")
+        if server_vad and response_model_id is None:
+            raise ValueError("server-VAD conversation requires response_model_id")
+        if barge_in and turn_count < 2:
+            raise ValueError("realtime barge-in requires at least two turns")
+        if barge_in and not server_vad:
+            raise ValueError("realtime barge-in requires server VAD")
 
         samples_per_frame = max(1, sample_rate * frame_duration_ms // 1000)
         bytes_per_frame = samples_per_frame * 2
@@ -1494,12 +1521,106 @@ class SkulkClient:
         first_transcript_s: float | None = None
         transcript_deltas = 0
         event_types: list[str] = []
+        event_timeline: list[dict[str, object]] = []
         path = "/v1/fabric/chains/speech" if fabric_chain else "/v1/realtime"
         url = _realtime_url(self.base_url, model_id, fabric_chain=fabric_chain)
         transcript = ""
+        transcripts: list[str] = []
         assistant_parts: list[str] = []
+        assistant_turns: list[str] = []
         response_audio_parts: list[bytes] = []
+        response_audio_turns: list[bytes] = []
+        current_response_audio: list[bytes] = []
         response_audio_chunks = 0
+        response_statuses: list[str] = []
+        speech_started_events = 0
+        speech_stopped_events = 0
+        turns_sent = 0
+        sent_input_bytes = 0
+        sent_input_frames = 0
+        barge_in_sent = False
+        sender_lock = Lock()
+        sender_errors: list[Exception] = []
+        sender_threads: list[Thread] = []
+        active_sender_stop: Event | None = None
+
+        silence = b"\x00\x00" * (sample_rate * 800 // 1000)
+        turn_pcm = pcm16 + (silence if server_vad else b"")
+        turn_frames = [
+            turn_pcm[offset : offset + bytes_per_frame]
+            for offset in range(0, len(turn_pcm), bytes_per_frame)
+        ]
+
+        def record_event(event: dict[str, object]) -> str:
+            """Record one payload-bounded protocol event and return its type."""
+
+            event_type = str(event["type"])
+            event_types.append(event_type)
+            sanitized = dict(event)
+            audio_delta = sanitized.get("delta")
+            if event_type == "response.audio.delta" and isinstance(audio_delta, str):
+                sanitized["delta_bytes"] = len(base64.b64decode(audio_delta))
+                sanitized.pop("delta", None)
+            sanitized["arrival_s"] = time.monotonic() - started_at
+            event_timeline.append(sanitized)
+            return event_type
+
+        def send_turn(connection: Connection) -> None:
+            """Send one paced utterance plus VAD-closing silence."""
+
+            nonlocal active_sender_stop, turns_sent
+            turns_sent += 1
+            stop = Event()
+            first_frame_sent = Event()
+            active_sender_stop = stop
+
+            def send_frames() -> None:
+                nonlocal sent_input_bytes, sent_input_frames
+                try:
+                    for frame in turn_frames:
+                        if stop.is_set():
+                            return
+                        connection.send(
+                            json.dumps(
+                                {
+                                    "type": "input_audio_buffer.append",
+                                    "audio": base64.b64encode(frame).decode("ascii"),
+                                },
+                                separators=(",", ":"),
+                            )
+                        )
+                        first_frame_sent.set()
+                        with sender_lock:
+                            sent_input_bytes += len(frame)
+                            sent_input_frames += 1
+                        if pace_audio:
+                            stop.wait(len(frame) / (sample_rate * 2))
+                except (WebSocketException, OSError, RuntimeError) as exc:
+                    sender_errors.append(exc)
+
+            if server_vad:
+                sender = Thread(target=send_frames, daemon=True)
+                sender_threads.append(sender)
+                sender.start()
+                if not first_frame_sent.wait(timeout=1.0):
+                    raise_sender_error()
+                    raise RuntimeError("realtime microphone sender did not start")
+            else:
+                send_frames()
+
+        def stop_active_sender() -> None:
+            """Stop the current microphone sender at the detected VAD boundary."""
+
+            if active_sender_stop is not None:
+                active_sender_stop.set()
+            if sender_threads:
+                sender_threads[-1].join(timeout=2.0)
+
+        def raise_sender_error() -> None:
+            """Surface an asynchronous microphone transport failure."""
+
+            if sender_errors:
+                raise sender_errors[0]
 
         try:
             with websocket_client.connect(
@@ -1515,8 +1636,7 @@ class SkulkClient:
                     connection,
                     timeout_s=self.stream_read_timeout_s,
                 )
-                created_type = str(created["type"])
-                event_types.append(created_type)
+                created_type = record_event(created)
                 if created_type in {
                     "error",
                     "conversation.item.input_audio_transcription.failed",
@@ -1536,7 +1656,18 @@ class SkulkClient:
                                 "rate": sample_rate,
                             },
                             "transcription": {"model": model_id},
-                            "turn_detection": None,
+                            "turn_detection": (
+                                {
+                                    "type": "server_vad",
+                                    "aggressiveness": 1,
+                                    "prefix_padding_ms": 100,
+                                    "silence_duration_ms": 300,
+                                    "minimum_speech_ms": 100,
+                                    "maximum_utterance_ms": 30_000,
+                                }
+                                if server_vad
+                                else None
+                            ),
                             "noise_reduction": None,
                         }
                     },
@@ -1562,8 +1693,7 @@ class SkulkClient:
                     connection,
                     timeout_s=self.stream_read_timeout_s,
                 )
-                updated_type = str(updated["type"])
-                event_types.append(updated_type)
+                updated_type = record_event(updated)
                 if updated_type != "session.updated":
                     if updated_type in {
                         "error",
@@ -1576,45 +1706,58 @@ class SkulkClient:
                         f"Expected session.updated, received {updated_type!r}"
                     )
 
-                for sent_frames, frame in enumerate(frames, start=1):
-                    connection.send(
-                        json.dumps(
-                            {
-                                "type": "input_audio_buffer.append",
-                                "audio": base64.b64encode(frame).decode("ascii"),
-                            },
-                            separators=(",", ":"),
+                if cancel_after_frames:
+                    for sent_frames, frame in enumerate(frames, start=1):
+                        connection.send(
+                            json.dumps(
+                                {
+                                    "type": "input_audio_buffer.append",
+                                    "audio": base64.b64encode(frame).decode("ascii"),
+                                },
+                                separators=(",", ":"),
+                            )
                         )
-                    )
-                    if cancel_after_frames and sent_frames >= cancel_after_frames:
-                        connection.close(1000, "harness cancellation probe")
-                        return RealtimeTranscriptionExecution(
-                            text="",
-                            elapsed_s=time.monotonic() - started_at,
-                            first_transcript_s=None,
-                            input_bytes=sum(len(item) for item in frames[:sent_frames]),
-                            input_frames=sent_frames,
-                            transcript_deltas=0,
-                            event_types=event_types,
-                            canceled=True,
+                        if sent_frames >= cancel_after_frames:
+                            connection.close(1000, "harness cancellation probe")
+                            return RealtimeTranscriptionExecution(
+                                text="",
+                                elapsed_s=time.monotonic() - started_at,
+                                first_transcript_s=None,
+                                input_bytes=sum(
+                                    len(item) for item in frames[:sent_frames]
+                                ),
+                                input_frames=sent_frames,
+                                transcript_deltas=0,
+                                event_types=event_types,
+                                canceled=True,
+                                events=event_timeline,
+                            )
+                        if pace_audio:
+                            time.sleep(len(frame) / (sample_rate * 2))
+                else:
+                    send_turn(connection)
+                    if not server_vad:
+                        connection.send(
+                            json.dumps(
+                                {"type": "input_audio_buffer.commit"},
+                                separators=(",", ":"),
+                            )
                         )
-                    if pace_audio:
-                        time.sleep(len(frame) / (sample_rate * 2))
-
-                connection.send(
-                    json.dumps(
-                        {"type": "input_audio_buffer.commit"},
-                        separators=(",", ":"),
-                    )
-                )
                 while True:
                     event = _receive_realtime_event(
                         connection,
                         timeout_s=self.stream_read_timeout_s,
                     )
-                    event_type = str(event["type"])
-                    event_types.append(event_type)
+                    raise_sender_error()
+                    event_type = record_event(event)
                     if event_type == "input_audio_buffer.committed":
+                        continue
+                    if event_type == "input_audio_buffer.speech_started":
+                        speech_started_events += 1
+                        continue
+                    if event_type == "input_audio_buffer.speech_stopped":
+                        speech_stopped_events += 1
+                        stop_active_sender()
                         continue
                     if (
                         event_type
@@ -1632,6 +1775,7 @@ class SkulkClient:
                         if not isinstance(final_transcript, str):
                             raise TypeError("Realtime final transcript was not text")
                         transcript = final_transcript
+                        transcripts.append(final_transcript)
                         if first_transcript_s is None:
                             first_transcript_s = time.monotonic() - started_at
                         if response_model_id is None:
@@ -1639,13 +1783,21 @@ class SkulkClient:
                                 text=transcript,
                                 elapsed_s=time.monotonic() - started_at,
                                 first_transcript_s=first_transcript_s,
-                                input_bytes=len(pcm16),
-                                input_frames=len(frames),
+                                input_bytes=sent_input_bytes,
+                                input_frames=sent_input_frames,
                                 transcript_deltas=transcript_deltas,
                                 event_types=event_types,
+                                transcripts=transcripts,
+                                provider_sessions=len(transcripts),
+                                provider_input_bytes_min=len(pcm16),
+                                events=event_timeline,
                             )
                         continue
-                    if event_type in {"response.created", "response.audio.done"}:
+                    if event_type == "response.created":
+                        assistant_parts = []
+                        current_response_audio = []
+                        continue
+                    if event_type == "response.audio.done":
                         continue
                     if event_type == "response.output_text.delta":
                         delta = event.get("delta")
@@ -1663,8 +1815,13 @@ class SkulkClient:
                         delta = event.get("delta")
                         if not isinstance(delta, str):
                             raise TypeError("Realtime response audio delta was not base64")
-                        response_audio_parts.append(base64.b64decode(delta, validate=True))
+                        audio_chunk = base64.b64decode(delta, validate=True)
+                        response_audio_parts.append(audio_chunk)
+                        current_response_audio.append(audio_chunk)
                         response_audio_chunks += 1
+                        if barge_in and not barge_in_sent and turns_sent < turn_count:
+                            send_turn(connection)
+                            barge_in_sent = True
                         continue
                     if event_type == "response.done":
                         response_payload = event.get("response")
@@ -1673,19 +1830,47 @@ class SkulkClient:
                         status = response_payload.get("status")
                         if not isinstance(status, str):
                             raise TypeError("Realtime response status was not text")
-                        return RealtimeTranscriptionExecution(
-                            text=transcript,
-                            elapsed_s=time.monotonic() - started_at,
-                            first_transcript_s=first_transcript_s,
-                            input_bytes=len(pcm16),
-                            input_frames=len(frames),
-                            transcript_deltas=transcript_deltas,
-                            event_types=event_types,
-                            assistant_text="".join(assistant_parts),
-                            response_audio=b"".join(response_audio_parts),
-                            response_audio_chunks=response_audio_chunks,
-                            response_status=status,
-                        )
+                        response_statuses.append(status)
+                        assistant_turns.append("".join(assistant_parts))
+                        response_audio_turns.append(b"".join(current_response_audio))
+                        if len(response_statuses) >= turn_count:
+                            stop_active_sender()
+                            return RealtimeTranscriptionExecution(
+                                text="\n".join(transcripts),
+                                elapsed_s=time.monotonic() - started_at,
+                                first_transcript_s=first_transcript_s,
+                                input_bytes=sent_input_bytes,
+                                input_frames=sent_input_frames,
+                                transcript_deltas=transcript_deltas,
+                                event_types=event_types,
+                                assistant_text="\n".join(assistant_turns),
+                                response_audio=b"".join(response_audio_parts),
+                                response_audio_chunks=response_audio_chunks,
+                                response_status=status,
+                                transcripts=transcripts,
+                                assistant_turns=assistant_turns,
+                                response_audio_turns=response_audio_turns,
+                                response_statuses=response_statuses,
+                                speech_started_events=speech_started_events,
+                                speech_stopped_events=speech_stopped_events,
+                                provider_sessions=len(transcripts),
+                                # One append may already be in flight when each
+                                # server-VAD stop event reaches the client. The
+                                # provider can legitimately commit without
+                                # accounting for that boundary frame.
+                                provider_input_bytes_min=max(
+                                    0,
+                                    sent_input_bytes
+                                    - (bytes_per_frame * len(transcripts)),
+                                ),
+                                barge_in_sent=barge_in_sent,
+                                events=event_timeline,
+                            )
+                        if turns_sent < turn_count:
+                            send_turn(connection)
+                        assistant_parts = []
+                        current_response_audio = []
+                        continue
                     if event_type in {
                         "error",
                         "conversation.item.input_audio_transcription.failed",
@@ -1707,7 +1892,7 @@ class SkulkClient:
                 "WS",
                 path,
                 0,
-                f"{type(exc).__name__}: {exc}",
+                f"{type(exc).__name__}: {exc}; recent_events={event_types[-24:]}",
             ) from exc
 
     def bench_chat(

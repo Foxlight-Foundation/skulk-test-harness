@@ -845,6 +845,89 @@ def test_fabric_speech_chain_collects_transcript_text_and_audio(
     assert execution.response_status == "completed"
 
 
+def test_realtime_conversation_uses_vad_multi_turn_and_barge_in(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One socket should retain VAD turns and interrupt an active response."""
+
+    socket = _FakeWebSocket(
+        [
+            {"type": "session.created", "session": {"type": "transcription"}},
+            {"type": "session.updated"},
+            {"type": "input_audio_buffer.speech_started"},
+            {"type": "input_audio_buffer.speech_stopped"},
+            {"type": "input_audio_buffer.committed"},
+            {
+                "type": "conversation.item.input_audio_transcription.completed",
+                "transcript": "first turn",
+            },
+            {"type": "response.created"},
+            {"type": "response.output_text.delta", "delta": "long response"},
+            {
+                "type": "response.audio.delta",
+                "delta": base64.b64encode(b"partial-audio").decode("ascii"),
+            },
+            {"type": "input_audio_buffer.speech_started"},
+            {"type": "input_audio_buffer.speech_stopped"},
+            {"type": "input_audio_buffer.committed"},
+            {"type": "response.done", "response": {"status": "cancelled"}},
+            {
+                "type": "conversation.item.input_audio_transcription.completed",
+                "transcript": "second turn",
+            },
+            {"type": "response.created"},
+            {"type": "response.output_text.done", "text": "final answer"},
+            {
+                "type": "response.audio.delta",
+                "delta": base64.b64encode(b"final-audio").decode("ascii"),
+            },
+            {"type": "response.audio.done"},
+            {"type": "response.done", "response": {"status": "completed"}},
+        ]
+    )
+    monkeypatch.setattr(
+        client_module.websocket_client,
+        "connect",
+        lambda *_args, **_kwargs: socket,
+    )
+    client = SkulkClient("http://skulk.test")
+    try:
+        execution = client.realtime_transcription(
+            model_id="org/STT",
+            pcm16=b"\x01\x00" * 160,
+            sample_rate=8_000,
+            frame_duration_ms=20,
+            pace_audio=False,
+            response_model_id="org/chat",
+            response_tts_model_id="org/tts",
+            server_vad=True,
+            turn_count=2,
+            barge_in=True,
+        )
+    finally:
+        client.close()
+
+    session = json.loads(socket.sent[0])["session"]
+    assert session["audio"]["input"]["turn_detection"]["type"] == "server_vad"
+    assert all(
+        json.loads(message)["type"] != "input_audio_buffer.commit"
+        for message in socket.sent
+    )
+    assert execution.transcripts == ["first turn", "second turn"]
+    assert execution.response_statuses == ["cancelled", "completed"]
+    assert execution.assistant_turns[-1] == "final answer"
+    assert execution.response_audio_turns[-1] == b"final-audio"
+    assert execution.speech_started_events == 2
+    assert execution.speech_stopped_events == 2
+    assert execution.provider_sessions == 2
+    assert execution.barge_in_sent is True
+    audio_events = [
+        event for event in execution.events if event["type"] == "response.audio.delta"
+    ]
+    assert audio_events[0]["delta_bytes"] == len(b"partial-audio")
+    assert "delta" not in audio_events[0]
+
+
 def test_realtime_transcription_disconnect_probe_closes_without_commit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

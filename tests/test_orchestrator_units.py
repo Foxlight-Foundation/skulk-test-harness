@@ -1157,6 +1157,9 @@ class _FakeClient:
         response_model_id: str | None = None,
         response_tts_model_id: str | None = None,
         response_voice: str | None = None,
+        server_vad: bool = False,
+        turn_count: int = 1,
+        barge_in: bool = False,
     ) -> RealtimeTranscriptionExecution:
         self.realtime_requests.append(
             {
@@ -1170,26 +1173,61 @@ class _FakeClient:
                 "response_model_id": response_model_id,
                 "response_tts_model_id": response_tts_model_id,
                 "response_voice": response_voice,
+                "server_vad": server_vad,
+                "turn_count": turn_count,
+                "barge_in": barge_in,
             }
         )
         canceled = cancel_after_frames > 0
+        has_response = response_model_id is not None and not canceled
+        transcripts = ["hello world" for _ in range(turn_count)] if not canceled else []
+        assistant_turns = (
+            ["interrupted response", "hello from the assistant"]
+            if has_response and barge_in
+            else (["hello from the assistant"] * turn_count if has_response else [])
+        )
+        response_statuses = (
+            ["cancelled", "completed"]
+            if has_response and barge_in
+            else (["completed"] * turn_count if has_response else [])
+        )
+        response_audio_turns = (
+            [b"ID3" + b"\x00" * 256, b"ID3" + b"\x00" * 2048]
+            if has_response and barge_in
+            else (
+                [b"ID3" + b"\x00" * 2048 for _ in range(turn_count)]
+                if has_response
+                else []
+            )
+        )
         return RealtimeTranscriptionExecution(
-            text="" if canceled else "hello world",
+            text="" if canceled else "\n".join(transcripts),
             elapsed_s=0.05,
             first_transcript_s=None if canceled else 0.03,
             input_bytes=(
                 min(len(pcm16), cancel_after_frames * sample_rate // 10 * 2)
                 if canceled
-                else len(pcm16)
+                else len(pcm16) * turn_count
             ),
-            input_frames=cancel_after_frames if canceled else 10,
-            transcript_deltas=0 if canceled else 2,
-            event_types=["session.created", "session.updated"],
+            input_frames=cancel_after_frames if canceled else 10 * turn_count,
+            transcript_deltas=0 if canceled else 2 * turn_count,
+            event_types=(
+                ["session.created", "session.updated"]
+                + (["input_audio_buffer.speech_started", "input_audio_buffer.speech_stopped"] * turn_count if server_vad else [])
+            ),
             canceled=canceled,
-            assistant_text=("hello from the assistant" if fabric_chain and not canceled else ""),
-            response_audio=(b"ID3" + b"\x00" * 2048 if fabric_chain and not canceled else b""),
-            response_audio_chunks=(2 if fabric_chain and not canceled else 0),
-            response_status=("completed" if fabric_chain and not canceled else None),
+            assistant_text="\n".join(assistant_turns),
+            response_audio=b"".join(response_audio_turns),
+            response_audio_chunks=(2 * len(response_audio_turns)),
+            response_status=(response_statuses[-1] if response_statuses else None),
+            transcripts=transcripts,
+            assistant_turns=assistant_turns,
+            response_audio_turns=response_audio_turns,
+            response_statuses=response_statuses,
+            speech_started_events=(turn_count if server_vad else 0),
+            speech_stopped_events=(turn_count if server_vad else 0),
+            provider_sessions=(turn_count if not canceled else 1),
+            barge_in_sent=barge_in and not canceled,
         )
 
     def get_provider_capability_diagnostics(
@@ -1990,6 +2028,82 @@ def test_fabric_speech_chain_mounts_participants_and_persists_response_audio(
         "org/TTS",
         "org/Chat",
     }
+
+
+def test_realtime_conversation_persists_vad_and_barge_in_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The conversational suite must prove two automatic turns and interruption."""
+
+    placements = [
+        PlacementResult(
+            model_id=model_id,
+            instance_id=f"instance-{index}",
+            node_ids=["node-a"],
+            ready=True,
+        )
+        for index, model_id in enumerate(
+            ("org/RealtimeSTT", "org/TTS", "org/Chat"), start=1
+        )
+    ]
+    client = _FakeClient(
+        live_placements=placements,
+        models=[{"id": placement.model_id} for placement in placements],
+    )
+    owner_client = _FakeClient()
+    runner = _runner()
+    monkeypatch.setattr(runner, "_client_for_url", lambda _url: owner_client)
+
+    test = PromptTest(
+        name="realtime-conversation",
+        kind="realtime_conversation",
+        prompt="Hello world from the conversational speech battery.",
+        speech_synthesis_model_id="org/TTS",
+        realtime_response_model_id="org/Chat",
+        realtime_response_tts_model_id="org/TTS",
+        realtime_pace_audio=False,
+        realtime_server_vad=True,
+        realtime_turn_count=2,
+        realtime_barge_in=True,
+        success=SuccessCriteria(
+            min_chars=5,
+            min_audio_bytes=1024,
+            min_transcript_deltas=1,
+            required_substrings=["hello"],
+        ),
+    )
+    spec = RunSpec(model_set="m", test_set="t", mode="execute")
+    report = RunReport.start("run-conversation", spec, [])
+
+    result = runner._run_test(
+        client,  # type: ignore[arg-type]
+        model_id="org/RealtimeSTT",
+        test=test,
+        repetition=1,
+        artifact_dir=tmp_path,
+        spec=spec,
+        report=report,
+    )
+
+    assert result.passed is True
+    request = owner_client.realtime_requests[0]
+    assert request["fabric_chain"] is False
+    assert request["server_vad"] is True
+    assert request["turn_count"] == 2
+    assert request["barge_in"] is True
+    assert list(tmp_path.glob("*.mp3"))
+    assert result.artifact_path is not None
+    metadata_path = result.artifact_path.with_suffix(
+        f"{result.artifact_path.suffix}.realtime.json"
+    )
+    metadata = json.loads(metadata_path.read_text())
+    assert metadata["sessions"][0]["turns"] == 2
+    assert metadata["sessions"][0]["response_statuses"] == [
+        "cancelled",
+        "completed",
+    ]
+    assert metadata["sessions"][0]["barge_in_sent"] is True
 
 
 def test_realtime_transcription_retries_transient_busy_admission() -> None:

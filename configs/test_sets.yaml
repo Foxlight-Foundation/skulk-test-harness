@@ -369,6 +369,32 @@ test_sets:
           required_substrings:
             - hello
 
+  conversational-realtime:
+    name: conversational-realtime
+    description: >
+      Persistent realtime voice-loop coverage with server VAD, automatic
+      commits, two turns, assistant speech, and response barge-in.
+    tests:
+      - name: realtime-vad-multi-turn-barge-in
+        kind: realtime_conversation
+        prompt: >
+          Answer in exactly two short sentences: why does the Skulk speech
+          battery test interruption handling?
+        audio_response_format: wav
+        speech_owner_count: 1
+        realtime_frame_duration_ms: 100
+        realtime_pace_audio: true
+        realtime_server_vad: true
+        realtime_turn_count: 2
+        realtime_barge_in: true
+        realtime_assert_provider_diagnostics: true
+        success:
+          min_chars: 5
+          min_audio_bytes: 1024
+          min_transcript_deltas: 1
+          required_substrings:
+            - answer
+
   fabric-speech-chain:
     name: fabric-speech-chain
     description: >-

@@ -31,6 +31,7 @@ TestKind = Literal[
     "audio_transcription",
     "audio_transcription_streaming",
     "realtime_transcription",
+    "realtime_conversation",
     "fabric_speech_chain",
     "speech_roundtrip",
     "speech_translation_roundtrip",
@@ -567,15 +568,15 @@ class PromptTest(HarnessBaseModel):
     realtime_response_model_id: str | None = Field(
         default=None,
         description=(
-            "For `kind: fabric_speech_chain`, mounted chat participant that "
-            "receives the final transcript."
+            "For conversational realtime or Fabric-chain tests, mounted chat "
+            "participant that receives each final transcript."
         ),
     )
     realtime_response_tts_model_id: str | None = Field(
         default=None,
         description=(
-            "For `kind: fabric_speech_chain`, mounted TTS participant that "
-            "speaks the assistant response."
+            "For conversational realtime or Fabric-chain tests, mounted TTS "
+            "participant that speaks assistant responses."
         ),
     )
     realtime_frame_duration_ms: int = Field(
@@ -606,6 +607,29 @@ class PromptTest(HarnessBaseModel):
         description=(
             "Require stt.realtime provider lifecycle/media counters to cover "
             "successful and cancelled sessions and drain active gauges to zero."
+        ),
+    )
+    realtime_turn_count: int = Field(
+        default=1,
+        ge=1,
+        le=4,
+        description=(
+            "Number of server-VAD utterances sent over one persistent realtime "
+            "conversation socket."
+        ),
+    )
+    realtime_server_vad: bool = Field(
+        default=False,
+        description=(
+            "Enable server-owned VAD and automatic input commit for realtime "
+            "conversation tests."
+        ),
+    )
+    realtime_barge_in: bool = Field(
+        default=False,
+        description=(
+            "Send the next utterance after response audio begins and require the "
+            "superseded response to cancel. Requires at least two turns."
         ),
     )
     transcription_response_format: TranscriptionResponseFormat = Field(
