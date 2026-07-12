@@ -692,7 +692,7 @@ class HarnessRunner:
             return self._run_audio_transcription_test(
                 client, model_id=model_id, test=test, repetition=repetition
             )
-        if test.kind == "realtime_transcription":
+        if test.kind in {"realtime_transcription", "fabric_speech_chain"}:
             return self._run_realtime_transcription_test(
                 client,
                 model_id=model_id,
@@ -2007,6 +2007,92 @@ class HarnessRunner:
             )
         _append_unique_placement(report, tts_placement)
 
+        response_model_id: str | None = None
+        response_tts_model_id: str | None = None
+        if test.kind == "fabric_speech_chain":
+            catalog = client.list_models()
+            response_tts_model_id = (
+                test.realtime_response_tts_model_id or tts_model_id
+            )
+            response_model_id = test.realtime_response_model_id or _first_chat_model_id(
+                catalog,
+                exclude_model_ids={model_id, tts_model_id, response_tts_model_id},
+            )
+            if response_model_id is None or response_tts_model_id is None:
+                issues.append(
+                    Issue(
+                        severity="error",
+                        model_id=model_id,
+                        test_name=test.name,
+                        message=(
+                            "fabric_speech_chain requires realtime response chat "
+                            "and TTS model IDs"
+                        ),
+                    )
+                )
+                return _realtime_transcription_result(
+                    model_id=model_id,
+                    test=test,
+                    repetition=repetition,
+                    issues=issues,
+                )
+            for participant_model_id in (response_model_id, response_tts_model_id):
+                if participant_model_id in {model_id, tts_model_id}:
+                    continue
+                try:
+                    participant_placement = self._ensure_model_placed(
+                        client,
+                        participant_model_id,
+                        spec,
+                        report,
+                    )
+                except (
+                    OSError,
+                    SkulkApiError,
+                    httpx.HTTPError,
+                    TypeError,
+                    ValueError,
+                ) as exc:
+                    issues.append(
+                        Issue(
+                            severity="error",
+                            model_id=model_id,
+                            test_name=test.name,
+                            message="Fabric speech participant placement failed",
+                            evidence={
+                                "participant_model_id": participant_model_id,
+                                "error": str(exc),
+                            },
+                        )
+                    )
+                    return _realtime_transcription_result(
+                        model_id=model_id,
+                        test=test,
+                        repetition=repetition,
+                        issues=issues,
+                    )
+                if participant_placement is not None:
+                    secondary_placements.append(
+                        (participant_model_id, participant_placement)
+                    )
+                if participant_placement is None or not participant_placement.ready:
+                    issues.append(
+                        Issue(
+                            severity="error",
+                            model_id=model_id,
+                            test_name=test.name,
+                            message="Fabric speech participant was not ready",
+                            evidence={"participant_model_id": participant_model_id},
+                        )
+                    )
+                    return _realtime_transcription_result(
+                        model_id=model_id,
+                        test=test,
+                        repetition=repetition,
+                        issues=issues,
+                    )
+                _append_unique_placement(report, participant_placement)
+
         artifact_path: Path | None = None
         metadata_path: Path | None = None
         started_at = time.monotonic()
@@ -2078,6 +2164,10 @@ class HarnessRunner:
                         frame_duration_ms=test.realtime_frame_duration_ms,
                         pace_audio=test.realtime_pace_audio,
                         cancel_after_frames=test.realtime_cancel_after_frames,
+                        fabric_chain=test.kind == "fabric_speech_chain",
+                        response_model_id=response_model_id,
+                        response_tts_model_id=response_tts_model_id,
+                        response_voice=test.speech_voice,
                     )
                 if not cancellation_execution.canceled:
                     issues.append(
@@ -2107,9 +2197,22 @@ class HarnessRunner:
                         sample_rate=sample_rate,
                         frame_duration_ms=test.realtime_frame_duration_ms,
                         pace_audio=test.realtime_pace_audio,
+                        fabric_chain=test.kind == "fabric_speech_chain",
+                        response_model_id=response_model_id,
+                        response_tts_model_id=response_tts_model_id,
+                        response_voice=test.speech_voice,
                     )
                 executions.append(execution)
                 owner_label = f"owner-{owner_index}-{role}"
+                if test.kind == "fabric_speech_chain" and execution.response_audio:
+                    _audio_artifact_path(
+                        artifact_dir,
+                        response_tts_model_id or "fabric-response-tts",
+                        f"{test.name}-{owner_label}-response",
+                        repetition,
+                        "mp3",
+                        execution.response_audio,
+                    )
                 issues.extend(
                     _score_realtime_transcription(
                         model_id=model_id,
@@ -2118,6 +2221,15 @@ class HarnessRunner:
                         criteria=test.success,
                     )
                 )
+                if test.kind == "fabric_speech_chain":
+                    issues.extend(
+                        _score_fabric_speech_chain(
+                            model_id=model_id,
+                            test_name=f"{test.name}-{owner_label}",
+                            execution=execution,
+                            criteria=test.success,
+                        )
+                    )
                 owner_records.append(
                     _sanitized_realtime_execution(owner_label, execution)
                 )
@@ -2148,6 +2260,8 @@ class HarnessRunner:
                 metadata_path = _realtime_metadata_artifact_path(
                     artifact_path,
                     speech_synthesis_model_id=tts_model_id,
+                    response_model_id=response_model_id,
+                    response_tts_model_id=response_tts_model_id,
                     sample_rate=sample_rate,
                     frame_duration_ms=test.realtime_frame_duration_ms,
                     paced=test.realtime_pace_audio,
@@ -2178,7 +2292,12 @@ class HarnessRunner:
 
         elapsed_s = time.monotonic() - started_at
         transcripts = [execution.text for execution in executions]
-        output = "\n".join(transcripts)
+        assistant_outputs = [
+            execution.assistant_text
+            for execution in executions
+            if execution.assistant_text
+        ]
+        output = "\n".join((*transcripts, *assistant_outputs))
         if metadata_path is not None:
             output = f"{output}\nrealtime_metadata={metadata_path}".strip()
         first_transcripts = [
@@ -2277,6 +2396,10 @@ class HarnessRunner:
         sample_rate: int,
         frame_duration_ms: int,
         pace_audio: bool,
+        fabric_chain: bool = False,
+        response_model_id: str | None = None,
+        response_tts_model_id: str | None = None,
+        response_voice: str | None = None,
     ) -> RealtimeTranscriptionExecution:
         """Retry only transient admission races before realtime audio is accepted."""
 
@@ -2289,6 +2412,10 @@ class HarnessRunner:
                     sample_rate=sample_rate,
                     frame_duration_ms=frame_duration_ms,
                     pace_audio=pace_audio,
+                    fabric_chain=fabric_chain,
+                    response_model_id=response_model_id,
+                    response_tts_model_id=response_tts_model_id,
+                    response_voice=response_voice,
                 )
             except SkulkApiError as exc:
                 message = str(exc).casefold()
@@ -2839,6 +2966,60 @@ def _score_realtime_transcription(
     return issues
 
 
+def _score_fabric_speech_chain(
+    *,
+    model_id: str,
+    test_name: str,
+    execution: RealtimeTranscriptionExecution,
+    criteria: SuccessCriteria,
+) -> list[Issue]:
+    """Require completed assistant text and synthesized audio from one chain."""
+
+    issues: list[Issue] = []
+    if execution.response_status != "completed":
+        issues.append(
+            Issue(
+                severity="error",
+                model_id=model_id,
+                test_name=test_name,
+                message="Fabric speech response did not complete",
+                evidence={"response_status": execution.response_status},
+            )
+        )
+    if not execution.assistant_text.strip():
+        issues.append(
+            Issue(
+                severity="error",
+                model_id=model_id,
+                test_name=test_name,
+                message="Fabric speech chain returned no assistant text",
+            )
+        )
+    if len(execution.response_audio) < criteria.min_audio_bytes:
+        issues.append(
+            Issue(
+                severity="error",
+                model_id=model_id,
+                test_name=test_name,
+                message="Fabric speech chain returned too little response audio",
+                evidence={
+                    "audio_bytes": len(execution.response_audio),
+                    "min_audio_bytes": criteria.min_audio_bytes,
+                },
+            )
+        )
+    if execution.response_audio_chunks <= 0:
+        issues.append(
+            Issue(
+                severity="error",
+                model_id=model_id,
+                test_name=test_name,
+                message="Fabric speech chain emitted no response audio chunks",
+            )
+        )
+    return issues
+
+
 def _stream_span_s(chunk_arrival_s: list[float]) -> float | None:
     """Return elapsed seconds between first and last streamed chunks."""
 
@@ -2939,6 +3120,20 @@ def _first_tts_model_id(
         if not model_id or model_id == exclude_model_id:
             continue
         if _catalog_entry_supports_tts(model):
+            return model_id
+    return None
+
+
+def _first_chat_model_id(
+    catalog: list[dict[str, object]], *, exclude_model_ids: set[str]
+) -> str | None:
+    """Pick the first catalog model advertising text-generation support."""
+
+    for model in catalog:
+        model_id = _model_id_from_catalog_entry(model)
+        if not model_id or model_id in exclude_model_ids:
+            continue
+        if _has_any(model.get("tasks"), ["TextGeneration"]):
             return model_id
     return None
 
@@ -3616,6 +3811,10 @@ def _sanitized_realtime_execution(
         "input_frames": execution.input_frames,
         "transcript_chars": len(execution.text),
         "transcript_deltas": execution.transcript_deltas,
+        "assistant_chars": len(execution.assistant_text),
+        "response_audio_bytes": len(execution.response_audio),
+        "response_audio_chunks": execution.response_audio_chunks,
+        "response_status": execution.response_status,
         "event_types": execution.event_types,
     }
 
@@ -3624,6 +3823,8 @@ def _realtime_metadata_artifact_path(
     audio_path: Path,
     *,
     speech_synthesis_model_id: str,
+    response_model_id: str | None,
+    response_tts_model_id: str | None,
     sample_rate: int,
     frame_duration_ms: int,
     paced: bool,
@@ -3638,6 +3839,8 @@ def _realtime_metadata_artifact_path(
         json.dumps(
             {
                 "speech_synthesis_model_id": speech_synthesis_model_id,
+                "response_model_id": response_model_id,
+                "response_tts_model_id": response_tts_model_id,
                 "sample_rate": sample_rate,
                 "frame_duration_ms": frame_duration_ms,
                 "paced": paced,

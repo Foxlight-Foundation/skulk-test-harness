@@ -41,6 +41,7 @@ Each map key must match the test set's `name`.
 | `audio_speech_pressure` | Concurrent streaming TTS across discovered API owners, with deterministic local/remote routing, DATA diagnostics, optional chat workers, and one audio/timing artifact per speech request |
 | `audio_transcription` | Speech-to-text endpoint behavior with an audio fixture |
 | `realtime_transcription` | Semantic TTS-to-realtime-STT WebSocket roundtrip, disconnect recovery, local/remote ownership, and provider diagnostics |
+| `fabric_speech_chain` | Explicit Fabric STT-to-chat-to-TTS composition with transcript, assistant text, response audio, cancellation, local/remote ownership, and provider diagnostics |
 | `speech_roundtrip` | TTS output saved as an artifact and piped into a mounted STT model |
 
 ## Prompt Test Fields
@@ -88,6 +89,8 @@ Each map key must match the test set's `name`.
 | `input_audio_mime_type` | Optional MIME type for transcription fixture upload; inferred from the fixture extension when omitted |
 | `transcription_model_id` | Optional STT model used by `kind: speech_roundtrip` |
 | `speech_synthesis_model_id` | Optional TTS fixture model used by `kind: realtime_transcription` |
+| `realtime_response_model_id` | Mounted chat participant required by `kind: fabric_speech_chain` |
+| `realtime_response_tts_model_id` | Mounted response TTS participant required by `kind: fabric_speech_chain` |
 | `transcription_response_format` | STT response format, such as `json` or `text` |
 | `transcription_language` | Optional STT language hint |
 | `realtime_frame_duration_ms` | PCM16 append-frame duration; defaults to the dashboard's 100 ms |
