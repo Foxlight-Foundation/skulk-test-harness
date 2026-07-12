@@ -48,6 +48,7 @@ from skulk_test_harness.orchestrator import (
     _clear_deferred_placement_issues,
     _first_chat_model_id,
     _first_stt_model_id,
+    _first_translation_model_id,
     _messages_for_test,
     _pcm16_from_wav,
     _placement_from_preview,
@@ -508,9 +509,11 @@ def test_messages_for_test_builds_multimodal_content() -> None:
 
 
 def test_served_spec_selector_matches_runtime_field() -> None:
-    selector = load_model_sets(
-        Path(__file__).parents[1] / "configs/model_sets.yaml"
-    ).model_sets["served-spec-draft-eagle3"].selectors[0]
+    selector = (
+        load_model_sets(Path(__file__).parents[1] / "configs/model_sets.yaml")
+        .model_sets["served-spec-draft-eagle3"]
+        .selectors[0]
+    )
     catalog = [
         {"id": "org/plain", "runtime": {"served_spec_type": "draft_mtp"}},
         {"id": "org/eagle", "runtime": {"served_spec_type": "draft_eagle3"}},
@@ -597,6 +600,23 @@ def test_first_stt_model_id_reads_speech_metadata() -> None:
     )
     assert _first_stt_model_id(catalog, exclude_model_id="org/ResolvedSTT") == (
         "org/TaggedSTT"
+    )
+
+
+def test_first_translation_model_id_skips_transcription_only_entries() -> None:
+    catalog = [
+        {
+            "id": "org/TranscriptionOnly",
+            "resolved_capabilities": {"supports_transcription": True},
+        },
+        {
+            "id": "org/Canary",
+            "audio": {"kind": "stt", "supports_translation": True},
+        },
+    ]
+
+    assert (
+        _first_translation_model_id(catalog, exclude_model_id="org/TTS") == "org/Canary"
     )
 
 
@@ -721,9 +741,7 @@ def test_public_default_sets_are_cluster_neutral() -> None:
 
 def test_foxlight_gpt_oss_complete_suite_loads_tool_tests() -> None:
     root = Path(__file__).parents[1]
-    model_sets = load_model_sets(
-        root / "examples/foxlight/model_sets.yaml"
-    ).model_sets
+    model_sets = load_model_sets(root / "examples/foxlight/model_sets.yaml").model_sets
     test_sets = load_test_sets(root / "examples/foxlight/test_sets.yaml").test_sets
 
     assert "gpt-oss-20b" in model_sets
@@ -754,23 +772,19 @@ def test_foxlight_speech_pressure_closes_data_plane_coverage() -> None:
     )
     assert mixed.speech_owner_topology == "local_remote"
     assert mixed.speech_chat_concurrency == 2
-    assert mixed.speech_chat_model_id == "mlx-community/Qwen3.5-9B-MLX-4bit"
+    assert mixed.speech_chat_model_id == "mlx-community/Qwen3-0.6B-4bit"
 
 
 def test_foxlight_realtime_suite_requires_local_remote_provider_evidence() -> None:
     root = Path(__file__).parents[1]
-    model_sets = load_model_sets(
-        root / "examples/foxlight/model_sets.yaml"
-    ).model_sets
+    model_sets = load_model_sets(root / "examples/foxlight/model_sets.yaml").model_sets
     test_sets = load_test_sets(root / "examples/foxlight/test_sets.yaml").test_sets
 
     assert model_sets["speech-stt-realtime"].models == [
         "mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit"
     ]
     test = test_sets["realtime-transcription"].tests[0]
-    assert test.speech_synthesis_model_id == (
-        "mlx-community/LongCat-AudioDiT-1B-4bit"
-    )
+    assert test.speech_synthesis_model_id == ("mlx-community/LongCat-AudioDiT-1B-4bit")
     assert test.speech_owner_count == 2
     assert test.speech_owner_topology == "local_remote"
     assert test.realtime_assert_provider_diagnostics is True
@@ -779,9 +793,7 @@ def test_foxlight_realtime_suite_requires_local_remote_provider_evidence() -> No
 
 def test_foxlight_e2e_battery_references_defined_sets() -> None:
     root = Path(__file__).parents[1]
-    model_sets = load_model_sets(
-        root / "examples/foxlight/model_sets.yaml"
-    ).model_sets
+    model_sets = load_model_sets(root / "examples/foxlight/model_sets.yaml").model_sets
     test_sets = load_test_sets(root / "examples/foxlight/test_sets.yaml").test_sets
     battery = root / "examples/foxlight/run_e2e_battery.sh"
 
@@ -854,9 +866,7 @@ def test_extract_stream_logprobs_zero_without_logprobs() -> None:
 
 def test_llama_cpp_suite_and_gguf_set_load() -> None:
     root = Path(__file__).parents[1]
-    model_sets = load_model_sets(
-        root / "examples/foxlight/model_sets.yaml"
-    ).model_sets
+    model_sets = load_model_sets(root / "examples/foxlight/model_sets.yaml").model_sets
     test_sets = load_test_sets(root / "examples/foxlight/test_sets.yaml").test_sets
 
     assert model_sets["gguf-llama-cpp"].models == ["unsloth/Llama-3.2-1B-Instruct-GGUF"]
@@ -935,6 +945,7 @@ class _FakeClient:
         self.thinking_seen: list[bool | None] = []
         self.speech_requests: list[dict[str, object]] = []
         self.transcription_requests: list[dict[str, object]] = []
+        self.translation_requests: list[dict[str, object]] = []
         self.streaming_transcription_requests: list[dict[str, object]] = []
         self.realtime_requests: list[dict[str, object]] = []
 
@@ -984,6 +995,10 @@ class _FakeClient:
         stream: bool = False,
         streaming_interval: float | None = None,
         read_delay_s: float = 0.0,
+        reference_audio: bytes | None = None,
+        reference_audio_filename: str = "reference.wav",
+        reference_audio_media_type: str = "audio/wav",
+        reference_text: str | None = None,
     ) -> AudioSpeechExecution:
         self.speech_requests.append(
             {
@@ -995,13 +1010,13 @@ class _FakeClient:
                 "stream": stream,
                 "streaming_interval": streaming_interval,
                 "read_delay_s": read_delay_s,
+                "reference_audio": reference_audio,
+                "reference_audio_filename": reference_audio_filename,
+                "reference_audio_media_type": reference_audio_media_type,
+                "reference_text": reference_text,
             }
         )
-        audio = (
-            b"ID3" + (b"\x00" * 2048)
-            if response_format == "mp3"
-            else _wav_bytes()
-        )
+        audio = b"ID3" + (b"\x00" * 2048) if response_format == "mp3" else _wav_bytes()
         return AudioSpeechExecution(
             audio=audio,
             media_type="audio/mpeg" if response_format == "mp3" else "audio/wav",
@@ -1017,6 +1032,10 @@ class _FakeClient:
             ),
             streaming=stream,
         )
+
+    def audio_voices(self, model_id: str) -> list[str]:
+        del model_id
+        return ["ryan", "aiden"]
 
     def audio_transcription(
         self,
@@ -1046,6 +1065,36 @@ class _FakeClient:
             elapsed_s=0.03,
             response_format=response_format,
             raw_response={"text": "hello world"},
+        )
+
+    def audio_translation(
+        self,
+        *,
+        model_id: str,
+        audio: bytes,
+        filename: str,
+        media_type: str,
+        response_format: str = "json",
+        language: str | None = None,
+        prompt: str | None = None,
+    ) -> AudioTranscriptionExecution:
+        self.translation_requests.append(
+            {
+                "model_id": model_id,
+                "audio": audio,
+                "filename": filename,
+                "media_type": media_type,
+                "response_format": response_format,
+                "language": language,
+                "prompt": prompt,
+            }
+        )
+        return AudioTranscriptionExecution(
+            text="hello project",
+            media_type="application/json",
+            elapsed_s=0.03,
+            response_format=response_format,
+            raw_response={"text": "hello project"},
         )
 
     def streaming_audio_transcription(
@@ -1353,8 +1402,8 @@ def test_run_test_dispatches_streaming_audio_speech(tmp_path: Path) -> None:
             min_audio_bytes=1024,
             min_stream_chunks=2,
             min_stream_span_s=0.5,
-        ),
-    )
+            ),
+        )
 
     result = runner._run_test(
         client,  # type: ignore[arg-type]
@@ -1657,7 +1706,9 @@ def test_score_streaming_audio_output_rejects_burst_chunks() -> None:
     )
 
     assert len(issues) == 1
-    assert issues[0].message == "Streaming response did not span the configured duration"
+    assert (
+        issues[0].message == "Streaming response did not span the configured duration"
+    )
     assert issues[0].evidence["min_stream_span_s"] == 0.5
     stream_span_s = issues[0].evidence["stream_span_s"]
     assert isinstance(stream_span_s, float)
@@ -1944,7 +1995,9 @@ def test_realtime_transcription_retries_transient_busy_admission() -> None:
     class BusyOnceClient(_FakeClient):
         attempts = 0
 
-        def realtime_transcription(self, **kwargs: object) -> RealtimeTranscriptionExecution:
+        def realtime_transcription(
+            self, **kwargs: object
+        ) -> RealtimeTranscriptionExecution:
             self.attempts += 1
             if self.attempts == 1:
                 raise SkulkApiError(
@@ -2211,6 +2264,113 @@ def test_speech_roundtrip_persists_generated_audio_artifact(
     audio = result.artifact_path.read_bytes()
     assert audio.startswith(b"RIFF")
     assert client.transcription_requests[0]["audio"] == audio
+
+
+def test_speech_translation_roundtrip_uses_translation_endpoint(
+    tmp_path: Path,
+) -> None:
+    """Translation roundtrips should synthesize, translate, score, and persist."""
+
+    client = _FakeClient()
+    runner = _runner()
+    runner._ensure_model_placed = lambda *_args, **_kwargs: PlacementResult(  # type: ignore[method-assign]
+        model_id="org/Canary",
+        instance_id="translation-instance",
+        ready=True,
+        created_by_harness=False,
+    )
+    test = PromptTest(
+        name="translation-roundtrip",
+        kind="speech_translation_roundtrip",
+        prompt="Bonjour du projet Skulk.",
+        transcription_model_id="org/Canary",
+        transcription_language="fr",
+        success=SuccessCriteria(
+            min_chars=5,
+            min_audio_bytes=1024,
+            required_substrings=["project"],
+        ),
+    )
+
+    result = runner._run_test(
+        client,  # type: ignore[arg-type]
+        model_id="org/TTS",
+        test=test,
+        repetition=1,
+        artifact_dir=tmp_path,
+        spec=RunSpec(model_set="m", test_set="t", mode="execute"),
+        report=_report(),
+    )
+
+    assert result.passed is True
+    assert result.output_text == "hello project"
+    assert client.translation_requests[0]["model_id"] == "org/Canary"
+    assert client.translation_requests[0]["language"] == "fr"
+    assert result.artifact_path is not None
+    assert result.artifact_path.read_bytes().startswith(b"RIFF")
+
+
+def test_speech_reference_roundtrip_generates_and_conditions_audio(
+    tmp_path: Path,
+) -> None:
+    client = _FakeClient()
+    runner = _runner()
+    runner._ensure_model_placed = lambda *_args, **_kwargs: PlacementResult(  # type: ignore[method-assign]
+        model_id="org/Donor",
+        instance_id="donor-instance",
+        ready=True,
+        created_by_harness=False,
+    )
+    test = PromptTest(
+        name="reference-roundtrip",
+        kind="speech_reference_roundtrip",
+        prompt="conditioned words",
+        reference_model_id="org/Donor",
+        reference_text="reference words",
+        success=SuccessCriteria(min_chars=0, min_audio_bytes=1024),
+    )
+
+    result = runner._run_test(
+        client,  # type: ignore[arg-type]
+        model_id="org/QwenBase",
+        test=test,
+        repetition=1,
+        artifact_dir=tmp_path,
+        spec=RunSpec(model_set="m", test_set="t", mode="execute"),
+        report=_report(),
+    )
+
+    assert result.passed is True
+    assert len(client.speech_requests) == 2
+    reference_audio = client.speech_requests[0]["reference_audio"]
+    assert reference_audio is None
+    assert client.speech_requests[1]["reference_audio"] == _wav_bytes()
+    assert client.speech_requests[1]["reference_text"] == "reference words"
+    assert (
+        tmp_path / "org-qwenbase--reference-roundtrip-reference--rep-1.wav"
+    ).exists()
+    assert result.artifact_path is not None
+    assert result.artifact_path.exists()
+
+
+def test_audio_voices_requires_expected_inventory(tmp_path: Path) -> None:
+    client = _FakeClient()
+    result = _runner()._run_test(
+        client,  # type: ignore[arg-type]
+        model_id="org/CustomVoice",
+        test=PromptTest(
+            name="voices",
+            kind="audio_voices",
+            prompt="",
+            expected_voice_ids=["ryan", "aiden"],
+            success=SuccessCriteria(min_chars=0),
+        ),
+        repetition=1,
+        artifact_dir=tmp_path,
+    )
+
+    assert result.passed is True
+    assert "ryan" in result.output_text
 
 
 def test_ensure_model_placed_fast_fails_when_instance_never_appears() -> None:

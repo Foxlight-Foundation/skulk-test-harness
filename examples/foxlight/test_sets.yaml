@@ -660,13 +660,13 @@ test_sets:
         speech_owner_count: 3
         speech_owner_topology: local_remote
         speech_assert_data_plane_diagnostics: true
-        speech_chat_model_id: mlx-community/Qwen3.5-9B-MLX-4bit
+        speech_chat_model_id: mlx-community/Qwen3-0.6B-4bit
         speech_chat_concurrency: 2
         speech_chat_prompt: >
           Write approximately one hundred words explaining why independent
           streaming workloads should not block one another in a distributed
           inference system.
-        max_tokens: 192
+        max_tokens: 96
         temperature: 0
         success:
           min_chars: 80
@@ -722,6 +722,73 @@ test_sets:
             # semantic validation later in the fixture instead of turning this
             # transport suite into a first-token accuracy benchmark.
             - battery
+
+  speech-translation:
+    name: speech-translation
+    description: >
+      Synthesizes a deterministic French utterance, stages and mounts Canary
+      through the normal model-store path, then requires an English translation.
+    tests:
+      - name: french-to-english-roundtrip
+        kind: speech_translation_roundtrip
+        prompt: Bonjour. Le projet Skulk transforme la parole en texte anglais.
+        audio_response_format: wav
+        transcription_model_id: CogniSoftOrg/canary-1b-v2-mlx-bf16
+        transcription_response_format: json
+        transcription_language: fr
+        success:
+          min_chars: 12
+          min_audio_bytes: 1024
+          required_substrings:
+            - transforms
+            - text
+          forbidden_substrings:
+            - Bonjour
+            - parole
+
+  speech-reference-conditioning:
+    name: speech-reference-conditioning
+    description: >
+      Generates a request-scoped donor clip, sends it through multipart
+      /v1/audio/speech reference conditioning, and retains both WAV artifacts.
+    tests:
+      - name: generated-reference-voice
+        kind: speech_reference_roundtrip
+        prompt: Skulk keeps reference audio private and request scoped.
+        reference_model_id: mlx-community/LongCat-AudioDiT-1B-4bit
+        reference_text: This is the reference voice used by the Skulk speech test.
+        audio_response_format: wav
+        success:
+          min_chars: 0
+          min_audio_bytes: 1024
+
+  speech-voice-catalog:
+    name: speech-voice-catalog
+    description: Lists static voices and synthesizes audio with a named voice.
+    tests:
+      - name: qwen-custom-voice-inventory
+        kind: audio_voices
+        prompt: ""
+        expected_voice_ids:
+          - serena
+          - vivian
+          - uncle_fu
+          - ryan
+          - aiden
+          - ono_anna
+          - sohee
+          - eric
+          - dylan
+        success:
+          min_chars: 0
+      - name: qwen-named-voice-synthesis
+        kind: audio_speech
+        prompt: Skulk validates named voice synthesis through the mounted model.
+        speech_voice: ryan
+        audio_response_format: wav
+        success:
+          min_chars: 0
+          min_audio_bytes: 1024
 
   streaming-transcription:
     name: streaming-transcription

@@ -282,6 +282,27 @@ test_sets:
             - hello
 ```
 
+Reference-conditioning tests generate their donor clip through a normally
+placed TTS model, then upload it with its transcript to the selected model. The
+harness retains both the donor and conditioned WAV files:
+
+```yaml
+test_sets:
+  my-reference-tts:
+    name: my-reference-tts
+    description: Generated reference audio conditions a second TTS request.
+    tests:
+      - name: reference-voice
+        kind: speech_reference_roundtrip
+        prompt: This response should use the reference voice.
+        reference_model_id: org/donor-tts
+        reference_text: This sentence establishes the reference voice.
+        audio_response_format: wav
+        success:
+          min_chars: 0
+          min_audio_bytes: 1024
+```
+
 Realtime transcription tests reverse the primary model: the selected model is a
 truthful realtime STT target, while `speech_synthesis_model_id` supplies a
 semantic WAV fixture through normal Skulk placement. The harness extracts mono

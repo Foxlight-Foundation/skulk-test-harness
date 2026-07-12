@@ -39,11 +39,14 @@ Each map key must match the test set's `name`.
 | `audio_speech` | Text-to-speech endpoint behavior; generated audio is saved as an artifact |
 | `audio_speech_streaming` | Stable card-qualified text-to-speech streaming behavior; generated audio and timing sidecar are saved as artifacts |
 | `audio_speech_pressure` | Concurrent streaming TTS across discovered API owners, with deterministic local/remote routing, DATA diagnostics, optional chat workers, and one audio/timing artifact per speech request |
+| `audio_voices` | Static voice-catalog behavior for a mounted TTS model |
 | `audio_transcription` | Speech-to-text endpoint behavior with an audio fixture |
 | `audio_transcription_streaming` | Uploaded-audio SSE transcript deltas, terminal lifecycle, early-close cancellation, and saved input/timeline artifacts |
 | `realtime_transcription` | Semantic TTS-to-realtime-STT WebSocket roundtrip, disconnect recovery, local/remote ownership, and provider diagnostics |
 | `fabric_speech_chain` | Explicit Fabric STT-to-chat-to-TTS composition with transcript, assistant text, response audio, cancellation, local/remote ownership, and provider diagnostics |
 | `speech_roundtrip` | TTS output saved as an artifact and piped into a mounted STT model |
+| `speech_translation_roundtrip` | TTS output saved and translated to English by a mounted translation model |
+| `speech_reference_roundtrip` | A donor TTS clip conditions a multipart TTS request; both clips are saved |
 
 ## Prompt Test Fields
 
@@ -75,6 +78,9 @@ Each map key must match the test set's `name`.
 | `audio_response_format` | TTS audio response format, such as `wav` |
 | `speech_voice` | Optional voice name for TTS |
 | `speech_speed` | Optional speech speed multiplier for TTS |
+| `reference_model_id` | Donor TTS model for `kind: speech_reference_roundtrip` |
+| `reference_text` | Transcript spoken in the generated reference clip; defaults to `prompt` |
+| `expected_voice_ids` | Voice identifiers required for `kind: audio_voices` |
 | `speech_streaming_interval` | Optional `streaming_interval` hint for `kind: audio_speech_streaming` |
 | `speech_concurrency` | Concurrent workers for `kind: audio_speech_pressure` |
 | `speech_requests_per_worker` | Sequential requests issued by each pressure worker |

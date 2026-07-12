@@ -27,11 +27,14 @@ TestKind = Literal[
     "audio_speech",
     "audio_speech_streaming",
     "audio_speech_pressure",
+    "audio_voices",
     "audio_transcription",
     "audio_transcription_streaming",
     "realtime_transcription",
     "fabric_speech_chain",
     "speech_roundtrip",
+    "speech_translation_roundtrip",
+    "speech_reference_roundtrip",
 ]
 RunMode = Literal["plan", "execute"]
 IssueSeverity = Literal["info", "warning", "error"]
@@ -435,6 +438,27 @@ class PromptTest(HarnessBaseModel):
         gt=0,
         description="Optional TTS speed multiplier passed to `/v1/audio/speech`.",
     )
+    reference_model_id: str | None = Field(
+        default=None,
+        description=(
+            "Donor TTS model used to synthesize the conditioning clip for "
+            "`kind: speech_reference_roundtrip`."
+        ),
+    )
+    reference_text: str | None = Field(
+        default=None,
+        description=(
+            "Transcript spoken by the donor model for reference conditioning; "
+            "defaults to the test prompt."
+        ),
+    )
+    expected_voice_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Voice identifiers required from `GET /v1/audio/voices` for "
+            "`kind: audio_voices`."
+        ),
+    )
     speech_streaming_interval: float | None = Field(
         default=None,
         gt=0,
@@ -526,7 +550,8 @@ class PromptTest(HarnessBaseModel):
     transcription_model_id: str | None = Field(
         default=None,
         description=(
-            "For `kind: speech_roundtrip`, optional explicit STT model. When "
+            "For speech transcription/translation roundtrips, optional explicit "
+            "STT model. When "
             "unset, the harness selects the first live catalog model advertising "
             "STT support."
         ),
@@ -975,7 +1000,9 @@ class StabilityReport(HarnessBaseModel):
     observations: dict[str, object] = Field(default_factory=dict)
 
     @classmethod
-    def start(cls, run_id: str, suite: StabilitySuite, model_id: str) -> "StabilityReport":
+    def start(
+        cls, run_id: str, suite: StabilitySuite, model_id: str
+    ) -> "StabilityReport":
         """Create a stability report stamped with the current UTC start time."""
 
         return cls(

@@ -95,7 +95,9 @@ class HarnessRunner:
                     report.placements.append(
                         _placement_from_preview(model.model_id, preview)
                     )
-            fingerprint, fp_issues = gather_fingerprint(client, spec, run_reason=spec.mode)
+            fingerprint, fp_issues = gather_fingerprint(
+                client, spec, run_reason=spec.mode
+            )
             report.issues.extend(fp_issues)
             report.fingerprint = fingerprint
             return report.finish()
@@ -143,7 +145,9 @@ class HarnessRunner:
                 )
                 if placed_after_retry:
                     _clear_deferred_placement_issues(report, model.model_id)
-            fingerprint, fp_issues = gather_fingerprint(client, spec, run_reason=spec.mode)
+            fingerprint, fp_issues = gather_fingerprint(
+                client, spec, run_reason=spec.mode
+            )
             report.issues.extend(fp_issues)
             report.fingerprint = fingerprint
             finished = report.finish()
@@ -545,7 +549,9 @@ class HarnessRunner:
                     update={"created_by_harness": True, "reused_existing": False}
                 )
                 if placement.instance_id and not placement.ready:
-                    ready_deadline = time.monotonic() + self.config.placement_ready_timeout_s
+                    ready_deadline = (
+                        time.monotonic() + self.config.placement_ready_timeout_s
+                    )
                     placement = client.wait_for_instance_ready(
                         placement.instance_id,
                         timeout_s=max(0.1, ready_deadline - time.monotonic()),
@@ -678,6 +684,10 @@ class HarnessRunner:
                 artifact_dir=artifact_dir,
                 stream=test.kind == "audio_speech_streaming",
             )
+        if test.kind == "audio_voices":
+            return self._run_audio_voices_test(
+                client, model_id=model_id, test=test, repetition=repetition
+            )
         if test.kind == "audio_speech_pressure":
             return self._run_audio_speech_pressure_test(
                 client,
@@ -715,8 +725,20 @@ class HarnessRunner:
                 report=report,
                 writer=writer,
             )
-        if test.kind == "speech_roundtrip":
+        if test.kind in {"speech_roundtrip", "speech_translation_roundtrip"}:
             return self._run_speech_roundtrip_test(
+                client,
+                model_id=model_id,
+                test=test,
+                repetition=repetition,
+                artifact_dir=artifact_dir,
+                spec=spec,
+                report=report,
+                writer=writer,
+                translate_to_english=test.kind == "speech_translation_roundtrip",
+            )
+        if test.kind == "speech_reference_roundtrip":
+            return self._run_speech_reference_roundtrip_test(
                 client,
                 model_id=model_id,
                 test=test,
@@ -1127,12 +1149,9 @@ class HarnessRunner:
             )
             execution = None
         if execution is not None:
-            if (
-                test.expected_embedding_dimensions is not None
-                and any(
+            if test.expected_embedding_dimensions is not None and any(
                     dim != test.expected_embedding_dimensions
                     for dim in execution.dimensions
-                )
             ):
                 issues.append(
                     Issue(
@@ -1285,6 +1304,65 @@ class HarnessRunner:
             ),
             issues=issues,
             artifact_path=artifact_path,
+        )
+
+    def _run_audio_voices_test(
+        self,
+        client: SkulkClient,
+        *,
+        model_id: str,
+        test: PromptTest,
+        repetition: int,
+    ) -> TestResult:
+        """Require a mounted model's static voice catalog to match expectations."""
+
+        issues: list[Issue] = []
+        voices: list[str] = []
+        started_at = time.monotonic()
+        try:
+            voices = client.audio_voices(model_id)
+            missing = sorted(set(test.expected_voice_ids) - set(voices))
+            if missing:
+                issues.append(
+                    Issue(
+                        severity="error",
+                        model_id=model_id,
+                        test_name=test.name,
+                        message="Voice catalog omitted required identifiers",
+                        evidence={"missing": missing, "actual": voices},
+                    )
+                )
+            if not voices:
+                issues.append(
+                    Issue(
+                        severity="error",
+                        model_id=model_id,
+                        test_name=test.name,
+                        message="Voice catalog was empty",
+                    )
+                )
+        except (SkulkApiError, httpx.HTTPError, TypeError, ValueError) as exc:
+            issues.append(
+                Issue(
+                    severity="error",
+                    model_id=model_id,
+                    test_name=test.name,
+                    message="Voice catalog request failed",
+                    evidence={"error": str(exc)},
+                )
+            )
+        output = f"voices={voices}"
+        return TestResult(
+            model_id=model_id,
+            test_name=test.name,
+            repetition=repetition,
+            passed=not any(issue.severity == "error" for issue in issues),
+            output_text=output,
+            metrics=GenerationMetrics(
+                elapsed_s=time.monotonic() - started_at,
+                output_chars=len(output),
+            ),
+            issues=issues,
         )
 
     def _run_audio_speech_pressure_test(
@@ -2578,15 +2656,11 @@ class HarnessRunner:
             metrics=GenerationMetrics(
                 elapsed_s=elapsed_s,
                 ttft_s=(
-                    statistics.median(first_transcripts)
-                    if first_transcripts
-                    else None
+                    statistics.median(first_transcripts) if first_transcripts else None
                 ),
                 output_chars=sum(len(text) for text in transcripts),
                 generated_chars=sum(len(text) for text in transcripts),
-                chunks=sum(
-                    execution.transcript_deltas + 1 for execution in executions
-                ),
+                chunks=sum(execution.transcript_deltas + 1 for execution in executions),
             ),
             issues=issues,
             artifact_path=artifact_path,
@@ -2704,11 +2778,14 @@ class HarnessRunner:
         deadline = time.monotonic() + 10.0
         snapshots = self._capture_provider_diagnostics(owners)
         while True:
-            cancellation_observed = sum(
+            cancellation_observed = (
+                sum(
                 snapshot.cancellation_requests
                 - before.get(snapshot.node_id, snapshot).cancellation_requests
                 for snapshot in snapshots.values()
-            ) >= 1
+                )
+                >= 1
+            )
             drained = all(
                 snapshot.active_streams
                 <= before.get(snapshot.node_id, snapshot).active_streams
@@ -2738,6 +2815,7 @@ class HarnessRunner:
         spec: RunSpec | None,
         report: RunReport | None,
         writer: ReportWriter | None,
+        translate_to_english: bool = False,
     ) -> TestResult:
         """Generate speech with a TTS model, then transcribe it with an STT model."""
 
@@ -2767,9 +2845,17 @@ class HarnessRunner:
         transcription_model_id: str | None = None
         stt_placement: PlacementResult | None = None
         try:
-            transcription_model_id = test.transcription_model_id or _first_stt_model_id(
-                client.list_models(), exclude_model_id=model_id
-            )
+            transcription_model_id = test.transcription_model_id
+            if transcription_model_id is None:
+                transcription_model_id = (
+                    _first_translation_model_id(
+                        client.list_models(), exclude_model_id=model_id
+                    )
+                    if translate_to_english
+                    else _first_stt_model_id(
+                        client.list_models(), exclude_model_id=model_id
+                    )
+                )
             if transcription_model_id is None:
                 issues.append(
                     Issue(
@@ -2838,7 +2924,12 @@ class HarnessRunner:
                 speech.response_format,
                 speech.audio,
             )
-            transcript = client.audio_transcription(
+            transcription_method = (
+                client.audio_translation
+                if translate_to_english
+                else client.audio_transcription
+            )
+            transcript = transcription_method(
                 model_id=transcription_model_id,
                 audio=speech.audio,
                 filename=f"{slugify(test.name)}.{test.audio_response_format}",
@@ -2899,6 +2990,148 @@ class HarnessRunner:
             artifact_path=artifact_path,
         )
 
+    def _run_speech_reference_roundtrip_test(
+        self,
+        client: SkulkClient,
+        *,
+        model_id: str,
+        test: PromptTest,
+        repetition: int,
+        artifact_dir: Path,
+        spec: RunSpec | None,
+        report: RunReport | None,
+        writer: ReportWriter | None,
+    ) -> TestResult:
+        """Generate a donor voice clip and use it to condition a TTS request."""
+
+        issues: list[Issue] = []
+        elapsed = 0.0
+        output_artifact: Path | None = None
+        donor_model_id = test.reference_model_id
+        donor_placement: PlacementResult | None = None
+        if spec is None or report is None or donor_model_id is None:
+            issues.append(
+                Issue(
+                    severity="error",
+                    model_id=model_id,
+                    test_name=test.name,
+                    message=(
+                        "speech_reference_roundtrip requires an execution "
+                        "RunSpec/report and reference_model_id"
+                    ),
+                )
+            )
+            return _speech_result(
+                model_id,
+                test.name,
+                repetition,
+                "",
+                elapsed,
+                issues,
+                artifact_path=output_artifact,
+            )
+
+        reference_text = test.reference_text or test.prompt
+        try:
+            donor_placement = self._ensure_model_placed(
+                client, donor_model_id, spec, report
+            )
+            if donor_placement is None or not donor_placement.ready:
+                raise ValueError("Reference TTS model could not be made ready")
+            _append_unique_placement(report, donor_placement)
+
+            reference = client.audio_speech(
+                model_id=donor_model_id,
+                input_text=reference_text,
+                response_format="wav",
+            )
+            elapsed += reference.elapsed_s
+            issues.extend(
+                _score_audio_output(
+                    model_id,
+                    test.name,
+                    reference.audio,
+                    test.success,
+                    response_format="wav",
+                    media_type=reference.media_type,
+                )
+            )
+            _audio_artifact_path(
+                artifact_dir,
+                model_id,
+                f"{test.name}-reference",
+                repetition,
+                "wav",
+                reference.audio,
+            )
+
+            conditioned = client.audio_speech(
+                model_id=model_id,
+                input_text=_expanded_prompt(test),
+                response_format=test.audio_response_format,
+                voice=test.speech_voice,
+                speed=test.speech_speed,
+                reference_audio=reference.audio,
+                reference_audio_filename="reference.wav",
+                reference_audio_media_type=reference.media_type or "audio/wav",
+                reference_text=reference_text,
+            )
+            elapsed += conditioned.elapsed_s
+            issues.extend(
+                _score_audio_output(
+                    model_id,
+                    test.name,
+                    conditioned.audio,
+                    test.success,
+                    response_format=test.audio_response_format,
+                    media_type=conditioned.media_type,
+                )
+            )
+            output_artifact = _audio_artifact_path(
+                artifact_dir,
+                model_id,
+                test.name,
+                repetition,
+                conditioned.response_format,
+                conditioned.audio,
+            )
+        except (SkulkApiError, httpx.HTTPError, TypeError, ValueError) as exc:
+            issues.append(
+                Issue(
+                    severity="error",
+                    model_id=model_id,
+                    test_name=test.name,
+                    message="Reference-conditioned speech request failed",
+                    evidence={"error": str(exc), "reference_model_id": donor_model_id},
+                )
+            )
+        finally:
+            if (
+                donor_placement is not None
+                and donor_placement.created_by_harness
+                and donor_model_id != model_id
+                and not spec.retain_instances
+            ):
+                torn_down = self._teardown_harness_instances(
+                    client,
+                    donor_model_id,
+                    donor_placement.instance_id,
+                    report,
+                )
+                if spec.delete_staged_models and torn_down:
+                    self._evict_staged_model(client, donor_model_id, report)
+                if writer is not None:
+                    writer.write(report)
+        return _speech_result(
+            model_id,
+            test.name,
+            repetition,
+            "",
+            elapsed,
+            issues,
+            artifact_path=output_artifact,
+        )
+
     def _model_set(self, name: str) -> ModelSet:
         try:
             return self.model_sets[name]
@@ -2945,12 +3178,14 @@ def _select_catalog_models(
             value.lower() for value in selector.served_spec_types_any
         }:
             continue
-        if selector.require_audio_streaming and not _catalog_entry_supports_streaming_audio(
-            model
+        if (
+            selector.require_audio_streaming
+            and not _catalog_entry_supports_streaming_audio(model)
         ):
             continue
-        if selector.require_audio_realtime and not _catalog_entry_supports_realtime_audio(
-            model
+        if (
+            selector.require_audio_realtime
+            and not _catalog_entry_supports_realtime_audio(model)
         ):
             continue
         selected.append(model)
@@ -3092,8 +3327,10 @@ def _score_audio_output(
                 message=f"Audio response had non-audio media type {media_type!r}",
             )
         )
-    if response_format == "wav" and audio and not (
-        audio.startswith(b"RIFF") and b"WAVE" in audio[:16]
+    if (
+        response_format == "wav"
+        and audio
+        and not (audio.startswith(b"RIFF") and b"WAVE" in audio[:16])
     ):
         issues.append(
             Issue(
@@ -3128,12 +3365,9 @@ def _score_streaming_audio_output(
                 evidence={"chunks": execution.chunks},
             )
         )
-    if (
-        criteria.max_first_byte_s is not None
-        and (
+    if criteria.max_first_byte_s is not None and (
             execution.first_byte_s is None
             or execution.first_byte_s > criteria.max_first_byte_s
-        )
     ):
         issues.append(
             Issue(
@@ -3148,9 +3382,8 @@ def _score_streaming_audio_output(
             )
         )
     stream_span_s = _stream_span_s(execution.chunk_arrival_s)
-    if (
-        criteria.min_stream_span_s > 0
-        and (stream_span_s is None or stream_span_s < criteria.min_stream_span_s)
+    if criteria.min_stream_span_s > 0 and (
+        stream_span_s is None or stream_span_s < criteria.min_stream_span_s
     ):
         issues.append(
             Issue(
@@ -3208,12 +3441,9 @@ def _score_realtime_transcription(
                 },
             )
         )
-    if (
-        criteria.max_first_byte_s is not None
-        and (
+    if criteria.max_first_byte_s is not None and (
             execution.first_transcript_s is None
             or execution.first_transcript_s > criteria.max_first_byte_s
-        )
     ):
         issues.append(
             Issue(
@@ -3374,6 +3604,20 @@ def _first_stt_model_id(
     return None
 
 
+def _first_translation_model_id(
+    catalog: list[dict[str, object]], *, exclude_model_id: str
+) -> str | None:
+    """Pick the first catalog model explicitly advertising speech translation."""
+
+    for model in catalog:
+        model_id = _model_id_from_catalog_entry(model)
+        if not model_id or model_id == exclude_model_id:
+            continue
+        if _catalog_entry_supports_translation(model):
+            return model_id
+    return None
+
+
 def _first_tts_model_id(
     catalog: list[dict[str, object]], *, exclude_model_id: str
 ) -> str | None:
@@ -3438,6 +3682,18 @@ def _catalog_entry_supports_stt(model: dict[str, object]) -> bool:
         or _has_any_capability(model, ["stt"])
         or _has_any(model.get("tasks"), ["SpeechToText", "SpeechTranslation"])
     )
+
+
+def _catalog_entry_supports_translation(model: dict[str, object]) -> bool:
+    """Return whether a `/models` entry explicitly supports speech translation."""
+
+    resolved = model.get("resolved_capabilities")
+    if isinstance(resolved, dict) and bool(resolved.get("supports_speech_translation")):
+        return True
+    audio = model.get("audio")
+    if isinstance(audio, dict) and audio.get("supports_translation") is True:
+        return True
+    return _has_any(model.get("tasks"), ["SpeechTranslation"])
 
 
 def _catalog_entry_supports_streaming_audio(model: dict[str, object]) -> bool:
