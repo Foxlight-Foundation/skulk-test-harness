@@ -746,6 +746,22 @@ test_sets:
             - Bonjour
             - parole
 
+  speech-reference-conditioning:
+    name: speech-reference-conditioning
+    description: >
+      Generates a request-scoped donor clip, sends it through multipart
+      /v1/audio/speech reference conditioning, and retains both WAV artifacts.
+    tests:
+      - name: generated-reference-voice
+        kind: speech_reference_roundtrip
+        prompt: Skulk keeps reference audio private and request scoped.
+        reference_model_id: mlx-community/LongCat-AudioDiT-1B-4bit
+        reference_text: This is the reference voice used by the Skulk speech test.
+        audio_response_format: wav
+        success:
+          min_chars: 0
+          min_audio_bytes: 1024
+
   embeddings:
     name: embeddings
     description: >
