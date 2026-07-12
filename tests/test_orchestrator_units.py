@@ -754,6 +754,7 @@ def test_foxlight_realtime_suite_requires_local_remote_provider_evidence() -> No
     assert test.speech_owner_count == 2
     assert test.speech_owner_topology == "local_remote"
     assert test.realtime_assert_provider_diagnostics is True
+    assert test.success.required_substrings == ["battery"]
 
 
 def test_foxlight_e2e_battery_references_defined_sets() -> None:
@@ -1664,6 +1665,7 @@ def test_realtime_transcription_roundtrip_runs_local_remote_and_cancel(
         models=[{"id": "org/RealtimeSTT"}, {"id": "org/TTS"}],
     )
     owner_clients: list[_FakeClient] = []
+    cancellation_release_checks: list[int] = []
     runner = _runner()
 
     def client_for_url(_url: str) -> _FakeClient:
@@ -1672,6 +1674,29 @@ def test_realtime_transcription_roundtrip_runs_local_remote_and_cancel(
         return owner_client
 
     monkeypatch.setattr(runner, "_client_for_url", client_for_url)
+    monkeypatch.setattr(
+        runner,
+        "_capture_provider_diagnostics",
+        lambda _owners: {"node-a": _provider_snapshot("node-a")},
+    )
+
+    def wait_for_cancellation_release(
+        _owners: list[ClusterApiOwner],
+        *,
+        before: dict[str, ProviderCapabilityDiagnosticsSnapshot],
+    ) -> dict[str, ProviderCapabilityDiagnosticsSnapshot]:
+        assert before["node-a"].active_streams == 0
+        request_count = sum(
+            len(owner_client.realtime_requests) for owner_client in owner_clients
+        )
+        cancellation_release_checks.append(request_count)
+        return before
+
+    monkeypatch.setattr(
+        runner,
+        "_wait_for_realtime_cancellation_release",
+        wait_for_cancellation_release,
+    )
     test = PromptTest(
         name="realtime-roundtrip",
         kind="realtime_transcription",
@@ -1711,6 +1736,7 @@ def test_realtime_transcription_roundtrip_runs_local_remote_and_cancel(
     ]
     assert requests[0]["cancel_after_frames"] == 2
     assert [request["cancel_after_frames"] for request in requests[1:]] == [0, 0]
+    assert cancellation_release_checks == [1]
     assert all(request["model_id"] == "org/RealtimeSTT" for request in requests)
     assert result.artifact_path is not None
     assert result.artifact_path.exists()
@@ -1724,6 +1750,36 @@ def test_realtime_transcription_roundtrip_runs_local_remote_and_cancel(
         "owner-2-remote_owner",
     ]
     assert metadata["cancellation"]["canceled"] is True
+
+
+def test_realtime_transcription_retries_transient_busy_admission() -> None:
+    class BusyOnceClient(_FakeClient):
+        attempts = 0
+
+        def realtime_transcription(self, **kwargs: object) -> RealtimeTranscriptionExecution:
+            self.attempts += 1
+            if self.attempts == 1:
+                raise SkulkApiError(
+                    "WS",
+                    "/v1/realtime",
+                    0,
+                    "All realtime STT runners for this model are already busy",
+                )
+            return super().realtime_transcription(**kwargs)  # type: ignore[arg-type]
+
+    client = BusyOnceClient()
+
+    execution = HarnessRunner._run_realtime_transcription_after_release(
+        client,  # type: ignore[arg-type]
+        model_id="org/RealtimeSTT",
+        pcm16=b"\x00\x00" * 800,
+        sample_rate=8_000,
+        frame_duration_ms=100,
+        pace_audio=False,
+    )
+
+    assert client.attempts == 2
+    assert execution.text == "hello world"
 
 
 def test_realtime_transcription_releases_unready_secondary_placement(

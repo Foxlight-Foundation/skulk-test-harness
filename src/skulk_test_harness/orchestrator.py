@@ -2059,7 +2059,10 @@ class HarnessRunner:
                     artifact_path=artifact_path,
                 )
 
-            if test.realtime_assert_provider_diagnostics:
+            if (
+                test.realtime_assert_provider_diagnostics
+                or test.realtime_cancel_after_frames > 0
+            ):
                 diagnostic_owners = client.get_cluster_api_owners()
                 diagnostics_before = self._capture_provider_diagnostics(
                     diagnostic_owners
@@ -2085,6 +2088,10 @@ class HarnessRunner:
                             message="Realtime disconnect probe did not cancel its session",
                         )
                     )
+                self._wait_for_realtime_cancellation_release(
+                    diagnostic_owners,
+                    before=diagnostics_before,
+                )
 
             for owner_index, owner in enumerate(owners, start=1):
                 role = (
@@ -2093,7 +2100,8 @@ class HarnessRunner:
                     else "remote_owner"
                 )
                 with self._client_for_url(owner.base_url) as owner_client:
-                    execution = owner_client.realtime_transcription(
+                    execution = self._run_realtime_transcription_after_release(
+                        owner_client,
                         model_id=model_id,
                         pcm16=pcm16,
                         sample_rate=sample_rate,
@@ -2259,6 +2267,74 @@ class HarnessRunner:
             time.sleep(0.1)
             snapshots = self._capture_provider_diagnostics(owners)
         return snapshots
+
+    @staticmethod
+    def _run_realtime_transcription_after_release(
+        client: SkulkClient,
+        *,
+        model_id: str,
+        pcm16: bytes,
+        sample_rate: int,
+        frame_duration_ms: int,
+        pace_audio: bool,
+    ) -> RealtimeTranscriptionExecution:
+        """Retry only transient admission races before realtime audio is accepted."""
+
+        deadline = time.monotonic() + 10.0
+        while True:
+            try:
+                return client.realtime_transcription(
+                    model_id=model_id,
+                    pcm16=pcm16,
+                    sample_rate=sample_rate,
+                    frame_duration_ms=frame_duration_ms,
+                    pace_audio=pace_audio,
+                )
+            except SkulkApiError as exc:
+                message = str(exc).casefold()
+                retryable = (
+                    "all realtime stt runners for this model are already busy"
+                    in message
+                    or "1013 (try again later)" in message
+                )
+                remaining = deadline - time.monotonic()
+                if not retryable or remaining <= 0:
+                    raise
+                time.sleep(min(0.1, remaining))
+
+    def _wait_for_realtime_cancellation_release(
+        self,
+        owners: list[ClusterApiOwner],
+        *,
+        before: dict[str, ProviderCapabilityDiagnosticsSnapshot],
+    ) -> dict[str, ProviderCapabilityDiagnosticsSnapshot]:
+        """Wait until a disconnect probe releases its provider stream slot."""
+
+        deadline = time.monotonic() + 10.0
+        snapshots = self._capture_provider_diagnostics(owners)
+        while True:
+            cancellation_observed = sum(
+                snapshot.cancellation_requests
+                - before.get(snapshot.node_id, snapshot).cancellation_requests
+                for snapshot in snapshots.values()
+            ) >= 1
+            drained = all(
+                snapshot.active_streams
+                <= before.get(snapshot.node_id, snapshot).active_streams
+                and snapshot.stream_slots_in_use
+                <= before.get(snapshot.node_id, snapshot).stream_slots_in_use
+                and snapshot.input_queue_depth
+                <= before.get(snapshot.node_id, snapshot).input_queue_depth
+                for snapshot in snapshots.values()
+            )
+            if cancellation_observed and drained:
+                return snapshots
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    "realtime disconnect probe did not release provider capacity"
+                )
+            time.sleep(0.1)
+            snapshots = self._capture_provider_diagnostics(owners)
 
     def _run_speech_roundtrip_test(
         self,
