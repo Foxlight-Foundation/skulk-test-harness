@@ -369,6 +369,29 @@ test_sets:
           required_substrings:
             - hello
 
+  fabric-speech-chain:
+    name: fabric-speech-chain
+    description: >-
+      Typed STT-to-chat-to-TTS composition through the explicit Fabric speech
+      chain endpoint, including transcript, assistant text, audio, cancellation,
+      and provider lifecycle evidence.
+    tests:
+      - name: fabric-stt-chat-tts
+        kind: fabric_speech_chain
+        prompt: Hello world from the Skulk realtime speech battery.
+        audio_response_format: wav
+        speech_owner_count: 1
+        realtime_frame_duration_ms: 100
+        realtime_pace_audio: true
+        realtime_cancel_after_frames: 3
+        realtime_assert_provider_diagnostics: true
+        success:
+          min_chars: 5
+          min_audio_bytes: 1024
+          min_transcript_deltas: 1
+          required_substrings:
+            - hello
+
   embeddings:
     name: embeddings
     description: Embeddings endpoint coverage with vector shape and norm checks.

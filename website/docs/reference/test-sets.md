@@ -37,11 +37,16 @@ Each map key must match the test set's `name`.
 | `error` | Expected API error behavior |
 | `embedding` | Embeddings endpoint behavior |
 | `audio_speech` | Text-to-speech endpoint behavior; generated audio is saved as an artifact |
-| `audio_speech_streaming` | Experimental text-to-speech streaming behavior; generated audio and timing sidecar are saved as artifacts |
+| `audio_speech_streaming` | Stable card-qualified text-to-speech streaming behavior; generated audio and timing sidecar are saved as artifacts |
 | `audio_speech_pressure` | Concurrent streaming TTS across discovered API owners, with deterministic local/remote routing, DATA diagnostics, optional chat workers, and one audio/timing artifact per speech request |
+| `audio_voices` | Static voice-catalog behavior for a mounted TTS model |
 | `audio_transcription` | Speech-to-text endpoint behavior with an audio fixture |
+| `audio_transcription_streaming` | Uploaded-audio SSE transcript deltas, terminal lifecycle, early-close cancellation, and saved input/timeline artifacts |
 | `realtime_transcription` | Semantic TTS-to-realtime-STT WebSocket roundtrip, disconnect recovery, local/remote ownership, and provider diagnostics |
+| `fabric_speech_chain` | Explicit Fabric STT-to-chat-to-TTS composition with transcript, assistant text, response audio, cancellation, local/remote ownership, and provider diagnostics |
 | `speech_roundtrip` | TTS output saved as an artifact and piped into a mounted STT model |
+| `speech_translation_roundtrip` | TTS output saved and translated to English by a mounted translation model |
+| `speech_reference_roundtrip` | A donor TTS clip conditions a multipart TTS request; both clips are saved |
 
 ## Prompt Test Fields
 
@@ -73,6 +78,9 @@ Each map key must match the test set's `name`.
 | `audio_response_format` | TTS audio response format, such as `wav` |
 | `speech_voice` | Optional voice name for TTS |
 | `speech_speed` | Optional speech speed multiplier for TTS |
+| `reference_model_id` | Donor TTS model for `kind: speech_reference_roundtrip` |
+| `reference_text` | Transcript spoken in the generated reference clip; defaults to `prompt` |
+| `expected_voice_ids` | Voice identifiers required for `kind: audio_voices` |
 | `speech_streaming_interval` | Optional `streaming_interval` hint for `kind: audio_speech_streaming` |
 | `speech_concurrency` | Concurrent workers for `kind: audio_speech_pressure` |
 | `speech_requests_per_worker` | Sequential requests issued by each pressure worker |
@@ -84,12 +92,15 @@ Each map key must match the test set's `name`.
 | `speech_chat_prompt` | Prompt sent by mixed-pressure chat workers |
 | `speech_slow_workers` | Leading pressure workers that intentionally delay stream reads |
 | `speech_slow_reader_delay_s` | Delay after each received chunk for slow pressure workers |
-| `input_audio_path` | Local fixture path for `kind: audio_transcription` |
+| `input_audio_path` | Optional local fixture path for batch or streaming audio transcription; streaming tests can generate a TTS fixture instead |
 | `input_audio_mime_type` | Optional MIME type for transcription fixture upload; inferred from the fixture extension when omitted |
 | `transcription_model_id` | Optional STT model used by `kind: speech_roundtrip` |
-| `speech_synthesis_model_id` | Optional TTS fixture model used by `kind: realtime_transcription` |
+| `speech_synthesis_model_id` | Optional TTS fixture model used by realtime or uploaded-audio streaming transcription |
+| `realtime_response_model_id` | Mounted chat participant required by `kind: fabric_speech_chain` |
+| `realtime_response_tts_model_id` | Mounted response TTS participant required by `kind: fabric_speech_chain` |
 | `transcription_response_format` | STT response format, such as `json` or `text` |
 | `transcription_language` | Optional STT language hint |
+| `transcription_cancel_after_deltas` | Close a secondary uploaded-audio stream after this many transcript deltas; zero disables the probe |
 | `realtime_frame_duration_ms` | PCM16 append-frame duration; defaults to the dashboard's 100 ms |
 | `realtime_pace_audio` | Send frames at media cadence instead of bursting them |
 | `realtime_cancel_after_frames` | Run a disconnect probe after this many uncommitted frames |

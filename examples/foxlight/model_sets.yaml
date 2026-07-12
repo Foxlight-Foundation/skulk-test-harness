@@ -134,6 +134,27 @@ model_sets:
     models:
       - mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit
 
+  speech-translation-tts:
+    name: speech-translation-tts
+    description: >-
+      Multilingual TTS fixture model for the speech-to-English translation
+      roundtrip. Canary is mounted as the secondary model by the test.
+    models:
+      - mlx-community/LongCat-AudioDiT-1B-4bit
+
+  speech-reference-tts:
+    name: speech-reference-tts
+    description: >-
+      Reference-conditioning TTS target validated with a generated donor clip.
+    models:
+      - mlx-community/Qwen3-TTS-12Hz-0.6B-Base-4bit
+
+  speech-voice-catalog-tts:
+    name: speech-voice-catalog-tts
+    description: TTS target with a qualified static built-in voice inventory.
+    models:
+      - mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-4bit
+
   vision:
     name: vision
     description: Vision-capable text-generation model for image input coverage.

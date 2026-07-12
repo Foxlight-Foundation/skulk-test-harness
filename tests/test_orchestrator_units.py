@@ -19,6 +19,7 @@ from skulk_test_harness.client import (
     RealtimeTranscriptionExecution,
     SkulkApiError,
     SkulkClient,
+    StreamingAudioTranscriptionExecution,
     _extract_stream_delta,
     _extract_stream_logprobs,
 )
@@ -46,7 +47,9 @@ from skulk_test_harness.orchestrator import (
     HarnessRunner,
     _catalog_entry_supports_realtime_audio,
     _clear_deferred_placement_issues,
+    _first_chat_model_id,
     _first_stt_model_id,
+    _first_translation_model_id,
     _messages_for_test,
     _pcm16_from_wav,
     _placement_from_preview,
@@ -507,9 +510,11 @@ def test_messages_for_test_builds_multimodal_content() -> None:
 
 
 def test_served_spec_selector_matches_runtime_field() -> None:
-    selector = load_model_sets(
-        Path(__file__).parents[1] / "configs/model_sets.yaml"
-    ).model_sets["served-spec-draft-eagle3"].selectors[0]
+    selector = (
+        load_model_sets(Path(__file__).parents[1] / "configs/model_sets.yaml")
+        .model_sets["served-spec-draft-eagle3"]
+        .selectors[0]
+    )
     catalog = [
         {"id": "org/plain", "runtime": {"served_spec_type": "draft_mtp"}},
         {"id": "org/eagle", "runtime": {"served_spec_type": "draft_eagle3"}},
@@ -599,6 +604,36 @@ def test_first_stt_model_id_reads_speech_metadata() -> None:
     )
 
 
+def test_first_translation_model_id_skips_transcription_only_entries() -> None:
+    catalog = [
+        {
+            "id": "org/TranscriptionOnly",
+            "resolved_capabilities": {"supports_transcription": True},
+        },
+        {
+            "id": "org/Canary",
+            "audio": {"kind": "stt", "supports_translation": True},
+        },
+    ]
+
+    assert (
+        _first_translation_model_id(catalog, exclude_model_id="org/TTS") == "org/Canary"
+    )
+
+
+def test_first_chat_model_id_uses_text_generation_task_and_exclusions() -> None:
+    catalog = [
+        {"id": "org/STT", "tasks": ["SpeechToText"]},
+        {"id": "org/excluded-chat", "tasks": ["TextGeneration"]},
+        {"id": "org/selected-chat", "tasks": ["TextGeneration"]},
+    ]
+
+    assert _first_chat_model_id(
+        catalog,
+        exclude_model_ids={"org/STT", "org/excluded-chat"},
+    ) == "org/selected-chat"
+
+
 def test_realtime_audio_selector_requires_truthful_streaming_metadata() -> None:
     realtime = {
         "id": "org/realtime",
@@ -662,6 +697,7 @@ def test_public_default_sets_are_cluster_neutral() -> None:
         "speech-data-pressure",
         "speech-roundtrip",
         "realtime-transcription",
+        "fabric-speech-chain",
         "vision",
         "served-speculation",
     } <= set(test_sets)
@@ -686,6 +722,10 @@ def test_public_default_sets_are_cluster_neutral() -> None:
     assert realtime_test.kind == "realtime_transcription"
     assert realtime_test.realtime_cancel_after_frames > 0
     assert realtime_test.realtime_assert_provider_diagnostics is True
+    fabric_test = test_sets["fabric-speech-chain"].tests[0]
+    assert fabric_test.kind == "fabric_speech_chain"
+    assert fabric_test.realtime_response_model_id is None
+    assert fabric_test.realtime_response_tts_model_id is None
 
     tool_suite = test_sets["tool-tests"]
     node_test = next(
@@ -702,9 +742,7 @@ def test_public_default_sets_are_cluster_neutral() -> None:
 
 def test_foxlight_gpt_oss_complete_suite_loads_tool_tests() -> None:
     root = Path(__file__).parents[1]
-    model_sets = load_model_sets(
-        root / "examples/foxlight/model_sets.yaml"
-    ).model_sets
+    model_sets = load_model_sets(root / "examples/foxlight/model_sets.yaml").model_sets
     test_sets = load_test_sets(root / "examples/foxlight/test_sets.yaml").test_sets
 
     assert "gpt-oss-20b" in model_sets
@@ -735,23 +773,19 @@ def test_foxlight_speech_pressure_closes_data_plane_coverage() -> None:
     )
     assert mixed.speech_owner_topology == "local_remote"
     assert mixed.speech_chat_concurrency == 2
-    assert mixed.speech_chat_model_id == "mlx-community/Qwen3.5-9B-MLX-4bit"
+    assert mixed.speech_chat_model_id == "mlx-community/Qwen3-0.6B-4bit"
 
 
 def test_foxlight_realtime_suite_requires_local_remote_provider_evidence() -> None:
     root = Path(__file__).parents[1]
-    model_sets = load_model_sets(
-        root / "examples/foxlight/model_sets.yaml"
-    ).model_sets
+    model_sets = load_model_sets(root / "examples/foxlight/model_sets.yaml").model_sets
     test_sets = load_test_sets(root / "examples/foxlight/test_sets.yaml").test_sets
 
     assert model_sets["speech-stt-realtime"].models == [
         "mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit"
     ]
     test = test_sets["realtime-transcription"].tests[0]
-    assert test.speech_synthesis_model_id == (
-        "mlx-community/LongCat-AudioDiT-1B-4bit"
-    )
+    assert test.speech_synthesis_model_id == ("mlx-community/LongCat-AudioDiT-1B-4bit")
     assert test.speech_owner_count == 2
     assert test.speech_owner_topology == "local_remote"
     assert test.realtime_assert_provider_diagnostics is True
@@ -760,9 +794,7 @@ def test_foxlight_realtime_suite_requires_local_remote_provider_evidence() -> No
 
 def test_foxlight_e2e_battery_references_defined_sets() -> None:
     root = Path(__file__).parents[1]
-    model_sets = load_model_sets(
-        root / "examples/foxlight/model_sets.yaml"
-    ).model_sets
+    model_sets = load_model_sets(root / "examples/foxlight/model_sets.yaml").model_sets
     test_sets = load_test_sets(root / "examples/foxlight/test_sets.yaml").test_sets
     battery = root / "examples/foxlight/run_e2e_battery.sh"
 
@@ -835,9 +867,7 @@ def test_extract_stream_logprobs_zero_without_logprobs() -> None:
 
 def test_llama_cpp_suite_and_gguf_set_load() -> None:
     root = Path(__file__).parents[1]
-    model_sets = load_model_sets(
-        root / "examples/foxlight/model_sets.yaml"
-    ).model_sets
+    model_sets = load_model_sets(root / "examples/foxlight/model_sets.yaml").model_sets
     test_sets = load_test_sets(root / "examples/foxlight/test_sets.yaml").test_sets
 
     assert model_sets["gguf-llama-cpp"].models == ["unsloth/Llama-3.2-1B-Instruct-GGUF"]
@@ -916,6 +946,8 @@ class _FakeClient:
         self.thinking_seen: list[bool | None] = []
         self.speech_requests: list[dict[str, object]] = []
         self.transcription_requests: list[dict[str, object]] = []
+        self.translation_requests: list[dict[str, object]] = []
+        self.streaming_transcription_requests: list[dict[str, object]] = []
         self.realtime_requests: list[dict[str, object]] = []
 
     def __enter__(self) -> "_FakeClient":
@@ -964,6 +996,10 @@ class _FakeClient:
         stream: bool = False,
         streaming_interval: float | None = None,
         read_delay_s: float = 0.0,
+        reference_audio: bytes | None = None,
+        reference_audio_filename: str = "reference.wav",
+        reference_audio_media_type: str = "audio/wav",
+        reference_text: str | None = None,
     ) -> AudioSpeechExecution:
         self.speech_requests.append(
             {
@@ -975,13 +1011,13 @@ class _FakeClient:
                 "stream": stream,
                 "streaming_interval": streaming_interval,
                 "read_delay_s": read_delay_s,
+                "reference_audio": reference_audio,
+                "reference_audio_filename": reference_audio_filename,
+                "reference_audio_media_type": reference_audio_media_type,
+                "reference_text": reference_text,
             }
         )
-        audio = (
-            b"ID3" + (b"\x00" * 2048)
-            if response_format == "mp3"
-            else _wav_bytes()
-        )
+        audio = b"ID3" + (b"\x00" * 2048) if response_format == "mp3" else _wav_bytes()
         return AudioSpeechExecution(
             audio=audio,
             media_type="audio/mpeg" if response_format == "mp3" else "audio/wav",
@@ -997,6 +1033,10 @@ class _FakeClient:
             ),
             streaming=stream,
         )
+
+    def audio_voices(self, model_id: str) -> list[str]:
+        del model_id
+        return ["ryan", "aiden"]
 
     def audio_transcription(
         self,
@@ -1028,6 +1068,82 @@ class _FakeClient:
             raw_response={"text": "hello world"},
         )
 
+    def audio_translation(
+        self,
+        *,
+        model_id: str,
+        audio: bytes,
+        filename: str,
+        media_type: str,
+        response_format: str = "json",
+        language: str | None = None,
+        prompt: str | None = None,
+    ) -> AudioTranscriptionExecution:
+        self.translation_requests.append(
+            {
+                "model_id": model_id,
+                "audio": audio,
+                "filename": filename,
+                "media_type": media_type,
+                "response_format": response_format,
+                "language": language,
+                "prompt": prompt,
+            }
+        )
+        return AudioTranscriptionExecution(
+            text="hello project",
+            media_type="application/json",
+            elapsed_s=0.03,
+            response_format=response_format,
+            raw_response={"text": "hello project"},
+        )
+
+    def streaming_audio_transcription(
+        self,
+        *,
+        model_id: str,
+        audio: bytes,
+        filename: str,
+        media_type: str,
+        language: str | None = None,
+        prompt: str | None = None,
+        cancel_after_deltas: int = 0,
+    ) -> StreamingAudioTranscriptionExecution:
+        self.streaming_transcription_requests.append(
+            {
+                "model_id": model_id,
+                "audio": audio,
+                "filename": filename,
+                "media_type": media_type,
+                "language": language,
+                "prompt": prompt,
+                "cancel_after_deltas": cancel_after_deltas,
+            }
+        )
+        canceled = cancel_after_deltas > 0
+        events: list[dict[str, object]] = [
+            {"type": "transcription.delta", "delta": "hello "},
+        ]
+        if not canceled:
+            events.extend(
+                [
+                    {"type": "transcription.delta", "delta": "world"},
+                    {"type": "transcription.completed", "text": "hello world"},
+                    {"type": "transcription.usage", "input_bytes": len(audio)},
+                ]
+            )
+        return StreamingAudioTranscriptionExecution(
+            text="hello " if canceled else "hello world",
+            elapsed_s=0.2,
+            first_transcript_s=0.1,
+            input_bytes=len(audio),
+            transcript_deltas=1 if canceled else 2,
+            event_types=[str(event["type"]) for event in events],
+            event_arrival_s=[0.1 * (index + 1) for index in range(len(events))],
+            events=events,
+            canceled=canceled,
+        )
+
     def realtime_transcription(
         self,
         *,
@@ -1037,6 +1153,10 @@ class _FakeClient:
         frame_duration_ms: int = 100,
         pace_audio: bool = True,
         cancel_after_frames: int = 0,
+        fabric_chain: bool = False,
+        response_model_id: str | None = None,
+        response_tts_model_id: str | None = None,
+        response_voice: str | None = None,
     ) -> RealtimeTranscriptionExecution:
         self.realtime_requests.append(
             {
@@ -1046,6 +1166,10 @@ class _FakeClient:
                 "frame_duration_ms": frame_duration_ms,
                 "pace_audio": pace_audio,
                 "cancel_after_frames": cancel_after_frames,
+                "fabric_chain": fabric_chain,
+                "response_model_id": response_model_id,
+                "response_tts_model_id": response_tts_model_id,
+                "response_voice": response_voice,
             }
         )
         canceled = cancel_after_frames > 0
@@ -1062,6 +1186,10 @@ class _FakeClient:
             transcript_deltas=0 if canceled else 2,
             event_types=["session.created", "session.updated"],
             canceled=canceled,
+            assistant_text=("hello from the assistant" if fabric_chain and not canceled else ""),
+            response_audio=(b"ID3" + b"\x00" * 2048 if fabric_chain and not canceled else b""),
+            response_audio_chunks=(2 if fabric_chain and not canceled else 0),
+            response_status=("completed" if fabric_chain and not canceled else None),
         )
 
     def get_provider_capability_diagnostics(
@@ -1275,8 +1403,8 @@ def test_run_test_dispatches_streaming_audio_speech(tmp_path: Path) -> None:
             min_audio_bytes=1024,
             min_stream_chunks=2,
             min_stream_span_s=0.5,
-        ),
-    )
+            ),
+        )
 
     result = runner._run_test(
         client,  # type: ignore[arg-type]
@@ -1579,7 +1707,9 @@ def test_score_streaming_audio_output_rejects_burst_chunks() -> None:
     )
 
     assert len(issues) == 1
-    assert issues[0].message == "Streaming response did not span the configured duration"
+    assert (
+        issues[0].message == "Streaming response did not span the configured duration"
+    )
     assert issues[0].evidence["min_stream_span_s"] == 0.5
     stream_span_s = issues[0].evidence["stream_span_s"]
     assert isinstance(stream_span_s, float)
@@ -1637,6 +1767,42 @@ def test_audio_transcription_infers_fixture_media_type(tmp_path: Path) -> None:
     assert client.transcription_requests[0]["media_type"] == "audio/mpeg"
 
 
+def test_run_test_persists_streaming_transcription_timeline(tmp_path: Path) -> None:
+    audio_path = tmp_path / "sample.wav"
+    audio_path.write_bytes(_wav_bytes())
+    client = _FakeClient()
+    runner = _runner()
+    test = PromptTest(
+        name="streaming-stt",
+        kind="audio_transcription_streaming",
+        prompt="transcribe this",
+        input_audio_path=audio_path,
+        transcription_cancel_after_deltas=1,
+        success=SuccessCriteria(
+            min_chars=5,
+            min_transcript_deltas=2,
+            required_substrings=["hello"],
+        ),
+    )
+
+    result = runner._run_test(
+        client,  # type: ignore[arg-type]
+        model_id="org/STT",
+        test=test,
+        repetition=1,
+        artifact_dir=tmp_path,
+    )
+
+    assert result.passed is True
+    assert result.output_text == "hello world"
+    assert result.metrics.chunks == 2
+    assert result.artifact_path is not None
+    timeline = json.loads(result.artifact_path.read_text())
+    assert timeline["text"] == "hello world"
+    assert timeline["cancellation_probe"]["canceled"] is True
+    assert len(client.streaming_transcription_requests) == 2
+
+
 def test_pcm16_from_wav_downmixes_stereo() -> None:
     pcm16, sample_rate = _pcm16_from_wav(_wav_bytes(channels=2, sample_rate=16_000))
 
@@ -1663,7 +1829,11 @@ def test_realtime_transcription_roundtrip_runs_local_remote_and_cancel(
     )
     client = _FakeClient(
         live_placements=[stt_placement, tts_placement],
-        models=[{"id": "org/RealtimeSTT"}, {"id": "org/TTS"}],
+        models=[
+            {"id": "org/RealtimeSTT"},
+            {"id": "org/TTS"},
+            {"id": "org/Chat", "tasks": ["TextGeneration"]},
+        ],
     )
     owner_clients: list[_FakeClient] = []
     cancellation_release_checks: list[int] = []
@@ -1739,6 +1909,8 @@ def test_realtime_transcription_roundtrip_runs_local_remote_and_cancel(
     assert [request["cancel_after_frames"] for request in requests[1:]] == [0, 0]
     assert cancellation_release_checks == [1]
     assert all(request["model_id"] == "org/RealtimeSTT" for request in requests)
+    assert all(request["response_model_id"] is None for request in requests)
+    assert all(request["response_tts_model_id"] is None for request in requests)
     assert result.artifact_path is not None
     assert result.artifact_path.exists()
     metadata_path = result.artifact_path.with_suffix(
@@ -1753,11 +1925,80 @@ def test_realtime_transcription_roundtrip_runs_local_remote_and_cancel(
     assert metadata["cancellation"]["canceled"] is True
 
 
+def test_fabric_speech_chain_mounts_participants_and_persists_response_audio(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The chain suite must exercise STT, chat, and TTS through its public edge."""
+
+    placements = [
+        PlacementResult(
+            model_id=model_id,
+            instance_id=f"instance-{index}",
+            node_ids=["node-a"],
+            ready=True,
+        )
+        for index, model_id in enumerate(
+            ("org/RealtimeSTT", "org/TTS", "org/Chat"), start=1
+        )
+    ]
+    client = _FakeClient(
+        live_placements=placements,
+        models=[{"id": placement.model_id} for placement in placements],
+    )
+    owner_client = _FakeClient()
+    runner = _runner()
+    monkeypatch.setattr(runner, "_client_for_url", lambda _url: owner_client)
+
+    test = PromptTest(
+        name="fabric-speech-chain",
+        kind="fabric_speech_chain",
+        prompt="Hello world from the Skulk realtime speech battery.",
+        speech_synthesis_model_id="org/TTS",
+        realtime_response_model_id="org/Chat",
+        realtime_response_tts_model_id="org/TTS",
+        realtime_pace_audio=False,
+        success=SuccessCriteria(
+            min_chars=5,
+            min_audio_bytes=1024,
+            min_transcript_deltas=1,
+            required_substrings=["hello"],
+        ),
+    )
+    spec = RunSpec(model_set="m", test_set="t", mode="execute")
+    report = RunReport.start("run-fabric-speech", spec, [])
+
+    result = runner._run_test(
+        client,  # type: ignore[arg-type]
+        model_id="org/RealtimeSTT",
+        test=test,
+        repetition=1,
+        artifact_dir=tmp_path,
+        spec=spec,
+        report=report,
+    )
+
+    assert result.passed is True
+    assert "hello world" in result.output_text
+    assert "hello from the assistant" in result.output_text
+    request = owner_client.realtime_requests[0]
+    assert request["fabric_chain"] is True
+    assert request["response_model_id"] == "org/Chat"
+    assert request["response_tts_model_id"] == "org/TTS"
+    assert list(tmp_path.glob("*.mp3"))
+    assert {placement.model_id for placement in report.placements} == {
+        "org/TTS",
+        "org/Chat",
+    }
+
+
 def test_realtime_transcription_retries_transient_busy_admission() -> None:
     class BusyOnceClient(_FakeClient):
         attempts = 0
 
-        def realtime_transcription(self, **kwargs: object) -> RealtimeTranscriptionExecution:
+        def realtime_transcription(
+            self, **kwargs: object
+        ) -> RealtimeTranscriptionExecution:
             self.attempts += 1
             if self.attempts == 1:
                 raise SkulkApiError(
@@ -2024,6 +2265,113 @@ def test_speech_roundtrip_persists_generated_audio_artifact(
     audio = result.artifact_path.read_bytes()
     assert audio.startswith(b"RIFF")
     assert client.transcription_requests[0]["audio"] == audio
+
+
+def test_speech_translation_roundtrip_uses_translation_endpoint(
+    tmp_path: Path,
+) -> None:
+    """Translation roundtrips should synthesize, translate, score, and persist."""
+
+    client = _FakeClient()
+    runner = _runner()
+    runner._ensure_model_placed = lambda *_args, **_kwargs: PlacementResult(  # type: ignore[method-assign]
+        model_id="org/Canary",
+        instance_id="translation-instance",
+        ready=True,
+        created_by_harness=False,
+    )
+    test = PromptTest(
+        name="translation-roundtrip",
+        kind="speech_translation_roundtrip",
+        prompt="Bonjour du projet Skulk.",
+        transcription_model_id="org/Canary",
+        transcription_language="fr",
+        success=SuccessCriteria(
+            min_chars=5,
+            min_audio_bytes=1024,
+            required_substrings=["project"],
+        ),
+    )
+
+    result = runner._run_test(
+        client,  # type: ignore[arg-type]
+        model_id="org/TTS",
+        test=test,
+        repetition=1,
+        artifact_dir=tmp_path,
+        spec=RunSpec(model_set="m", test_set="t", mode="execute"),
+        report=_report(),
+    )
+
+    assert result.passed is True
+    assert result.output_text == "hello project"
+    assert client.translation_requests[0]["model_id"] == "org/Canary"
+    assert client.translation_requests[0]["language"] == "fr"
+    assert result.artifact_path is not None
+    assert result.artifact_path.read_bytes().startswith(b"RIFF")
+
+
+def test_speech_reference_roundtrip_generates_and_conditions_audio(
+    tmp_path: Path,
+) -> None:
+    client = _FakeClient()
+    runner = _runner()
+    runner._ensure_model_placed = lambda *_args, **_kwargs: PlacementResult(  # type: ignore[method-assign]
+        model_id="org/Donor",
+        instance_id="donor-instance",
+        ready=True,
+        created_by_harness=False,
+    )
+    test = PromptTest(
+        name="reference-roundtrip",
+        kind="speech_reference_roundtrip",
+        prompt="conditioned words",
+        reference_model_id="org/Donor",
+        reference_text="reference words",
+        success=SuccessCriteria(min_chars=0, min_audio_bytes=1024),
+    )
+
+    result = runner._run_test(
+        client,  # type: ignore[arg-type]
+        model_id="org/QwenBase",
+        test=test,
+        repetition=1,
+        artifact_dir=tmp_path,
+        spec=RunSpec(model_set="m", test_set="t", mode="execute"),
+        report=_report(),
+    )
+
+    assert result.passed is True
+    assert len(client.speech_requests) == 2
+    reference_audio = client.speech_requests[0]["reference_audio"]
+    assert reference_audio is None
+    assert client.speech_requests[1]["reference_audio"] == _wav_bytes()
+    assert client.speech_requests[1]["reference_text"] == "reference words"
+    assert (
+        tmp_path / "org-qwenbase--reference-roundtrip-reference--rep-1.wav"
+    ).exists()
+    assert result.artifact_path is not None
+    assert result.artifact_path.exists()
+
+
+def test_audio_voices_requires_expected_inventory(tmp_path: Path) -> None:
+    client = _FakeClient()
+    result = _runner()._run_test(
+        client,  # type: ignore[arg-type]
+        model_id="org/CustomVoice",
+        test=PromptTest(
+            name="voices",
+            kind="audio_voices",
+            prompt="",
+            expected_voice_ids=["ryan", "aiden"],
+            success=SuccessCriteria(min_chars=0),
+        ),
+        repetition=1,
+        artifact_dir=tmp_path,
+    )
+
+    assert result.passed is True
+    assert "ryan" in result.output_text
 
 
 def test_ensure_model_placed_fast_fails_when_instance_never_appears() -> None:

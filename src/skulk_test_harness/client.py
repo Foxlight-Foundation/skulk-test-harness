@@ -7,6 +7,7 @@ import json
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from typing import cast
 from urllib.parse import quote, urlsplit, urlunsplit
 
 import httpx
@@ -43,15 +44,17 @@ def _replace_url_host(url: str, host: str) -> str:
     return urlunsplit((parsed.scheme, f"{host}{port}", "", "", ""))
 
 
-def _realtime_url(base_url: str, model_id: str) -> str:
-    """Build a same-owner realtime WebSocket URL for one mounted model."""
+def _realtime_url(base_url: str, model_id: str, *, fabric_chain: bool = False) -> str:
+    """Build a same-owner realtime or Fabric-chain WebSocket URL."""
 
     parsed = urlsplit(base_url)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError(f"Unsupported Skulk API URL for realtime STT: {base_url!r}")
     scheme = "wss" if parsed.scheme == "https" else "ws"
+    path = "/v1/fabric/chains/speech" if fabric_chain else "/v1/realtime"
+    parameter = "stt_model" if fabric_chain else "model"
     return urlunsplit(
-        (scheme, parsed.netloc, "/v1/realtime", f"model={quote(model_id, safe='')}", "")
+        (scheme, parsed.netloc, path, f"{parameter}={quote(model_id, safe='')}", "")
     )
 
 
@@ -59,7 +62,9 @@ class SkulkApiError(RuntimeError):
     """Raised when Skulk returns an unsuccessful response."""
 
     def __init__(self, method: str, path: str, status_code: int, body: str) -> None:
-        super().__init__(f"{method} {path} failed with HTTP {status_code}: {body[:500]}")
+        super().__init__(
+            f"{method} {path} failed with HTTP {status_code}: {body[:500]}"
+        )
         self.method = method
         self.path = path
         self.status_code = status_code
@@ -121,6 +126,21 @@ class AudioTranscriptionExecution:
 
 
 @dataclass(frozen=True)
+class StreamingAudioTranscriptionExecution:
+    """Typed SSE transcript lifecycle and timing from one uploaded audio clip."""
+
+    text: str
+    elapsed_s: float
+    first_transcript_s: float | None
+    input_bytes: int
+    transcript_deltas: int
+    event_types: list[str]
+    event_arrival_s: list[float]
+    events: list[dict[str, object]]
+    canceled: bool = False
+
+
+@dataclass(frozen=True)
 class RealtimeTranscriptionExecution:
     """Transcript lifecycle and timing from one realtime WebSocket session."""
 
@@ -132,6 +152,10 @@ class RealtimeTranscriptionExecution:
     transcript_deltas: int
     event_types: list[str]
     canceled: bool = False
+    assistant_text: str = ""
+    response_audio: bytes = b""
+    response_audio_chunks: int = 0
+    response_status: str | None = None
 
 
 @dataclass(frozen=True)
@@ -631,7 +655,9 @@ class SkulkClient:
     def add_model_card(self, model_id: str) -> dict[str, object] | None:
         """Ask Skulk to add/fetch a custom model card for ``model_id``."""
 
-        payload = self._request_json("POST", "/models/add", json_body={"model_id": model_id})
+        payload = self._request_json(
+            "POST", "/models/add", json_body={"model_id": model_id}
+        )
         return payload if isinstance(payload, dict) else None
 
     def get_store_registry(self) -> dict[str, object] | None:
@@ -669,6 +695,24 @@ class SkulkClient:
             "GET", f"/store/models/{path_model}/download/status"
         )
         return payload if isinstance(payload, dict) else None
+
+    def audio_voices(self, model_id: str) -> list[str]:
+        """Return stable built-in voice identifiers for a mounted TTS model."""
+
+        payload = self._request_json(
+            "GET", "/v1/audio/voices", params={"model": model_id}
+        )
+        if not isinstance(payload, dict) or payload.get("object") != "list":
+            raise TypeError("Expected /v1/audio/voices to return a list object")
+        data = payload.get("data")
+        if not isinstance(data, list):
+            raise TypeError("Expected /v1/audio/voices data to be a list")
+        voices: list[str] = []
+        for item in data:
+            if not isinstance(item, dict) or not isinstance(item.get("id"), str):
+                raise TypeError("Expected every audio voice to have a string id")
+            voices.append(item["id"])
+        return voices
 
     def get_placement_previews(
         self,
@@ -759,8 +803,12 @@ class SkulkClient:
                 PlacementResult(
                     model_id=model_id,
                     instance_id=str(instance_id),
-                    node_ids=list(node_to_runner) if isinstance(node_to_runner, dict) else [],
-                    runner_ids=list(runner_to_shard) if isinstance(runner_to_shard, dict) else [],
+                    node_ids=list(node_to_runner)
+                    if isinstance(node_to_runner, dict)
+                    else [],
+                    runner_ids=list(runner_to_shard)
+                    if isinstance(runner_to_shard, dict)
+                    else [],
                     instance_meta=tag,
                     reused_existing=True,
                     ready=self.instance_is_ready(str(instance_id)),
@@ -834,7 +882,9 @@ class SkulkClient:
             model_id=model_id,
             instance_id=instance_id,
             node_ids=list(node_to_runner) if isinstance(node_to_runner, dict) else [],
-            runner_ids=list(runner_to_shard) if isinstance(runner_to_shard, dict) else [],
+            runner_ids=list(runner_to_shard)
+            if isinstance(runner_to_shard, dict)
+            else [],
             instance_meta=tag,
             ready=self.instance_is_ready(instance_id),
         )
@@ -1042,6 +1092,10 @@ class SkulkClient:
         stream: bool = False,
         streaming_interval: float | None = None,
         read_delay_s: float = 0.0,
+        reference_audio: bytes | None = None,
+        reference_audio_filename: str = "reference.wav",
+        reference_audio_media_type: str = "audio/wav",
+        reference_text: str | None = None,
     ) -> AudioSpeechExecution:
         """Generate speech audio with OpenAI's speech endpoint."""
 
@@ -1049,6 +1103,8 @@ class SkulkClient:
             raise ValueError("streaming_interval requires stream=True")
         if read_delay_s < 0:
             raise ValueError("read_delay_s must be non-negative")
+        if stream and reference_audio is not None:
+            raise ValueError("reference_audio is not supported with stream=True")
         payload: dict[str, object] = {
             "model": model_id,
             "input": input_text,
@@ -1127,11 +1183,28 @@ class SkulkClient:
             )
 
         try:
-            response = self._client.post(
-                "/v1/audio/speech",
-                json=payload,
-                timeout=self.generation_timeout_s,
-            )
+            if reference_audio is None:
+                response = self._client.post(
+                    "/v1/audio/speech",
+                    json=payload,
+                    timeout=self.generation_timeout_s,
+                )
+            else:
+                form = {key: str(value) for key, value in payload.items()}
+                if reference_text is not None:
+                    form["reference_text"] = reference_text
+                response = self._client.post(
+                    "/v1/audio/speech",
+                    data=form,
+                    files={
+                        "reference_audio": (
+                            reference_audio_filename,
+                            reference_audio,
+                            reference_audio_media_type,
+                        )
+                    },
+                    timeout=self.generation_timeout_s,
+                )
         except (httpx.TimeoutException, httpx.TransportError) as exc:
             raise SkulkApiError(
                 "POST",
@@ -1205,6 +1278,163 @@ class SkulkClient:
             raw_response=raw,
         )
 
+    def audio_translation(
+        self,
+        *,
+        model_id: str,
+        audio: bytes,
+        filename: str,
+        media_type: str,
+        response_format: str = "json",
+        language: str | None = None,
+        prompt: str | None = None,
+    ) -> AudioTranscriptionExecution:
+        """Translate one audio payload to English with the audio translations API."""
+
+        data: dict[str, str] = {
+            "model": model_id,
+            "response_format": response_format,
+        }
+        if language is not None:
+            data["language"] = language
+        if prompt:
+            data["prompt"] = prompt
+        start = time.monotonic()
+        try:
+            response = self._client.post(
+                "/v1/audio/translations",
+                data=data,
+                files={"file": (filename, audio, media_type)},
+                timeout=self.generation_timeout_s,
+            )
+        except (httpx.TimeoutException, httpx.TransportError) as exc:
+            raise SkulkApiError(
+                "POST",
+                "/v1/audio/translations",
+                0,
+                f"{type(exc).__name__}: {exc}",
+            ) from exc
+        elapsed = time.monotonic() - start
+        if response.status_code >= 400:
+            raise SkulkApiError(
+                "POST",
+                "/v1/audio/translations",
+                response.status_code,
+                response.text,
+            )
+        raw, text = _transcription_payload_text(response, response_format)
+        return AudioTranscriptionExecution(
+            text=text,
+            media_type=_base_media_type(response.headers.get("content-type", "")),
+            elapsed_s=elapsed,
+            response_format=response_format,
+            raw_response=raw,
+        )
+
+    def streaming_audio_transcription(
+        self,
+        *,
+        model_id: str,
+        audio: bytes,
+        filename: str,
+        media_type: str,
+        language: str | None = None,
+        prompt: str | None = None,
+        cancel_after_deltas: int = 0,
+    ) -> StreamingAudioTranscriptionExecution:
+        """Stream typed SSE transcript events for one bounded audio upload."""
+
+        if cancel_after_deltas < 0:
+            raise ValueError("cancel_after_deltas must be non-negative")
+        data: dict[str, str] = {"model": model_id, "stream": "true"}
+        if language is not None:
+            data["language"] = language
+        if prompt:
+            data["prompt"] = prompt
+        start = time.monotonic()
+        events: list[dict[str, object]] = []
+        event_types: list[str] = []
+        event_arrival_s: list[float] = []
+        text_parts: list[str] = []
+        first_transcript_s: float | None = None
+        canceled = False
+        try:
+            with self._client.stream(
+                "POST",
+                "/v1/audio/transcriptions",
+                data=data,
+                files={"file": (filename, audio, media_type)},
+                timeout=httpx.Timeout(
+                    timeout=None,
+                    connect=self.request_timeout_s,
+                    read=self.stream_read_timeout_s,
+                    write=self.request_timeout_s,
+                    pool=self.request_timeout_s,
+                ),
+            ) as response:
+                if response.status_code >= 400:
+                    body = response.read().decode("utf-8", errors="replace")
+                    raise SkulkApiError(
+                        "POST", "/v1/audio/transcriptions", response.status_code, body
+                    )
+                if _base_media_type(response.headers.get("content-type", "")) != "text/event-stream":
+                    raise TypeError("Streaming transcription did not return SSE")
+                for line in response.iter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    payload = json.loads(line.removeprefix("data: "))
+                    if not isinstance(payload, dict):
+                        raise TypeError("Streaming transcription event was not an object")
+                    event = cast(dict[str, object], payload)
+                    event_type = event.get("type")
+                    if not isinstance(event_type, str):
+                        raise TypeError("Streaming transcription event omitted type")
+                    arrival = time.monotonic() - start
+                    events.append(event)
+                    event_types.append(event_type)
+                    event_arrival_s.append(arrival)
+                    if event_type == "transcription.error":
+                        raise SkulkApiError(
+                            "POST",
+                            "/v1/audio/transcriptions",
+                            200,
+                            str(event.get("message") or event),
+                        )
+                    if event_type == "transcription.delta":
+                        delta = event.get("delta")
+                        if not isinstance(delta, str):
+                            raise TypeError("Transcription delta omitted text")
+                        if first_transcript_s is None:
+                            first_transcript_s = arrival
+                        text_parts.append(delta)
+                        if cancel_after_deltas and len(text_parts) >= cancel_after_deltas:
+                            canceled = True
+                            break
+                    if event_type == "transcription.completed":
+                        completed_text = event.get("text")
+                        if isinstance(completed_text, str):
+                            text_parts = [completed_text]
+        except (httpx.TimeoutException, httpx.TransportError) as exc:
+            raise SkulkApiError(
+                "POST",
+                "/v1/audio/transcriptions",
+                0,
+                f"{type(exc).__name__}: {exc}",
+            ) from exc
+        return StreamingAudioTranscriptionExecution(
+            text="".join(text_parts),
+            elapsed_s=time.monotonic() - start,
+            first_transcript_s=first_transcript_s,
+            input_bytes=len(audio),
+            transcript_deltas=sum(
+                event_type == "transcription.delta" for event_type in event_types
+            ),
+            event_types=event_types,
+            event_arrival_s=event_arrival_s,
+            events=events,
+            canceled=canceled,
+        )
+
     def realtime_transcription(
         self,
         *,
@@ -1214,8 +1444,12 @@ class SkulkClient:
         frame_duration_ms: int = 100,
         pace_audio: bool = True,
         cancel_after_frames: int = 0,
+        fabric_chain: bool = False,
+        response_model_id: str | None = None,
+        response_tts_model_id: str | None = None,
+        response_voice: str | None = None,
     ) -> RealtimeTranscriptionExecution:
-        """Transcribe ordered mono PCM16 through Skulk's realtime WebSocket.
+        """Transcribe PCM16 through realtime STT or a typed Fabric speech chain.
 
         Args:
             model_id: Mounted realtime STT model selected for the session.
@@ -1224,6 +1458,10 @@ class SkulkClient:
             frame_duration_ms: Duration represented by each append event.
             pace_audio: Sleep between frames to reproduce microphone cadence.
             cancel_after_frames: Close without commit after this many frames.
+            fabric_chain: Use the explicit Fabric speech-chain endpoint.
+            response_model_id: Optional mounted chat participant.
+            response_tts_model_id: Optional mounted TTS participant.
+            response_voice: Optional voice selected for response TTS.
 
         Returns:
             Realtime transcript lifecycle, timing, and input counters.
@@ -1241,6 +1479,10 @@ class SkulkClient:
             raise ValueError("realtime frame duration must be between 20 and 1000 ms")
         if cancel_after_frames < 0:
             raise ValueError("cancel_after_frames must be non-negative")
+        if fabric_chain and not response_model_id:
+            raise ValueError("fabric speech chain requires response_model_id")
+        if response_tts_model_id and not response_model_id:
+            raise ValueError("response TTS requires response_model_id")
 
         samples_per_frame = max(1, sample_rate * frame_duration_ms // 1000)
         bytes_per_frame = samples_per_frame * 2
@@ -1252,8 +1494,12 @@ class SkulkClient:
         first_transcript_s: float | None = None
         transcript_deltas = 0
         event_types: list[str] = []
-        path = "/v1/realtime"
-        url = _realtime_url(self.base_url, model_id)
+        path = "/v1/fabric/chains/speech" if fabric_chain else "/v1/realtime"
+        url = _realtime_url(self.base_url, model_id, fabric_chain=fabric_chain)
+        transcript = ""
+        assistant_parts: list[str] = []
+        response_audio_parts: list[bytes] = []
+        response_audio_chunks = 0
 
         try:
             with websocket_client.connect(
@@ -1271,32 +1517,43 @@ class SkulkClient:
                 )
                 created_type = str(created["type"])
                 event_types.append(created_type)
-                if created_type in {"error", "conversation.item.input_audio_transcription.failed"}:
+                if created_type in {
+                    "error",
+                    "conversation.item.input_audio_transcription.failed",
+                }:
                     raise SkulkApiError("WS", path, 0, _realtime_error_message(created))
                 if created_type != "session.created":
                     raise TypeError(
                         f"Expected session.created, received {created_type!r}"
                     )
 
+                session: dict[str, object] = {
+                    "type": "transcription",
+                    "audio": {
+                        "input": {
+                            "format": {
+                                "type": "audio/pcm",
+                                "rate": sample_rate,
+                            },
+                            "transcription": {"model": model_id},
+                            "turn_detection": None,
+                            "noise_reduction": None,
+                        }
+                    },
+                    "include": [],
+                }
+                if response_model_id is not None:
+                    response: dict[str, object] = {"model": response_model_id}
+                    if response_tts_model_id is not None:
+                        response["tts_model"] = response_tts_model_id
+                    if response_voice is not None:
+                        response["voice"] = response_voice
+                    session["response"] = response
                 connection.send(
                     json.dumps(
                         {
                             "type": "session.update",
-                            "session": {
-                                "type": "transcription",
-                                "audio": {
-                                    "input": {
-                                        "format": {
-                                            "type": "audio/pcm",
-                                            "rate": sample_rate,
-                                        },
-                                        "transcription": {"model": model_id},
-                                        "turn_detection": None,
-                                        "noise_reduction": None,
-                                    }
-                                },
-                                "include": [],
-                            },
+                            "session": session,
                         },
                         separators=(",", ":"),
                     )
@@ -1359,7 +1616,10 @@ class SkulkClient:
                     event_types.append(event_type)
                     if event_type == "input_audio_buffer.committed":
                         continue
-                    if event_type == "conversation.item.input_audio_transcription.delta":
+                    if (
+                        event_type
+                        == "conversation.item.input_audio_transcription.delta"
+                    ):
                         delta = event.get("delta")
                         if not isinstance(delta, str):
                             raise TypeError("Realtime transcript delta was not text")
@@ -1368,11 +1628,51 @@ class SkulkClient:
                             first_transcript_s = time.monotonic() - started_at
                         continue
                     if event_type == "conversation.item.input_audio_transcription.completed":
-                        transcript = event.get("transcript")
-                        if not isinstance(transcript, str):
+                        final_transcript = event.get("transcript")
+                        if not isinstance(final_transcript, str):
                             raise TypeError("Realtime final transcript was not text")
+                        transcript = final_transcript
                         if first_transcript_s is None:
                             first_transcript_s = time.monotonic() - started_at
+                        if response_model_id is None:
+                            return RealtimeTranscriptionExecution(
+                                text=transcript,
+                                elapsed_s=time.monotonic() - started_at,
+                                first_transcript_s=first_transcript_s,
+                                input_bytes=len(pcm16),
+                                input_frames=len(frames),
+                                transcript_deltas=transcript_deltas,
+                                event_types=event_types,
+                            )
+                        continue
+                    if event_type in {"response.created", "response.audio.done"}:
+                        continue
+                    if event_type == "response.output_text.delta":
+                        delta = event.get("delta")
+                        if not isinstance(delta, str):
+                            raise TypeError("Realtime assistant delta was not text")
+                        assistant_parts.append(delta)
+                        continue
+                    if event_type == "response.output_text.done":
+                        text = event.get("text")
+                        if not isinstance(text, str):
+                            raise TypeError("Realtime assistant final text was not text")
+                        assistant_parts = [text]
+                        continue
+                    if event_type == "response.audio.delta":
+                        delta = event.get("delta")
+                        if not isinstance(delta, str):
+                            raise TypeError("Realtime response audio delta was not base64")
+                        response_audio_parts.append(base64.b64decode(delta, validate=True))
+                        response_audio_chunks += 1
+                        continue
+                    if event_type == "response.done":
+                        response_payload = event.get("response")
+                        if not isinstance(response_payload, dict):
+                            raise TypeError("Realtime response.done omitted response status")
+                        status = response_payload.get("status")
+                        if not isinstance(status, str):
+                            raise TypeError("Realtime response status was not text")
                         return RealtimeTranscriptionExecution(
                             text=transcript,
                             elapsed_s=time.monotonic() - started_at,
@@ -1381,6 +1681,10 @@ class SkulkClient:
                             input_frames=len(frames),
                             transcript_deltas=transcript_deltas,
                             event_types=event_types,
+                            assistant_text="".join(assistant_parts),
+                            response_audio=b"".join(response_audio_parts),
+                            response_audio_chunks=response_audio_chunks,
+                            response_status=status,
                         )
                     if event_type in {
                         "error",
@@ -1467,9 +1771,7 @@ class SkulkClient:
             metrics = metrics.model_copy(
                 update={
                     "skulk_prompt_tps": _float_or_none(stats.get("prompt_tps")),
-                    "skulk_generation_tps": _float_or_none(
-                        stats.get("generation_tps")
-                    ),
+                    "skulk_generation_tps": _float_or_none(stats.get("generation_tps")),
                     "skulk_prompt_tokens": _int_or_none(stats.get("prompt_tokens")),
                     "skulk_generation_tokens": _int_or_none(
                         stats.get("generation_tokens")
@@ -1504,7 +1806,9 @@ class SkulkClient:
             return issues
         supervisor_runners = diagnostics.get("supervisorRunners")
         state_runners = state.get("runners")
-        if not isinstance(supervisor_runners, list) or not isinstance(state_runners, dict):
+        if not isinstance(supervisor_runners, list) or not isinstance(
+            state_runners, dict
+        ):
             return issues
         active_runner_ids = _active_runner_ids(state)
         stale_runner_ids = [
@@ -1531,7 +1835,12 @@ class SkulkClient:
             local_status = str(runner.get("statusKind") or "")
             parsed = unwrap_tagged(state_runners.get(runner_id))
             state_status = parsed[0] if parsed is not None else None
-            if runner_id and state_status and local_status and state_status != local_status:
+            if (
+                runner_id
+                and state_status
+                and local_status
+                and state_status != local_status
+            ):
                 issues.append(
                     Issue(
                         severity="warning",

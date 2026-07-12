@@ -45,6 +45,11 @@ cell speech-tts       speech-synthesis
 cell speech-tts-streaming speech-data-pressure
 cell speech-roundtrip-tts speech-roundtrip
 cell speech-stt-realtime realtime-transcription
+cell speech-translation-tts speech-translation
+cell speech-reference-tts speech-reference-conditioning
+cell speech-voice-catalog-tts speech-voice-catalog
+cell speech-stt-realtime streaming-transcription
+cell speech-stt-realtime fabric-speech-chain
 cell vision           vision
 
 # --- AMD / llama.cpp leg (kite4): GGUF coherence + the big models Bug A unlocked ---

@@ -53,13 +53,11 @@ def test_cluster_api_urls_include_local_and_reachable_peers(
                     "nodeId": "local",
                     "url": None,
                     "ok": True,
-                    "diagnostics": {
-                        "identity": {"friendlyName": "local.test"}
-                    },
+                    "diagnostics": {"identity": {"friendlyName": "local.test"}},
                 },
                 {"nodeId": "peer-a", "url": "http://peer-a.test/", "ok": True},
                 {"nodeId": "peer-b", "url": "http://peer-b.test", "ok": False},
-            ]
+            ],
         },
     )
     monkeypatch.setattr(client, "_api_url_reachable", lambda _url: True)
@@ -94,7 +92,7 @@ def test_cluster_api_urls_prefers_controller_reachable_node_identity(
                         },
                     },
                 }
-            ]
+            ],
         },
     )
     attempted: list[str] = []
@@ -312,9 +310,7 @@ def test_audio_speech_streams_bytes_and_records_chunk_timings(
     client = SkulkClient("http://skulk.test")
     seen: dict[str, object] = {}
     times = iter([100.0, 100.2, 100.6, 101.0])
-    monkeypatch.setattr(
-        "skulk_test_harness.client.time.monotonic", lambda: next(times)
-    )
+    monkeypatch.setattr("skulk_test_harness.client.time.monotonic", lambda: next(times))
 
     class _Stream:
         status_code = 200
@@ -372,15 +368,69 @@ def test_audio_speech_streams_bytes_and_records_chunk_timings(
     assert execution.streaming is True
 
 
+def test_audio_speech_posts_reference_audio_as_multipart(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = SkulkClient("http://skulk.test")
+    seen: dict[str, object] = {}
+    reference = b"RIFF-reference"
+
+    def post(path: str, **kwargs: object) -> httpx.Response:
+        seen.update(path=path, **kwargs)
+        return httpx.Response(
+            200,
+            content=b"RIFF\x24\x00\x00\x00WAVEfmt " + (b"\x00" * 2048),
+            headers={"content-type": "audio/wav"},
+        )
+
+    monkeypatch.setattr(client._client, "post", post)
+    try:
+        client.audio_speech(
+            model_id="org/QwenBase",
+            input_text="conditioned output",
+            reference_audio=reference,
+            reference_text="reference words",
+        )
+    finally:
+        client.close()
+
+    assert "json" not in seen
+    assert seen["data"] == {
+        "model": "org/QwenBase",
+        "input": "conditioned output",
+        "response_format": "wav",
+        "reference_text": "reference words",
+    }
+    assert seen["files"] == {
+        "reference_audio": ("reference.wav", reference, "audio/wav")
+    }
+
+
+def test_audio_voices_returns_strict_voice_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = SkulkClient("http://skulk.test")
+    monkeypatch.setattr(
+        client,
+        "_request_json",
+        lambda *_args, **_kwargs: {
+            "object": "list",
+            "data": [{"id": "ryan"}, {"id": "aiden"}],
+        },
+    )
+    try:
+        assert client.audio_voices("org/TTS") == ["ryan", "aiden"]
+    finally:
+        client.close()
+
+
 def test_audio_speech_can_intentionally_delay_stream_reads(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = SkulkClient("http://skulk.test")
     delays: list[float] = []
     times = iter([100.0, 100.2, 100.7, 101.2])
-    monkeypatch.setattr(
-        "skulk_test_harness.client.time.monotonic", lambda: next(times)
-    )
+    monkeypatch.setattr("skulk_test_harness.client.time.monotonic", lambda: next(times))
 
     class _Stream:
         status_code = 200
@@ -525,6 +575,45 @@ def test_audio_transcription_wraps_transport_failures(
     assert "RemoteProtocolError: server disconnected" in exc_info.value.body
 
 
+def test_audio_translation_posts_multipart_to_translation_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = SkulkClient("http://skulk.test")
+    seen: dict[str, object] = {}
+
+    def post(path: str, **kwargs: object) -> httpx.Response:
+        seen["path"] = path
+        seen["data"] = kwargs["data"]
+        seen["files"] = kwargs["files"]
+        return httpx.Response(
+            200,
+            json={"text": "hello project"},
+            headers={"content-type": "application/json"},
+        )
+
+    monkeypatch.setattr(client._client, "post", post)
+    try:
+        execution = client.audio_translation(
+            model_id="org/Canary",
+            audio=b"RIFF....WAVE",
+            filename="french.wav",
+            media_type="audio/wav",
+            response_format="json",
+            language="fr",
+        )
+    finally:
+        client.close()
+
+    assert seen["path"] == "/v1/audio/translations"
+    assert seen["data"] == {
+        "model": "org/Canary",
+        "response_format": "json",
+        "language": "fr",
+    }
+    assert seen["files"] == {"file": ("french.wav", b"RIFF....WAVE", "audio/wav")}
+    assert execution.text == "hello project"
+
+
 def test_audio_transcription_extracts_ndjson_text(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -550,6 +639,78 @@ def test_audio_transcription_extracts_ndjson_text(
         client.close()
 
     assert execution.text == "hello world"
+
+
+def test_streaming_audio_transcription_records_typed_sse_lifecycle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = SkulkClient("http://skulk.test")
+    seen: dict[str, object] = {}
+    times = iter([100.0, 100.1, 100.2, 100.3, 100.4, 100.5])
+    monkeypatch.setattr(
+        "skulk_test_harness.client.time.monotonic", lambda: next(times)
+    )
+
+    class _Stream:
+        status_code = 200
+        headers = {"content-type": "text/event-stream"}
+
+        def __enter__(self) -> "_Stream":
+            return self
+
+        def __exit__(self, *_exc: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return b""
+
+        def iter_lines(self):
+            yield ': keep-alive'
+            yield 'data: {"type":"transcription.delta","delta":"hello "}'
+            yield 'data: {"type":"transcription.delta","delta":"world"}'
+            yield 'data: {"type":"transcription.completed","text":"hello world"}'
+            yield 'data: {"type":"transcription.usage","input_bytes":5}'
+
+    def stream(method: str, path: str, **kwargs: object) -> _Stream:
+        seen["method"] = method
+        seen["path"] = path
+        seen["data"] = kwargs["data"]
+        seen["files"] = kwargs["files"]
+        return _Stream()
+
+    monkeypatch.setattr(client._client, "stream", stream)
+    try:
+        execution = client.streaming_audio_transcription(
+            model_id="org/STT",
+            audio=b"audio",
+            filename="sample.wav",
+            media_type="audio/wav",
+            language="en",
+            prompt="hint",
+        )
+    finally:
+        client.close()
+
+    assert seen == {
+        "method": "POST",
+        "path": "/v1/audio/transcriptions",
+        "data": {
+            "model": "org/STT",
+            "stream": "true",
+            "language": "en",
+            "prompt": "hint",
+        },
+        "files": {"file": ("sample.wav", b"audio", "audio/wav")},
+    }
+    assert execution.text == "hello world"
+    assert execution.first_transcript_s == pytest.approx(0.1)
+    assert execution.transcript_deltas == 2
+    assert execution.event_types[-2:] == [
+        "transcription.completed",
+        "transcription.usage",
+    ]
+    assert execution.event_arrival_s == pytest.approx([0.1, 0.2, 0.3, 0.4])
+    assert execution.elapsed_s == pytest.approx(0.5)
 
 
 def test_realtime_transcription_maps_pcm_to_websocket_protocol(
@@ -608,8 +769,80 @@ def test_realtime_transcription_maps_pcm_to_websocket_protocol(
         for payload in payloads
         if payload["type"] == "input_audio_buffer.append"
     ]
-    assert b"".join(base64.b64decode(payload["audio"]) for payload in append_payloads) == pcm16
+    assert (
+        b"".join(base64.b64decode(payload["audio"]) for payload in append_payloads)
+        == pcm16
+    )
     assert payloads[-1] == {"type": "input_audio_buffer.commit"}
+
+
+def test_fabric_speech_chain_collects_transcript_text_and_audio(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The explicit Fabric endpoint must complete the full speech composition."""
+
+    socket = _FakeWebSocket(
+        [
+            {"type": "session.created", "session": {"type": "transcription"}},
+            {"type": "session.updated"},
+            {"type": "input_audio_buffer.committed"},
+            {
+                "type": "conversation.item.input_audio_transcription.completed",
+                "transcript": "hello world",
+            },
+            {"type": "response.created"},
+            {"type": "response.output_text.delta", "delta": "hello "},
+            {"type": "response.output_text.done", "text": "hello back"},
+            {
+                "type": "response.audio.delta",
+                "delta": base64.b64encode(b"audio-one").decode("ascii"),
+            },
+            {
+                "type": "response.audio.delta",
+                "delta": base64.b64encode(b"audio-two").decode("ascii"),
+            },
+            {"type": "response.audio.done"},
+            {"type": "response.done", "response": {"status": "completed"}},
+        ]
+    )
+    connected: dict[str, object] = {}
+
+    def connect(url: str, **_kwargs: object) -> _FakeWebSocket:
+        connected["url"] = url
+        return socket
+
+    monkeypatch.setattr(client_module.websocket_client, "connect", connect)
+    client = SkulkClient("https://skulk.test:52415")
+    try:
+        execution = client.realtime_transcription(
+            model_id="org/realtime stt",
+            pcm16=b"\x01\x00" * 160,
+            sample_rate=8_000,
+            frame_duration_ms=20,
+            pace_audio=False,
+            fabric_chain=True,
+            response_model_id="org/chat",
+            response_tts_model_id="org/tts",
+            response_voice="coral",
+        )
+    finally:
+        client.close()
+
+    assert connected["url"] == (
+        "wss://skulk.test:52415/v1/fabric/chains/speech"
+        "?stt_model=org%2Frealtime%20stt"
+    )
+    session = json.loads(socket.sent[0])["session"]
+    assert session["response"] == {
+        "model": "org/chat",
+        "tts_model": "org/tts",
+        "voice": "coral",
+    }
+    assert execution.text == "hello world"
+    assert execution.assistant_text == "hello back"
+    assert execution.response_audio == b"audio-oneaudio-two"
+    assert execution.response_audio_chunks == 2
+    assert execution.response_status == "completed"
 
 
 def test_realtime_transcription_disconnect_probe_closes_without_commit(
