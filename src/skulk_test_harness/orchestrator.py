@@ -2007,13 +2007,17 @@ class HarnessRunner:
             )
         _append_unique_placement(report, tts_placement)
 
-        catalog = client.list_models()
-        response_tts_model_id = test.realtime_response_tts_model_id or tts_model_id
-        response_model_id = test.realtime_response_model_id or _first_chat_model_id(
-            catalog,
-            exclude_model_ids={model_id, tts_model_id, response_tts_model_id},
-        )
+        response_model_id: str | None = None
+        response_tts_model_id: str | None = None
         if test.kind == "fabric_speech_chain":
+            catalog = client.list_models()
+            response_tts_model_id = (
+                test.realtime_response_tts_model_id or tts_model_id
+            )
+            response_model_id = test.realtime_response_model_id or _first_chat_model_id(
+                catalog,
+                exclude_model_ids={model_id, tts_model_id, response_tts_model_id},
+            )
             if response_model_id is None or response_tts_model_id is None:
                 issues.append(
                     Issue(

@@ -1693,7 +1693,11 @@ def test_realtime_transcription_roundtrip_runs_local_remote_and_cancel(
     )
     client = _FakeClient(
         live_placements=[stt_placement, tts_placement],
-        models=[{"id": "org/RealtimeSTT"}, {"id": "org/TTS"}],
+        models=[
+            {"id": "org/RealtimeSTT"},
+            {"id": "org/TTS"},
+            {"id": "org/Chat", "tasks": ["TextGeneration"]},
+        ],
     )
     owner_clients: list[_FakeClient] = []
     cancellation_release_checks: list[int] = []
@@ -1769,6 +1773,8 @@ def test_realtime_transcription_roundtrip_runs_local_remote_and_cancel(
     assert [request["cancel_after_frames"] for request in requests[1:]] == [0, 0]
     assert cancellation_release_checks == [1]
     assert all(request["model_id"] == "org/RealtimeSTT" for request in requests)
+    assert all(request["response_model_id"] is None for request in requests)
+    assert all(request["response_tts_model_id"] is None for request in requests)
     assert result.artifact_path is not None
     assert result.artifact_path.exists()
     metadata_path = result.artifact_path.with_suffix(
