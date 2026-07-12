@@ -752,7 +752,7 @@ def test_foxlight_speech_pressure_closes_data_plane_coverage() -> None:
     )
     assert mixed.speech_owner_topology == "local_remote"
     assert mixed.speech_chat_concurrency == 2
-    assert mixed.speech_chat_model_id == "mlx-community/Qwen3.5-9B-MLX-4bit"
+    assert mixed.speech_chat_model_id == "mlx-community/Qwen3-0.6B-4bit"
 
 
 def test_foxlight_realtime_suite_requires_local_remote_provider_evidence() -> None:

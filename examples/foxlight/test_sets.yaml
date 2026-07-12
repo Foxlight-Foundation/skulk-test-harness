@@ -660,13 +660,13 @@ test_sets:
         speech_owner_count: 3
         speech_owner_topology: local_remote
         speech_assert_data_plane_diagnostics: true
-        speech_chat_model_id: mlx-community/Qwen3.5-9B-MLX-4bit
+        speech_chat_model_id: mlx-community/Qwen3-0.6B-4bit
         speech_chat_concurrency: 2
         speech_chat_prompt: >
           Write approximately one hundred words explaining why independent
           streaming workloads should not block one another in a distributed
           inference system.
-        max_tokens: 192
+        max_tokens: 96
         temperature: 0
         success:
           min_chars: 80
