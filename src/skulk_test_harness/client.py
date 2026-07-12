@@ -662,6 +662,24 @@ class SkulkClient:
         )
         return payload if isinstance(payload, dict) else None
 
+    def audio_voices(self, model_id: str) -> list[str]:
+        """Return stable built-in voice identifiers for a mounted TTS model."""
+
+        payload = self._request_json(
+            "GET", "/v1/audio/voices", params={"model": model_id}
+        )
+        if not isinstance(payload, dict) or payload.get("object") != "list":
+            raise TypeError("Expected /v1/audio/voices to return a list object")
+        data = payload.get("data")
+        if not isinstance(data, list):
+            raise TypeError("Expected /v1/audio/voices data to be a list")
+        voices: list[str] = []
+        for item in data:
+            if not isinstance(item, dict) or not isinstance(item.get("id"), str):
+                raise TypeError("Expected every audio voice to have a string id")
+            voices.append(item["id"])
+        return voices
+
     def get_placement_previews(
         self,
         model_id: str,

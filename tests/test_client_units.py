@@ -370,6 +370,24 @@ def test_audio_speech_posts_reference_audio_as_multipart(
     }
 
 
+def test_audio_voices_returns_strict_voice_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = SkulkClient("http://skulk.test")
+    monkeypatch.setattr(
+        client,
+        "_request_json",
+        lambda *_args, **_kwargs: {
+            "object": "list",
+            "data": [{"id": "ryan"}, {"id": "aiden"}],
+        },
+    )
+    try:
+        assert client.audio_voices("org/TTS") == ["ryan", "aiden"]
+    finally:
+        client.close()
+
+
 def test_audio_speech_can_intentionally_delay_stream_reads(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

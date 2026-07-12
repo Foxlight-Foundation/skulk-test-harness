@@ -683,6 +683,10 @@ class HarnessRunner:
                 artifact_dir=artifact_dir,
                 stream=test.kind == "audio_speech_streaming",
             )
+        if test.kind == "audio_voices":
+            return self._run_audio_voices_test(
+                client, model_id=model_id, test=test, repetition=repetition
+            )
         if test.kind == "audio_speech_pressure":
             return self._run_audio_speech_pressure_test(
                 client,
@@ -1288,6 +1292,65 @@ class HarnessRunner:
             ),
             issues=issues,
             artifact_path=artifact_path,
+        )
+
+    def _run_audio_voices_test(
+        self,
+        client: SkulkClient,
+        *,
+        model_id: str,
+        test: PromptTest,
+        repetition: int,
+    ) -> TestResult:
+        """Require a mounted model's static voice catalog to match expectations."""
+
+        issues: list[Issue] = []
+        voices: list[str] = []
+        started_at = time.monotonic()
+        try:
+            voices = client.audio_voices(model_id)
+            missing = sorted(set(test.expected_voice_ids) - set(voices))
+            if missing:
+                issues.append(
+                    Issue(
+                        severity="error",
+                        model_id=model_id,
+                        test_name=test.name,
+                        message="Voice catalog omitted required identifiers",
+                        evidence={"missing": missing, "actual": voices},
+                    )
+                )
+            if not voices:
+                issues.append(
+                    Issue(
+                        severity="error",
+                        model_id=model_id,
+                        test_name=test.name,
+                        message="Voice catalog was empty",
+                    )
+                )
+        except (SkulkApiError, httpx.HTTPError, TypeError, ValueError) as exc:
+            issues.append(
+                Issue(
+                    severity="error",
+                    model_id=model_id,
+                    test_name=test.name,
+                    message="Voice catalog request failed",
+                    evidence={"error": str(exc)},
+                )
+            )
+        output = f"voices={voices}"
+        return TestResult(
+            model_id=model_id,
+            test_name=test.name,
+            repetition=repetition,
+            passed=not any(issue.severity == "error" for issue in issues),
+            output_text=output,
+            metrics=GenerationMetrics(
+                elapsed_s=time.monotonic() - started_at,
+                output_chars=len(output),
+            ),
+            issues=issues,
         )
 
     def _run_audio_speech_pressure_test(

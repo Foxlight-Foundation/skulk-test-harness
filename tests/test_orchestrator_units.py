@@ -1012,6 +1012,10 @@ class _FakeClient:
             streaming=stream,
         )
 
+    def audio_voices(self, model_id: str) -> list[str]:
+        del model_id
+        return ["ryan", "aiden"]
+
     def audio_transcription(
         self,
         *,
@@ -1319,8 +1323,8 @@ def test_run_test_dispatches_streaming_audio_speech(tmp_path: Path) -> None:
             min_audio_bytes=1024,
             min_stream_chunks=2,
             min_stream_span_s=0.5,
-        ),
-    )
+            ),
+        )
 
     result = runner._run_test(
         client,  # type: ignore[arg-type]
@@ -2159,6 +2163,26 @@ def test_speech_reference_roundtrip_generates_and_conditions_audio(
     ).exists()
     assert result.artifact_path is not None
     assert result.artifact_path.exists()
+
+
+def test_audio_voices_requires_expected_inventory(tmp_path: Path) -> None:
+    client = _FakeClient()
+    result = _runner()._run_test(
+        client,  # type: ignore[arg-type]
+        model_id="org/CustomVoice",
+        test=PromptTest(
+            name="voices",
+            kind="audio_voices",
+            prompt="",
+            expected_voice_ids=["ryan", "aiden"],
+            success=SuccessCriteria(min_chars=0),
+        ),
+        repetition=1,
+        artifact_dir=tmp_path,
+    )
+
+    assert result.passed is True
+    assert "ryan" in result.output_text
 
 
 def test_ensure_model_placed_fast_fails_when_instance_never_appears() -> None:

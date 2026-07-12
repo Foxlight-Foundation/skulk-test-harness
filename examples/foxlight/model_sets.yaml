@@ -149,6 +149,12 @@ model_sets:
     models:
       - mlx-community/Qwen3-TTS-12Hz-0.6B-Base-4bit
 
+  speech-voice-catalog-tts:
+    name: speech-voice-catalog-tts
+    description: TTS target with a qualified static built-in voice inventory.
+    models:
+      - mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-4bit
+
   vision:
     name: vision
     description: Vision-capable text-generation model for image input coverage.

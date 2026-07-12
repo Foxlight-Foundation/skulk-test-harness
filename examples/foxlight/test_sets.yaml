@@ -762,6 +762,34 @@ test_sets:
           min_chars: 0
           min_audio_bytes: 1024
 
+  speech-voice-catalog:
+    name: speech-voice-catalog
+    description: Lists static voices and synthesizes audio with a named voice.
+    tests:
+      - name: qwen-custom-voice-inventory
+        kind: audio_voices
+        prompt: ""
+        expected_voice_ids:
+          - serena
+          - vivian
+          - uncle_fu
+          - ryan
+          - aiden
+          - ono_anna
+          - sohee
+          - eric
+          - dylan
+        success:
+          min_chars: 0
+      - name: qwen-named-voice-synthesis
+        kind: audio_speech
+        prompt: Skulk validates named voice synthesis through the mounted model.
+        speech_voice: ryan
+        audio_response_format: wav
+        success:
+          min_chars: 0
+          min_audio_bytes: 1024
+
   embeddings:
     name: embeddings
     description: >

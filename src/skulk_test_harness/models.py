@@ -27,6 +27,7 @@ TestKind = Literal[
     "audio_speech",
     "audio_speech_streaming",
     "audio_speech_pressure",
+    "audio_voices",
     "audio_transcription",
     "realtime_transcription",
     "speech_roundtrip",
@@ -447,6 +448,13 @@ class PromptTest(HarnessBaseModel):
         description=(
             "Transcript spoken by the donor model for reference conditioning; "
             "defaults to the test prompt."
+        ),
+    )
+    expected_voice_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Voice identifiers required from `GET /v1/audio/voices` for "
+            "`kind: audio_voices`."
         ),
     )
     speech_streaming_interval: float | None = Field(
