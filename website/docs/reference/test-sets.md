@@ -42,6 +42,7 @@ Each map key must match the test set's `name`.
 | `audio_transcription` | Speech-to-text endpoint behavior with an audio fixture |
 | `audio_transcription_streaming` | Uploaded-audio SSE transcript deltas, terminal lifecycle, early-close cancellation, and saved input/timeline artifacts |
 | `realtime_transcription` | Semantic TTS-to-realtime-STT WebSocket roundtrip, disconnect recovery, local/remote ownership, and provider diagnostics |
+| `fabric_speech_chain` | Explicit Fabric STT-to-chat-to-TTS composition with transcript, assistant text, response audio, cancellation, local/remote ownership, and provider diagnostics |
 | `speech_roundtrip` | TTS output saved as an artifact and piped into a mounted STT model |
 
 ## Prompt Test Fields
@@ -89,6 +90,8 @@ Each map key must match the test set's `name`.
 | `input_audio_mime_type` | Optional MIME type for transcription fixture upload; inferred from the fixture extension when omitted |
 | `transcription_model_id` | Optional STT model used by `kind: speech_roundtrip` |
 | `speech_synthesis_model_id` | Optional TTS fixture model used by realtime or uploaded-audio streaming transcription |
+| `realtime_response_model_id` | Mounted chat participant required by `kind: fabric_speech_chain` |
+| `realtime_response_tts_model_id` | Mounted response TTS participant required by `kind: fabric_speech_chain` |
 | `transcription_response_format` | STT response format, such as `json` or `text` |
 | `transcription_language` | Optional STT language hint |
 | `transcription_cancel_after_deltas` | Close a secondary uploaded-audio stream after this many transcript deltas; zero disables the probe |

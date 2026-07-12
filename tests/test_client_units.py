@@ -648,6 +648,75 @@ def test_realtime_transcription_maps_pcm_to_websocket_protocol(
     assert payloads[-1] == {"type": "input_audio_buffer.commit"}
 
 
+def test_fabric_speech_chain_collects_transcript_text_and_audio(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The explicit Fabric endpoint must complete the full speech composition."""
+
+    socket = _FakeWebSocket(
+        [
+            {"type": "session.created", "session": {"type": "transcription"}},
+            {"type": "session.updated"},
+            {"type": "input_audio_buffer.committed"},
+            {
+                "type": "conversation.item.input_audio_transcription.completed",
+                "transcript": "hello world",
+            },
+            {"type": "response.created"},
+            {"type": "response.output_text.delta", "delta": "hello "},
+            {"type": "response.output_text.done", "text": "hello back"},
+            {
+                "type": "response.audio.delta",
+                "delta": base64.b64encode(b"audio-one").decode("ascii"),
+            },
+            {
+                "type": "response.audio.delta",
+                "delta": base64.b64encode(b"audio-two").decode("ascii"),
+            },
+            {"type": "response.audio.done"},
+            {"type": "response.done", "response": {"status": "completed"}},
+        ]
+    )
+    connected: dict[str, object] = {}
+
+    def connect(url: str, **_kwargs: object) -> _FakeWebSocket:
+        connected["url"] = url
+        return socket
+
+    monkeypatch.setattr(client_module.websocket_client, "connect", connect)
+    client = SkulkClient("https://skulk.test:52415")
+    try:
+        execution = client.realtime_transcription(
+            model_id="org/realtime stt",
+            pcm16=b"\x01\x00" * 160,
+            sample_rate=8_000,
+            frame_duration_ms=20,
+            pace_audio=False,
+            fabric_chain=True,
+            response_model_id="org/chat",
+            response_tts_model_id="org/tts",
+            response_voice="coral",
+        )
+    finally:
+        client.close()
+
+    assert connected["url"] == (
+        "wss://skulk.test:52415/v1/fabric/chains/speech"
+        "?stt_model=org%2Frealtime%20stt"
+    )
+    session = json.loads(socket.sent[0])["session"]
+    assert session["response"] == {
+        "model": "org/chat",
+        "tts_model": "org/tts",
+        "voice": "coral",
+    }
+    assert execution.text == "hello world"
+    assert execution.assistant_text == "hello back"
+    assert execution.response_audio == b"audio-oneaudio-two"
+    assert execution.response_audio_chunks == 2
+    assert execution.response_status == "completed"
+
+
 def test_realtime_transcription_disconnect_probe_closes_without_commit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

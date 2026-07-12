@@ -30,6 +30,7 @@ TestKind = Literal[
     "audio_transcription",
     "audio_transcription_streaming",
     "realtime_transcription",
+    "fabric_speech_chain",
     "speech_roundtrip",
 ]
 RunMode = Literal["plan", "execute"]
@@ -536,6 +537,20 @@ class PromptTest(HarnessBaseModel):
             "For `kind: realtime_transcription`, optional TTS model used to "
             "generate the semantic PCM16 fixture. When unset, the harness "
             "selects the first live catalog model advertising TTS support."
+        ),
+    )
+    realtime_response_model_id: str | None = Field(
+        default=None,
+        description=(
+            "For `kind: fabric_speech_chain`, mounted chat participant that "
+            "receives the final transcript."
+        ),
+    )
+    realtime_response_tts_model_id: str | None = Field(
+        default=None,
+        description=(
+            "For `kind: fabric_speech_chain`, mounted TTS participant that "
+            "speaks the assistant response."
         ),
     )
     realtime_frame_duration_ms: int = Field(
