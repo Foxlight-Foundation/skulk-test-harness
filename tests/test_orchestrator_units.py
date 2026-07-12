@@ -46,6 +46,7 @@ from skulk_test_harness.orchestrator import (
     _catalog_entry_supports_realtime_audio,
     _clear_deferred_placement_issues,
     _first_stt_model_id,
+    _first_translation_model_id,
     _messages_for_test,
     _pcm16_from_wav,
     _placement_from_preview,
@@ -596,6 +597,23 @@ def test_first_stt_model_id_reads_speech_metadata() -> None:
     assert _first_stt_model_id(catalog, exclude_model_id="org/ResolvedSTT") == (
         "org/TaggedSTT"
     )
+
+
+def test_first_translation_model_id_skips_transcription_only_entries() -> None:
+    catalog = [
+        {
+            "id": "org/TranscriptionOnly",
+            "resolved_capabilities": {"supports_transcription": True},
+        },
+        {
+            "id": "org/Canary",
+            "audio": {"kind": "stt", "supports_translation": True},
+        },
+    ]
+
+    assert _first_translation_model_id(
+        catalog, exclude_model_id="org/TTS"
+    ) == "org/Canary"
 
 
 def test_realtime_audio_selector_requires_truthful_streaming_metadata() -> None:

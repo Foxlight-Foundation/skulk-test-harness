@@ -2378,9 +2378,17 @@ class HarnessRunner:
         transcription_model_id: str | None = None
         stt_placement: PlacementResult | None = None
         try:
-            transcription_model_id = test.transcription_model_id or _first_stt_model_id(
-                client.list_models(), exclude_model_id=model_id
-            )
+            transcription_model_id = test.transcription_model_id
+            if transcription_model_id is None:
+                transcription_model_id = (
+                    _first_translation_model_id(
+                        client.list_models(), exclude_model_id=model_id
+                    )
+                    if translate_to_english
+                    else _first_stt_model_id(
+                        client.list_models(), exclude_model_id=model_id
+                    )
+                )
             if transcription_model_id is None:
                 issues.append(
                     Issue(
@@ -2936,6 +2944,20 @@ def _first_stt_model_id(
     return None
 
 
+def _first_translation_model_id(
+    catalog: list[dict[str, object]], *, exclude_model_id: str
+) -> str | None:
+    """Pick the first catalog model explicitly advertising speech translation."""
+
+    for model in catalog:
+        model_id = _model_id_from_catalog_entry(model)
+        if not model_id or model_id == exclude_model_id:
+            continue
+        if _catalog_entry_supports_translation(model):
+            return model_id
+    return None
+
+
 def _first_tts_model_id(
     catalog: list[dict[str, object]], *, exclude_model_id: str
 ) -> str | None:
@@ -2986,6 +3008,20 @@ def _catalog_entry_supports_stt(model: dict[str, object]) -> bool:
         or _has_any_capability(model, ["stt"])
         or _has_any(model.get("tasks"), ["SpeechToText", "SpeechTranslation"])
     )
+
+
+def _catalog_entry_supports_translation(model: dict[str, object]) -> bool:
+    """Return whether a `/models` entry explicitly supports speech translation."""
+
+    resolved = model.get("resolved_capabilities")
+    if isinstance(resolved, dict) and bool(
+        resolved.get("supports_speech_translation")
+    ):
+        return True
+    audio = model.get("audio")
+    if isinstance(audio, dict) and audio.get("supports_translation") is True:
+        return True
+    return _has_any(model.get("tasks"), ["SpeechTranslation"])
 
 
 def _catalog_entry_supports_streaming_audio(model: dict[str, object]) -> bool:
