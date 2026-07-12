@@ -723,6 +723,28 @@ test_sets:
             # transport suite into a first-token accuracy benchmark.
             - battery
 
+  streaming-transcription:
+    name: streaming-transcription
+    description: >
+      Uploaded-audio STT streaming coverage. Generates a semantic WAV through a
+      store-backed TTS model, requires multiple model-produced SSE deltas plus
+      completed and usage terminals, probes early-close cancellation, and saves
+      the input audio and complete event timeline.
+    tests:
+      - name: streaming-stt-sse-and-cancel
+        kind: audio_transcription_streaming
+        prompt: Hello world from the Skulk streaming transcription battery.
+        speech_synthesis_model_id: mlx-community/LongCat-AudioDiT-1B-4bit
+        audio_response_format: wav
+        transcription_language: en
+        transcription_cancel_after_deltas: 1
+        success:
+          min_chars: 5
+          min_audio_bytes: 1024
+          min_transcript_deltas: 2
+          required_substrings:
+            - battery
+
   fabric-speech-chain:
     name: fabric-speech-chain
     description: >-

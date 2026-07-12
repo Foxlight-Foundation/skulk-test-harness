@@ -25,6 +25,7 @@ from skulk_test_harness.client import (
     RealtimeTranscriptionExecution,
     SkulkApiError,
     SkulkClient,
+    StreamingAudioTranscriptionExecution,
 )
 from skulk_test_harness.fingerprint import gather_fingerprint
 from skulk_test_harness.models import (
@@ -691,6 +692,17 @@ class HarnessRunner:
         if test.kind == "audio_transcription":
             return self._run_audio_transcription_test(
                 client, model_id=model_id, test=test, repetition=repetition
+            )
+        if test.kind == "audio_transcription_streaming":
+            return self._run_streaming_audio_transcription_test(
+                client,
+                model_id=model_id,
+                test=test,
+                repetition=repetition,
+                artifact_dir=artifact_dir,
+                spec=spec,
+                report=report,
+                writer=writer,
             )
         if test.kind in {"realtime_transcription", "fabric_speech_chain"}:
             return self._run_realtime_transcription_test(
@@ -1843,6 +1855,258 @@ class HarnessRunner:
                 generated_chars=len(output),
             ),
             issues=issues,
+        )
+
+    def _run_streaming_audio_transcription_test(
+        self,
+        client: SkulkClient,
+        *,
+        model_id: str,
+        test: PromptTest,
+        repetition: int,
+        artifact_dir: Path,
+        spec: RunSpec | None,
+        report: RunReport | None,
+        writer: ReportWriter | None,
+    ) -> TestResult:
+        """Run complete and early-close uploaded-audio transcription streams."""
+
+        issues: list[Issue] = []
+        execution: StreamingAudioTranscriptionExecution | None = None
+        cancellation: StreamingAudioTranscriptionExecution | None = None
+        artifact_path: Path | None = None
+        fixture_artifact_path: Path | None = None
+        secondary_placement: tuple[str, PlacementResult] | None = None
+        audio: bytes | None = None
+        filename = "streaming-transcription.wav"
+        media_type = "audio/wav"
+        if test.input_audio_path is not None:
+            audio_path = _resolve_audio_input_path(test.input_audio_path)
+            try:
+                audio = audio_path.read_bytes()
+                filename = audio_path.name
+                media_type = test.input_audio_mime_type or _guess_audio_media_type(audio_path)
+            except OSError as exc:
+                issues.append(
+                    Issue(
+                        severity="error",
+                        model_id=model_id,
+                        test_name=test.name,
+                        message="Streaming transcription fixture could not be read",
+                        evidence={"error": str(exc)},
+                    )
+                )
+        elif spec is None or report is None:
+            issues.append(
+                Issue(
+                    severity="error",
+                    model_id=model_id,
+                    test_name=test.name,
+                    message=(
+                        "audio_transcription_streaming requires an input fixture "
+                        "or execution RunSpec/report"
+                    ),
+                )
+            )
+        else:
+            tts_model_id = test.speech_synthesis_model_id or _first_tts_model_id(
+                client.list_models(), exclude_model_id=model_id
+            )
+            if tts_model_id is None:
+                issues.append(
+                    Issue(
+                        severity="error",
+                        model_id=model_id,
+                        test_name=test.name,
+                        message="No TTS model found for streaming STT fixture",
+                    )
+                )
+            else:
+                try:
+                    placement = self._ensure_model_placed(
+                        client, tts_model_id, spec, report
+                    )
+                    if placement is None or not placement.ready:
+                        raise ValueError("TTS fixture model did not become ready")
+                    secondary_placement = (tts_model_id, placement)
+                    _append_unique_placement(report, placement)
+                    speech = client.audio_speech(
+                        model_id=tts_model_id,
+                        input_text=_expanded_prompt(test),
+                        response_format="wav",
+                        voice=test.speech_voice,
+                        speed=test.speech_speed,
+                    )
+                    audio = speech.audio
+                    issues.extend(
+                        _score_audio_output(
+                            tts_model_id,
+                            test.name,
+                            audio,
+                            test.success,
+                            response_format="wav",
+                            media_type=speech.media_type,
+                        )
+                    )
+                    fixture_artifact_path = _audio_artifact_path(
+                        artifact_dir,
+                        model_id,
+                        f"{test.name}-input",
+                        repetition,
+                        "wav",
+                        audio,
+                    )
+                except (
+                    OSError,
+                    SkulkApiError,
+                    httpx.HTTPError,
+                    TypeError,
+                    ValueError,
+                ) as exc:
+                    issues.append(
+                        Issue(
+                            severity="error",
+                            model_id=model_id,
+                            test_name=test.name,
+                            message="Streaming transcription fixture generation failed",
+                            evidence={"error": str(exc)},
+                        )
+                    )
+
+        if audio is not None:
+            try:
+                if test.transcription_cancel_after_deltas > 0:
+                    cancellation = client.streaming_audio_transcription(
+                        model_id=model_id,
+                        audio=audio,
+                        filename=filename,
+                        media_type=media_type,
+                        language=test.transcription_language,
+                        prompt=test.prompt,
+                        cancel_after_deltas=test.transcription_cancel_after_deltas,
+                    )
+                    if not cancellation.canceled:
+                        raise ValueError("stream cancellation probe reached no delta")
+                execution = client.streaming_audio_transcription(
+                    model_id=model_id,
+                    audio=audio,
+                    filename=filename,
+                    media_type=media_type,
+                    language=test.transcription_language,
+                    prompt=test.prompt,
+                )
+            except (OSError, SkulkApiError, httpx.HTTPError, TypeError, ValueError) as exc:
+                issues.append(
+                    Issue(
+                        severity="error",
+                        model_id=model_id,
+                        test_name=test.name,
+                        message="Streaming audio transcription request failed",
+                        evidence={"error": str(exc)},
+                    )
+                )
+            else:
+                issues.extend(
+                    _score_output(model_id, test.name, execution.text, test.success)
+                )
+                if execution.transcript_deltas < test.success.min_transcript_deltas:
+                    issues.append(
+                        Issue(
+                            severity="error",
+                            model_id=model_id,
+                            test_name=test.name,
+                            message="Streaming transcription emitted too few deltas",
+                            evidence={
+                                "actual": execution.transcript_deltas,
+                                "minimum": test.success.min_transcript_deltas,
+                            },
+                        )
+                    )
+                required_terminals = {
+                    "transcription.completed",
+                    "transcription.usage",
+                }
+                missing = sorted(required_terminals - set(execution.event_types))
+                if missing:
+                    issues.append(
+                        Issue(
+                            severity="error",
+                            model_id=model_id,
+                            test_name=test.name,
+                            message="Streaming transcription omitted terminal events",
+                            evidence={"missing": missing},
+                        )
+                    )
+                timeline = {
+                    "model_id": model_id,
+                    "input_bytes": execution.input_bytes,
+                    "text": execution.text,
+                    "first_transcript_s": execution.first_transcript_s,
+                    "elapsed_s": execution.elapsed_s,
+                    "event_arrival_s": execution.event_arrival_s,
+                    "events": execution.events,
+                    "input_audio_artifact": (
+                        None
+                        if fixture_artifact_path is None
+                        else str(fixture_artifact_path)
+                    ),
+                    "cancellation_probe": (
+                        None
+                        if cancellation is None
+                        else {
+                            "elapsed_s": cancellation.elapsed_s,
+                            "event_arrival_s": cancellation.event_arrival_s,
+                            "events": cancellation.events,
+                            "canceled": cancellation.canceled,
+                        }
+                    ),
+                }
+                artifact_path = maybe_write_artifact(
+                    artifact_dir,
+                    (
+                        f"{slugify(model_id)}--{slugify(test.name)}--"
+                        f"rep-{repetition}.json"
+                    ),
+                    json.dumps(timeline, indent=2, sort_keys=True),
+                )
+        if (
+            secondary_placement is not None
+            and spec is not None
+            and report is not None
+            and not spec.retain_instances
+        ):
+            secondary_model_id, placement = secondary_placement
+            if secondary_model_id != model_id and placement.created_by_harness:
+                torn_down = self._teardown_harness_instances(
+                    client,
+                    secondary_model_id,
+                    placement.instance_id,
+                    report,
+                )
+                if spec.delete_staged_models and torn_down:
+                    self._evict_staged_model(client, secondary_model_id, report)
+                if writer is not None:
+                    writer.write(report)
+        output = execution.text if execution is not None else ""
+        return TestResult(
+            model_id=model_id,
+            test_name=test.name,
+            repetition=repetition,
+            passed=not any(issue.severity == "error" for issue in issues),
+            output_text=output,
+            metrics=GenerationMetrics(
+                elapsed_s=execution.elapsed_s if execution is not None else 0.0,
+                ttft_s=(
+                    execution.first_transcript_s if execution is not None else None
+                ),
+                output_chars=len(output),
+                generated_chars=len(output),
+                chunks=(
+                    execution.transcript_deltas if execution is not None else 0
+                ),
+            ),
+            issues=issues,
+            artifact_path=artifact_path,
         )
 
     def _run_realtime_transcription_test(
