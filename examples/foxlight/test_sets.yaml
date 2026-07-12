@@ -718,7 +718,10 @@ test_sets:
           min_audio_bytes: 1024
           min_transcript_deltas: 1
           required_substrings:
-            - hello
+            # Voxtral's realtime window can omit the first spoken word. Anchor
+            # semantic validation later in the fixture instead of turning this
+            # transport suite into a first-token accuracy benchmark.
+            - battery
 
   embeddings:
     name: embeddings
