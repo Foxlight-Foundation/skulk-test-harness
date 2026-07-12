@@ -790,6 +790,56 @@ test_sets:
           min_chars: 0
           min_audio_bytes: 1024
 
+  streaming-transcription:
+    name: streaming-transcription
+    description: >
+      Uploaded-audio STT streaming coverage. Generates a semantic WAV through a
+      store-backed TTS model, requires multiple model-produced SSE deltas plus
+      completed and usage terminals, probes early-close cancellation, and saves
+      the input audio and complete event timeline.
+    tests:
+      - name: streaming-stt-sse-and-cancel
+        kind: audio_transcription_streaming
+        prompt: Hello world from the Skulk streaming transcription battery.
+        speech_synthesis_model_id: mlx-community/LongCat-AudioDiT-1B-4bit
+        audio_response_format: wav
+        transcription_language: en
+        transcription_cancel_after_deltas: 1
+        success:
+          min_chars: 5
+          min_audio_bytes: 1024
+          min_transcript_deltas: 2
+          required_substrings:
+            - battery
+
+  fabric-speech-chain:
+    name: fabric-speech-chain
+    description: >-
+      Typed Fabric composition coverage. Generates a semantic speech fixture,
+      submits it through /v1/fabric/chains/speech, and requires mounted STT,
+      chat, and TTS participants to return a final transcript, assistant text,
+      progressive response audio, and a completed terminal event.
+    tests:
+      - name: fabric-stt-chat-tts-local-remote
+        kind: fabric_speech_chain
+        prompt: Hello world from the Skulk realtime speech battery.
+        audio_response_format: wav
+        speech_synthesis_model_id: mlx-community/LongCat-AudioDiT-1B-4bit
+        realtime_response_model_id: mlx-community/Qwen3.5-9B-MLX-4bit
+        realtime_response_tts_model_id: mlx-community/LongCat-AudioDiT-1B-4bit
+        speech_owner_count: 2
+        speech_owner_topology: local_remote
+        realtime_frame_duration_ms: 100
+        realtime_pace_audio: true
+        realtime_cancel_after_frames: 3
+        realtime_assert_provider_diagnostics: true
+        success:
+          min_chars: 5
+          min_audio_bytes: 1024
+          min_transcript_deltas: 1
+          required_substrings:
+            - battery
+
   embeddings:
     name: embeddings
     description: >

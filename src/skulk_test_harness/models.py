@@ -29,7 +29,9 @@ TestKind = Literal[
     "audio_speech_pressure",
     "audio_voices",
     "audio_transcription",
+    "audio_transcription_streaming",
     "realtime_transcription",
+    "fabric_speech_chain",
     "speech_roundtrip",
     "speech_translation_roundtrip",
     "speech_reference_roundtrip",
@@ -562,6 +564,20 @@ class PromptTest(HarnessBaseModel):
             "selects the first live catalog model advertising TTS support."
         ),
     )
+    realtime_response_model_id: str | None = Field(
+        default=None,
+        description=(
+            "For `kind: fabric_speech_chain`, mounted chat participant that "
+            "receives the final transcript."
+        ),
+    )
+    realtime_response_tts_model_id: str | None = Field(
+        default=None,
+        description=(
+            "For `kind: fabric_speech_chain`, mounted TTS participant that "
+            "speaks the assistant response."
+        ),
+    )
     realtime_frame_duration_ms: int = Field(
         default=100,
         ge=20,
@@ -599,6 +615,14 @@ class PromptTest(HarnessBaseModel):
     transcription_language: str | None = Field(
         default=None,
         description="Optional language hint for transcription requests.",
+    )
+    transcription_cancel_after_deltas: int = Field(
+        default=1,
+        ge=0,
+        description=(
+            "For streaming audio transcription, close a secondary probe after "
+            "this many transcript deltas. Zero disables the cancellation probe."
+        ),
     )
     top_logprobs: int | None = Field(
         default=None,
