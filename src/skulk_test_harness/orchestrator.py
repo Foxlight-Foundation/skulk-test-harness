@@ -2558,6 +2558,8 @@ class HarnessRunner:
                         response_model_id=response_model_id,
                         response_tts_model_id=response_tts_model_id,
                         response_voice=test.speech_voice,
+                        response_max_output_tokens=test.max_tokens,
+                        response_enable_thinking=test.enable_thinking,
                         server_vad=(
                             test.realtime_server_vad
                             or test.kind == "realtime_conversation"
@@ -2597,6 +2599,8 @@ class HarnessRunner:
                         response_model_id=response_model_id,
                         response_tts_model_id=response_tts_model_id,
                         response_voice=test.speech_voice,
+                        response_max_output_tokens=test.max_tokens,
+                        response_enable_thinking=test.enable_thinking,
                         server_vad=(
                             test.realtime_server_vad
                             or test.kind == "realtime_conversation"
@@ -2815,6 +2819,8 @@ class HarnessRunner:
         response_model_id: str | None = None,
         response_tts_model_id: str | None = None,
         response_voice: str | None = None,
+        response_max_output_tokens: int | None = None,
+        response_enable_thinking: bool | None = None,
         server_vad: bool = False,
         turn_count: int = 1,
         barge_in: bool = False,
@@ -2834,6 +2840,8 @@ class HarnessRunner:
                     response_model_id=response_model_id,
                     response_tts_model_id=response_tts_model_id,
                     response_voice=response_voice,
+                    response_max_output_tokens=response_max_output_tokens,
+                    response_enable_thinking=response_enable_thinking,
                     server_vad=server_vad,
                     turn_count=turn_count,
                     barge_in=barge_in,
