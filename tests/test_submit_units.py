@@ -15,10 +15,13 @@ def _raw_report() -> dict:
     return {
         "run_id": "20260710-120000-suite-set",
         "spec": {"model_set": "m", "test_set": "t", "mode": "run", "run_name": "my-secret-box"},
+        "test_set_description": "ACME internal suite for customer X",
         "results": [
             {
                 "model_id": "org/model",
                 "test_name": "t1",
+                "kind": "chat",
+                "description": "checks the ACME private behaviour",
                 "repetition": 0,
                 "passed": True,
                 "output_text": "PRIVATE GENERATED TEXT",
@@ -67,11 +70,15 @@ def test_slim_and_redact_strips_text_and_identity_keeps_attribution_facts() -> N
     payload = submit.slim_and_redact_report(_raw_report())
 
     result = payload["results"][0]
-    for gone in ("output_text", "reasoning_text", "tool_calls", "artifact_path"):
+    for gone in ("output_text", "reasoning_text", "tool_calls", "artifact_path", "description"):
         assert gone not in result
     # Metrics and pass/fail survive: they ARE the submission.
     assert result["metrics"]["skulk_generation_tps"] == 40.0
     assert result["passed"] is True
+    # Free-form suite/test prose can carry private context on a custom suite and
+    # is dropped; the enum kind is safe harness vocabulary and stays.
+    assert "test_set_description" not in payload
+    assert result["kind"] == "chat"
 
     fp = payload["fingerprint"]
     assert "operator_note" not in fp["source_context"]

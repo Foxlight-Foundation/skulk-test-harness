@@ -28,8 +28,16 @@ from skulk_test_harness.utils import slugify
 
 DEFAULT_INGEST_URL = "https://skulk-ledger-ingest.thomastupper92618.workers.dev"
 
-#: Per-result fields that never leave the machine (generated text + local paths).
-_RESULT_STRIP_FIELDS = ("output_text", "reasoning_text", "tool_calls", "artifact_path")
+#: Per-result fields that never leave the machine (generated text, local paths,
+#: and the free-form per-test ``description``, which on a custom suite can carry
+#: lab/customer context). The enum ``kind`` is safe harness vocabulary and stays.
+_RESULT_STRIP_FIELDS = (
+    "output_text",
+    "reasoning_text",
+    "tool_calls",
+    "artifact_path",
+    "description",
+)
 
 
 class SubmitError(RuntimeError):
@@ -81,6 +89,12 @@ def slim_and_redact_report(raw: dict[str, Any]) -> dict[str, Any]:
     spec = report.get("spec")
     if isinstance(spec, dict):
         spec.pop("run_name", None)
+
+    # Free-form suite prose is safe for the first-party public suites but can
+    # carry private context on a custom suite; it is not part of the kept
+    # submission payload (metrics, pass/fail, spec names, hardware), so drop it.
+    # A community run then falls back to the ledger's own public suite catalog.
+    report.pop("test_set_description", None)
 
     _redact_run_id(report)
 
