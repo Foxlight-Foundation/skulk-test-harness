@@ -1059,3 +1059,56 @@ def test_resolve_node_ids_raises_on_unknown(
             client.resolve_node_ids(["kite9"])
     finally:
         client.close()
+
+
+def test_streaming_chat_parses_generation_stats_comment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Engine stats ride the final chunk as an SSE comment; streamed tests
+    must surface them as skulk_* metrics (previously null on every engine)."""
+
+    lines = [
+        ": command_id abc-123",
+        'data: {"choices": [{"delta": {"content": "hello"}}]}',
+        ': generation_stats {"prompt_tps": 187.4, "generation_tps": 182.7,'
+        ' "prompt_tokens": 17, "generation_tokens": 120,'
+        ' "peak_memory_usage": {"inBytes": 1}}',
+        'data: {"choices": [{"delta": {}, "finish_reason": "stop"}]}',
+        "data: [DONE]",
+    ]
+
+    class _FakeStreamResponse:
+        status_code = 200
+
+        def iter_lines(self):
+            yield from lines
+
+        def read(self):
+            return b""
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return None
+
+    client = SkulkClient("http://skulk.test")
+    monkeypatch.setattr(
+        client._client, "stream", lambda *a, **k: _FakeStreamResponse()
+    )
+    try:
+        result = client.stream_chat(
+            model_id="m/x",
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=64,
+            temperature=None,
+            top_p=None,
+        )
+    finally:
+        client.close()
+
+    assert result.text == "hello"
+    assert result.metrics.skulk_generation_tps == 182.7
+    assert result.metrics.skulk_prompt_tps == 187.4
+    assert result.metrics.skulk_prompt_tokens == 17
+    assert result.metrics.skulk_generation_tokens == 120
