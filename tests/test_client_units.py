@@ -824,6 +824,7 @@ def test_fabric_speech_chain_collects_transcript_text_and_audio(
             response_model_id="org/chat",
             response_tts_model_id="org/tts",
             response_voice="coral",
+            response_max_output_tokens=96,
         )
     finally:
         client.close()
@@ -837,6 +838,7 @@ def test_fabric_speech_chain_collects_transcript_text_and_audio(
         "model": "org/chat",
         "tts_model": "org/tts",
         "voice": "coral",
+        "max_output_tokens": 96,
     }
     assert execution.text == "hello world"
     assert execution.assistant_text == "hello back"
@@ -1013,6 +1015,28 @@ def test_realtime_transcription_wraps_handshake_failure(
     assert exc_info.value.method == "WS"
     assert exc_info.value.path == "/v1/realtime"
     assert exc_info.value.status_code == 0
+
+
+@pytest.mark.parametrize("max_output_tokens", [0, 4097])
+def test_realtime_transcription_rejects_invalid_response_token_limit(
+    max_output_tokens: int,
+) -> None:
+    client = SkulkClient("http://skulk.test")
+    try:
+        with pytest.raises(
+            ValueError,
+            match="response_max_output_tokens must be between 1 and 4096",
+        ):
+            client.realtime_transcription(
+                model_id="org/STT",
+                pcm16=b"\x00\x00" * 160,
+                sample_rate=8_000,
+                pace_audio=False,
+                response_model_id="org/chat",
+                response_max_output_tokens=max_output_tokens,
+            )
+    finally:
+        client.close()
 
 
 def test_provider_capability_diagnostics_parses_realtime_counters() -> None:

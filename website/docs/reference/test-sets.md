@@ -58,7 +58,7 @@ Each map key must match the test set's `name`.
 | `description` | Optional human explanation |
 | `system` | Optional system message |
 | `prompt` | Main user prompt |
-| `max_tokens` | Output token budget |
+| `max_tokens` | Output token budget; for realtime conversation and Fabric-chain tests, bounds the automatic chat response before TTS |
 | `temperature` | Sampling temperature |
 | `top_p` | Optional nucleus sampling value |
 | `enable_thinking` | Optional reasoning toggle |

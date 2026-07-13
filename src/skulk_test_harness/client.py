@@ -1498,6 +1498,7 @@ class SkulkClient:
         response_model_id: str | None = None,
         response_tts_model_id: str | None = None,
         response_voice: str | None = None,
+        response_max_output_tokens: int | None = None,
         server_vad: bool = False,
         turn_count: int = 1,
         barge_in: bool = False,
@@ -1515,6 +1516,7 @@ class SkulkClient:
             response_model_id: Optional mounted chat participant.
             response_tts_model_id: Optional mounted TTS participant.
             response_voice: Optional voice selected for response TTS.
+            response_max_output_tokens: Optional automatic chat-response token limit.
             server_vad: Enable server-owned VAD and automatic turn commits.
             turn_count: Number of utterances sent over the persistent socket.
             barge_in: Send the next turn after response audio begins.
@@ -1539,6 +1541,12 @@ class SkulkClient:
             raise ValueError("fabric speech chain requires response_model_id")
         if response_tts_model_id and not response_model_id:
             raise ValueError("response TTS requires response_model_id")
+        if response_max_output_tokens is not None and not (
+            1 <= response_max_output_tokens <= 4096
+        ):
+            raise ValueError(
+                "response_max_output_tokens must be between 1 and 4096"
+            )
         if not 1 <= turn_count <= 4:
             raise ValueError("realtime turn count must be between 1 and 4")
         if turn_count > 1 and not server_vad:
@@ -1718,6 +1726,8 @@ class SkulkClient:
                         response["tts_model"] = response_tts_model_id
                     if response_voice is not None:
                         response["voice"] = response_voice
+                    if response_max_output_tokens is not None:
+                        response["max_output_tokens"] = response_max_output_tokens
                     session["response"] = response
                 connection.send(
                     json.dumps(
