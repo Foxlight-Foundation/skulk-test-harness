@@ -61,7 +61,7 @@ Each map key must match the test set's `name`.
 | `max_tokens` | Output token budget; for realtime conversation and Fabric-chain tests, bounds the automatic chat response before TTS |
 | `temperature` | Sampling temperature |
 | `top_p` | Optional nucleus sampling value |
-| `enable_thinking` | Optional reasoning toggle |
+| `enable_thinking` | Optional reasoning toggle; also controls automatic chat reasoning in realtime conversation and Fabric-chain tests |
 | `reasoning_effort` | Optional reasoning effort value |
 | `prompt_repetitions` | Repeat prompt text before sending |
 | `images` | OpenAI-style image input parts |

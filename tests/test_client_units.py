@@ -825,6 +825,7 @@ def test_fabric_speech_chain_collects_transcript_text_and_audio(
             response_tts_model_id="org/tts",
             response_voice="coral",
             response_max_output_tokens=96,
+            response_enable_thinking=False,
         )
     finally:
         client.close()
@@ -839,6 +840,7 @@ def test_fabric_speech_chain_collects_transcript_text_and_audio(
         "tts_model": "org/tts",
         "voice": "coral",
         "max_output_tokens": 96,
+        "enable_thinking": False,
     }
     assert execution.text == "hello world"
     assert execution.assistant_text == "hello back"

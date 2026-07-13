@@ -1168,6 +1168,7 @@ class _FakeClient:
         response_tts_model_id: str | None = None,
         response_voice: str | None = None,
         response_max_output_tokens: int | None = None,
+        response_enable_thinking: bool | None = None,
         server_vad: bool = False,
         turn_count: int = 1,
         barge_in: bool = False,
@@ -1185,6 +1186,7 @@ class _FakeClient:
                 "response_tts_model_id": response_tts_model_id,
                 "response_voice": response_voice,
                 "response_max_output_tokens": response_max_output_tokens,
+                "response_enable_thinking": response_enable_thinking,
                 "server_vad": server_vad,
                 "turn_count": turn_count,
                 "barge_in": barge_in,
@@ -2114,6 +2116,7 @@ def test_fabric_speech_chain_mounts_participants_and_persists_response_audio(
         realtime_response_model_id="org/Chat",
         realtime_response_tts_model_id="org/TTS",
         max_tokens=96,
+        enable_thinking=False,
         realtime_pace_audio=False,
         success=SuccessCriteria(
             min_chars=5,
@@ -2143,6 +2146,7 @@ def test_fabric_speech_chain_mounts_participants_and_persists_response_audio(
     assert request["response_model_id"] == "org/Chat"
     assert request["response_tts_model_id"] == "org/TTS"
     assert request["response_max_output_tokens"] == 96
+    assert request["response_enable_thinking"] is False
     assert list(tmp_path.glob("*.mp3"))
     assert {placement.model_id for placement in report.placements} == {
         "org/TTS",

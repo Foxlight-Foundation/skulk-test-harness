@@ -1499,6 +1499,7 @@ class SkulkClient:
         response_tts_model_id: str | None = None,
         response_voice: str | None = None,
         response_max_output_tokens: int | None = None,
+        response_enable_thinking: bool | None = None,
         server_vad: bool = False,
         turn_count: int = 1,
         barge_in: bool = False,
@@ -1517,6 +1518,7 @@ class SkulkClient:
             response_tts_model_id: Optional mounted TTS participant.
             response_voice: Optional voice selected for response TTS.
             response_max_output_tokens: Optional automatic chat-response token limit.
+            response_enable_thinking: Optional automatic chat reasoning toggle.
             server_vad: Enable server-owned VAD and automatic turn commits.
             turn_count: Number of utterances sent over the persistent socket.
             barge_in: Send the next turn after response audio begins.
@@ -1728,6 +1730,8 @@ class SkulkClient:
                         response["voice"] = response_voice
                     if response_max_output_tokens is not None:
                         response["max_output_tokens"] = response_max_output_tokens
+                    if response_enable_thinking is not None:
+                        response["enable_thinking"] = response_enable_thinking
                     session["response"] = response
                 connection.send(
                     json.dumps(

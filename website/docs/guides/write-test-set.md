@@ -343,7 +343,9 @@ test_sets:
 
 Use `kind: realtime_conversation` to keep that socket open across automatic
 server-VAD turns and compose mounted chat/TTS participants. Its `max_tokens`
-value bounds each automatic chat response before the TTS leg starts. With
+value bounds each automatic chat response before the TTS leg starts, while
+`enable_thinking` controls hidden reasoning and should normally be false for
+low-latency speech. With
 `realtime_barge_in: true`, the harness sends the next utterance after response
 audio begins and requires the superseded response to terminate as cancelled:
 
@@ -360,6 +362,7 @@ test_sets:
         realtime_response_model_id: org/chat-model
         realtime_response_tts_model_id: org/stable-tts-model
         max_tokens: 96
+        enable_thinking: false
         realtime_server_vad: true
         realtime_turn_count: 2
         realtime_barge_in: true
