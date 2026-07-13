@@ -1566,7 +1566,7 @@ def test_speech_pressure_proves_local_remote_paths_and_diagnostics(
     monkeypatch.setattr(runner, "_client_for_url", lambda _url: _FakeClient())
     before = {
         "node-a": _data_snapshot("node-a"),
-        "node-b": _data_snapshot("node-b", active_stream_queues=1),
+        "node-b": _data_snapshot("node-b"),
     }
     after = {
         "node-a": _data_snapshot(
@@ -1579,7 +1579,6 @@ def test_speech_pressure_proves_local_remote_paths_and_diagnostics(
         ),
         "node-b": _data_snapshot(
             "node-b",
-            active_stream_queues=1,
             started_frames=2,
             completed_frames=2,
         ),
@@ -1590,7 +1589,7 @@ def test_speech_pressure_proves_local_remote_paths_and_diagnostics(
     monkeypatch.setattr(
         runner,
         "_wait_for_data_plane_idle",
-        lambda _owners, _baseline: after,
+        lambda _owners: after,
     )
     test = PromptTest(
         name="tts-local-remote",
@@ -1628,6 +1627,71 @@ def test_speech_pressure_proves_local_remote_paths_and_diagnostics(
     ]
     assert payload["owners"][0]["delta"]["local_short_circuits"] == 8
     assert payload["owners"][0]["delta"]["remote_frames_published"] == 8
+
+
+def test_speech_pressure_rejects_non_idle_baseline_as_inconclusive(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _FakeClient(
+        live_placements=[
+            PlacementResult(
+                model_id="org/TTS",
+                instance_id="tts-instance",
+                node_ids=["node-a"],
+                ready=True,
+            )
+        ]
+    )
+    runner = _runner()
+    monkeypatch.setattr(
+        runner,
+        "_capture_data_plane_diagnostics",
+        lambda _owners: {
+            "node-a": _data_snapshot("node-a", active_stream_queues=1),
+            "node-b": _data_snapshot("node-b"),
+        },
+    )
+    monkeypatch.setattr(
+        runner,
+        "_wait_for_data_plane_idle",
+        lambda _owners: pytest.fail("contaminated baseline must not run pressure"),
+    )
+    test = PromptTest(
+        name="tts-local-remote",
+        kind="audio_speech_pressure",
+        prompt="hello",
+        audio_response_format="mp3",
+        speech_concurrency=2,
+        speech_owner_count=2,
+        speech_owner_topology="local_remote",
+        speech_assert_data_plane_diagnostics=True,
+        success=SuccessCriteria(
+            min_chars=0,
+            min_audio_bytes=1024,
+            min_stream_chunks=2,
+            min_stream_span_s=0.5,
+        ),
+    )
+
+    result = runner._run_test(
+        client,  # type: ignore[arg-type]
+        model_id="org/TTS",
+        test=test,
+        repetition=1,
+        artifact_dir=tmp_path,
+    )
+
+    assert result.passed is False
+    assert result.output_text == "speech pressure did not start"
+    assert result.issues[0].message == (
+        "DATA diagnostics baseline is not idle; pressure attribution would be "
+        "inconclusive"
+    )
+    assert result.issues[0].evidence == {
+        "owner": "owner-1-serving_local",
+        "live_gauges": {"active_stream_queues": 1},
+    }
 
 
 def test_speech_pressure_treats_idle_reclamation_as_a_workload_anomaly() -> None:

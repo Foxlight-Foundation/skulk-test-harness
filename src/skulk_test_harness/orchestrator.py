@@ -1527,6 +1527,24 @@ class HarnessRunner:
                         evidence={"error": str(exc)},
                     )
                 )
+            else:
+                issues.extend(
+                    _score_data_plane_baseline(
+                        model_id=model_id,
+                        test_name=test.name,
+                        owners=owners,
+                        serving_node_id=serving_node_id,
+                        snapshots=diagnostics_before,
+                    )
+                )
+                if issues:
+                    return _speech_pressure_result(
+                        model_id=model_id,
+                        test=test,
+                        repetition=repetition,
+                        issues=issues,
+                        elapsed_s=0.0,
+                    )
 
         started_at = time.monotonic()
 
@@ -1712,10 +1730,7 @@ class HarnessRunner:
         diagnostics_artifact: Path | None = None
         if test.speech_assert_data_plane_diagnostics and diagnostics_before:
             try:
-                diagnostics_after = self._wait_for_data_plane_idle(
-                    owners,
-                    diagnostics_before,
-                )
+                diagnostics_after = self._wait_for_data_plane_idle(owners)
                 diagnostic_issues, diagnostic_records = _score_data_plane_diagnostics(
                     model_id=model_id,
                     test_name=test.name,
@@ -1877,21 +1892,18 @@ class HarnessRunner:
         return snapshots
 
     def _wait_for_data_plane_idle(
-        self,
-        owners: list[ClusterApiOwner],
-        baseline: dict[str, DataPlaneDiagnosticsSnapshot],
+        self, owners: list[ClusterApiOwner]
     ) -> dict[str, DataPlaneDiagnosticsSnapshot]:
-        """Wait briefly for workload gauges to return to their starting levels."""
+        """Wait briefly for terminal delivery and egress queue cleanup."""
 
         deadline = time.monotonic() + 10.0
         snapshots = self._capture_data_plane_diagnostics(owners)
         while time.monotonic() < deadline:
             if all(
-                (before := baseline.get(node_id)) is not None
-                and snapshot.active_streams <= before.active_streams
-                and snapshot.active_stream_queues <= before.active_stream_queues
-                and snapshot.queue_depth <= before.queue_depth
-                for node_id, snapshot in snapshots.items()
+                snapshot.active_streams == 0
+                and snapshot.active_stream_queues == 0
+                and snapshot.queue_depth == 0
+                for snapshot in snapshots.values()
             ):
                 return snapshots
             time.sleep(0.1)
@@ -4763,6 +4775,46 @@ def _data_plane_counter_delta(
     }
 
 
+def _score_data_plane_baseline(
+    *,
+    model_id: str,
+    test_name: str,
+    owners: list[ClusterApiOwner],
+    serving_node_id: str | None,
+    snapshots: dict[str, DataPlaneDiagnosticsSnapshot],
+) -> list[Issue]:
+    """Reject a contaminated baseline whose workload ownership is unknowable."""
+
+    issues: list[Issue] = []
+    for owner_index, owner in enumerate(owners, start=1):
+        snapshot = snapshots.get(owner.node_id)
+        role = "serving_local" if owner.node_id == serving_node_id else "remote_owner"
+        label = f"owner-{owner_index}-{role}"
+        if snapshot is None:
+            continue
+        live_gauges = {
+            "active_streams": snapshot.active_streams,
+            "active_stream_queues": snapshot.active_stream_queues,
+            "queue_depth": snapshot.queue_depth,
+        }
+        live_gauges = {key: value for key, value in live_gauges.items() if value > 0}
+        if not live_gauges:
+            continue
+        issues.append(
+            Issue(
+                severity="error",
+                model_id=model_id,
+                test_name=test_name,
+                message=(
+                    "DATA diagnostics baseline is not idle; pressure attribution "
+                    "would be inconclusive"
+                ),
+                evidence={"owner": label, "live_gauges": live_gauges},
+            )
+        )
+    return issues
+
+
 def _sanitized_data_plane_snapshot(
     snapshot: DataPlaneDiagnosticsSnapshot,
 ) -> dict[str, int]:
@@ -4826,32 +4878,22 @@ def _score_data_plane_diagnostics(
                     evidence={"owner": label, "negative_deltas": negative},
                 )
             )
-        residual_gauges = {
-            "active_streams": (
-                after_snapshot.active_streams - before_snapshot.active_streams
-            ),
-            "active_stream_queues": (
-                after_snapshot.active_stream_queues
-                - before_snapshot.active_stream_queues
-            ),
-            "queue_depth": after_snapshot.queue_depth - before_snapshot.queue_depth,
-        }
-        residual_gauges = {
-            key: value for key, value in residual_gauges.items() if value > 0
-        }
-        if residual_gauges:
+        if (
+            after_snapshot.active_streams
+            or after_snapshot.active_stream_queues
+            or after_snapshot.queue_depth
+        ):
             issues.append(
                 Issue(
                     severity="error",
                     model_id=model_id,
                     test_name=test_name,
-                    message=(
-                        "DATA streams or egress queues did not return to their "
-                        "pre-pressure baseline"
-                    ),
+                    message="DATA streams or egress queues did not drain after pressure",
                     evidence={
                         "owner": label,
-                        "residual_gauges": residual_gauges,
+                        "active_streams": after_snapshot.active_streams,
+                        "active_stream_queues": after_snapshot.active_stream_queues,
+                        "queue_depth": after_snapshot.queue_depth,
                     },
                 )
             )

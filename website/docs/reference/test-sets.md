@@ -87,7 +87,7 @@ Each map key must match the test set's `name`.
 | `speech_requests_per_worker` | Sequential requests issued by each pressure worker |
 | `speech_owner_count` | Distinct reachable API owners selected from cluster diagnostics |
 | `speech_owner_topology` | `any` or `local_remote`; the latter selects one owner on the TTS serving node and the rest away from it |
-| `speech_assert_data_plane_diagnostics` | Require lifecycle/egress counters to cover successful requests, return live gauges to their pre-test baseline, and record no new anomalies (including idle stream reclamation); saves a sanitized diagnostics sidecar |
+| `speech_assert_data_plane_diagnostics` | Require an idle pre-test baseline, lifecycle/egress counters that cover successful requests, zero live gauges after the workload, and no new anomalies (including idle stream reclamation); saves a sanitized diagnostics sidecar |
 | `speech_chat_model_id` | Optional secondary text model mounted for mixed chat-plus-TTS pressure |
 | `speech_chat_concurrency` | Concurrent streaming chat workers run beside speech pressure |
 | `speech_chat_prompt` | Prompt sent by mixed-pressure chat workers |
