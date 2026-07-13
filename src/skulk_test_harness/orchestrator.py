@@ -76,6 +76,13 @@ class HarnessRunner:
         with self._client() as client:
             models = self.resolve_model_set(spec.model_set, client)
             report = RunReport.start(_run_id(spec), spec, models)
+            # Stamp the suite description onto plan / dry-run reports too, so a
+            # non-executed report is self-describing like an executed one.
+            # Best-effort via the map (plan does not run tests, so an unknown
+            # test set must not raise here as it would in execute()).
+            planned_test_set = self.test_sets.get(spec.test_set)
+            if planned_test_set is not None:
+                report.test_set_description = planned_test_set.description
             report.issues.extend(client.detect_runner_state_drift())
             for model in models:
                 existing = client.find_placements_for_model(model.model_id)

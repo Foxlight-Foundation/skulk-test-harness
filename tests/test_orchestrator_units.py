@@ -2862,3 +2862,32 @@ def test_legacy_report_without_descriptions_validates_with_defaults() -> None:
     assert restored.test_set_description == ""
     assert restored.results[0].kind == "chat"
     assert restored.results[0].description == ""
+
+
+def test_plan_report_stamps_suite_description(monkeypatch) -> None:
+    # A plan / dry-run report is written without executing tests; it must still
+    # carry the suite description so it is self-describing like an executed one.
+    from skulk_test_harness import orchestrator as orch
+
+    runner = HarnessRunner(
+        config=HarnessConfig(),
+        model_sets={},
+        test_sets={
+            "described": HarnessTestSet(
+                name="described",
+                description="What the suite measures.",
+                tests=[],
+            )
+        },
+    )
+    monkeypatch.setattr(runner, "resolve_model_set", lambda *_a, **_k: [])
+    monkeypatch.setattr(orch, "gather_fingerprint", lambda *_a, **_k: (None, []))
+
+    class _PlanClient(_FakeClient):
+        def detect_runner_state_drift(self) -> list[Issue]:
+            return []
+
+    monkeypatch.setattr(runner, "_client", lambda: _PlanClient())
+
+    report = runner.plan(RunSpec(model_set="any", test_set="described"))
+    assert report.test_set_description == "What the suite measures."
