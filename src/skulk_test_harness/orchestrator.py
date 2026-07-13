@@ -719,7 +719,11 @@ class HarnessRunner:
                 report=report,
                 writer=writer,
             )
-        if test.kind in {"realtime_transcription", "fabric_speech_chain"}:
+        if test.kind in {
+            "realtime_transcription",
+            "realtime_conversation",
+            "fabric_speech_chain",
+        }:
             return self._run_realtime_transcription_test(
                 client,
                 model_id=model_id,
@@ -2356,7 +2360,7 @@ class HarnessRunner:
 
         response_model_id: str | None = None
         response_tts_model_id: str | None = None
-        if test.kind == "fabric_speech_chain":
+        if test.kind in {"realtime_conversation", "fabric_speech_chain"}:
             catalog = client.list_models()
             response_tts_model_id = (
                 test.realtime_response_tts_model_id or tts_model_id
@@ -2372,7 +2376,7 @@ class HarnessRunner:
                         model_id=model_id,
                         test_name=test.name,
                         message=(
-                            "fabric_speech_chain requires realtime response chat "
+                            "conversational realtime requires response chat "
                             "and TTS model IDs"
                         ),
                     )
@@ -2515,6 +2519,12 @@ class HarnessRunner:
                         response_model_id=response_model_id,
                         response_tts_model_id=response_tts_model_id,
                         response_voice=test.speech_voice,
+                        server_vad=(
+                            test.realtime_server_vad
+                            or test.kind == "realtime_conversation"
+                        ),
+                        turn_count=test.realtime_turn_count,
+                        barge_in=test.realtime_barge_in,
                     )
                 if not cancellation_execution.canceled:
                     issues.append(
@@ -2548,10 +2558,19 @@ class HarnessRunner:
                         response_model_id=response_model_id,
                         response_tts_model_id=response_tts_model_id,
                         response_voice=test.speech_voice,
+                        server_vad=(
+                            test.realtime_server_vad
+                            or test.kind == "realtime_conversation"
+                        ),
+                        turn_count=test.realtime_turn_count,
+                        barge_in=test.realtime_barge_in,
                     )
                 executions.append(execution)
                 owner_label = f"owner-{owner_index}-{role}"
-                if test.kind == "fabric_speech_chain" and execution.response_audio:
+                if test.kind in {
+                    "realtime_conversation",
+                    "fabric_speech_chain",
+                } and execution.response_audio:
                     _audio_artifact_path(
                         artifact_dir,
                         response_tts_model_id or "fabric-response-tts",
@@ -2577,6 +2596,17 @@ class HarnessRunner:
                             criteria=test.success,
                         )
                     )
+                if test.kind == "realtime_conversation":
+                    issues.extend(
+                        _score_realtime_conversation(
+                            model_id=model_id,
+                            test_name=f"{test.name}-{owner_label}",
+                            execution=execution,
+                            turn_count=test.realtime_turn_count,
+                            require_barge_in=test.realtime_barge_in,
+                            criteria=test.success,
+                        )
+                    )
                 owner_records.append(
                     _sanitized_realtime_execution(owner_label, execution)
                 )
@@ -2586,7 +2616,9 @@ class HarnessRunner:
                 diagnostics_after = self._wait_for_provider_diagnostics(
                     diagnostic_owners,
                     before=diagnostics_before,
-                    expected_completed=len(executions),
+                    expected_completed=sum(
+                        execution.provider_sessions for execution in executions
+                    ),
                     expected_cancelled=(1 if cancellation_execution is not None else 0),
                 )
                 diagnostic_issues, diagnostics_records = (
@@ -2624,6 +2656,7 @@ class HarnessRunner:
                     provider_diagnostics=diagnostics_records,
                 )
         except (OSError, SkulkApiError, TypeError, ValueError, wave.Error) as exc:
+            error_detail = exc.body if isinstance(exc, SkulkApiError) else str(exc)
             issues.append(
                 Issue(
                     severity="error",
@@ -2631,7 +2664,7 @@ class HarnessRunner:
                     test_name=test.name,
                     message="Realtime transcription roundtrip failed",
                     evidence={
-                        "error": str(exc),
+                        "error": error_detail,
                         "speech_synthesis_model_id": tts_model_id,
                     },
                 )
@@ -2743,6 +2776,9 @@ class HarnessRunner:
         response_model_id: str | None = None,
         response_tts_model_id: str | None = None,
         response_voice: str | None = None,
+        server_vad: bool = False,
+        turn_count: int = 1,
+        barge_in: bool = False,
     ) -> RealtimeTranscriptionExecution:
         """Retry only transient admission races before realtime audio is accepted."""
 
@@ -2759,6 +2795,9 @@ class HarnessRunner:
                     response_model_id=response_model_id,
                     response_tts_model_id=response_tts_model_id,
                     response_voice=response_voice,
+                    server_vad=server_vad,
+                    turn_count=turn_count,
+                    barge_in=barge_in,
                 )
             except SkulkApiError as exc:
                 message = str(exc).casefold()
@@ -3514,6 +3553,94 @@ def _score_fabric_speech_chain(
                 model_id=model_id,
                 test_name=test_name,
                 message="Fabric speech chain emitted no response audio chunks",
+            )
+        )
+    return issues
+
+
+def _score_realtime_conversation(
+    *,
+    model_id: str,
+    test_name: str,
+    execution: RealtimeTranscriptionExecution,
+    turn_count: int,
+    require_barge_in: bool,
+    criteria: SuccessCriteria,
+) -> list[Issue]:
+    """Require multi-turn VAD, response, audio, and interruption evidence."""
+
+    issues: list[Issue] = []
+    counts = {
+        "transcripts": len(execution.transcripts),
+        "responses": len(execution.response_statuses),
+        "speech_started": execution.speech_started_events,
+        "speech_stopped": execution.speech_stopped_events,
+        "provider_sessions": execution.provider_sessions,
+    }
+    missing = {
+        name: {"actual": value, "minimum": turn_count}
+        for name, value in counts.items()
+        if value < turn_count
+    }
+    if missing:
+        issues.append(
+            Issue(
+                severity="error",
+                model_id=model_id,
+                test_name=test_name,
+                message="Realtime conversation did not complete every VAD turn",
+                evidence={"missing_turn_evidence": missing},
+            )
+        )
+    if not execution.response_statuses or execution.response_statuses[-1] != "completed":
+        issues.append(
+            Issue(
+                severity="error",
+                model_id=model_id,
+                test_name=test_name,
+                message="Realtime conversation final response did not complete",
+                evidence={"response_statuses": execution.response_statuses},
+            )
+        )
+    if not execution.assistant_turns or not execution.assistant_turns[-1].strip():
+        issues.append(
+            Issue(
+                severity="error",
+                model_id=model_id,
+                test_name=test_name,
+                message="Realtime conversation returned no final assistant text",
+            )
+        )
+    final_audio = (
+        execution.response_audio_turns[-1] if execution.response_audio_turns else b""
+    )
+    if len(final_audio) < criteria.min_audio_bytes:
+        issues.append(
+            Issue(
+                severity="error",
+                model_id=model_id,
+                test_name=test_name,
+                message="Realtime conversation returned too little final response audio",
+                evidence={
+                    "audio_bytes": len(final_audio),
+                    "min_audio_bytes": criteria.min_audio_bytes,
+                },
+            )
+        )
+    if require_barge_in and (
+        not execution.barge_in_sent
+        or "cancelled" not in execution.response_statuses[:-1]
+    ):
+        issues.append(
+            Issue(
+                severity="error",
+                model_id=model_id,
+                test_name=test_name,
+                message="Realtime conversation did not prove response barge-in",
+                evidence={
+                    "barge_in_sent": execution.barge_in_sent,
+                    "response_statuses": execution.response_statuses,
+                },
             )
         )
     return issues
@@ -4325,7 +4452,7 @@ def _sanitized_realtime_execution(
     owner: str,
     execution: RealtimeTranscriptionExecution,
 ) -> dict[str, object]:
-    """Return payload-free realtime evidence without node routes or identifiers."""
+    """Return media-bounded realtime evidence without node routes or identifiers."""
 
     return {
         "owner": owner,
@@ -4340,7 +4467,16 @@ def _sanitized_realtime_execution(
         "response_audio_bytes": len(execution.response_audio),
         "response_audio_chunks": execution.response_audio_chunks,
         "response_status": execution.response_status,
+        "turns": len(execution.transcripts),
+        "assistant_turns": len(execution.assistant_turns),
+        "response_statuses": execution.response_statuses,
+        "speech_started_events": execution.speech_started_events,
+        "speech_stopped_events": execution.speech_stopped_events,
+        "provider_sessions": execution.provider_sessions,
+        "provider_input_bytes_min": execution.provider_input_bytes_min,
+        "barge_in_sent": execution.barge_in_sent,
         "event_types": execution.event_types,
+        "events": execution.events,
     }
 
 
@@ -4509,11 +4645,15 @@ def _score_realtime_provider_diagnostics(
         field_name: sum(delta[field_name] for delta in deltas)
         for field_name in _PROVIDER_COUNTER_FIELDS
     }
-    expected_sessions = len(successful_sessions) + (
+    successful_provider_sessions = sum(
+        execution.provider_sessions for execution in successful_sessions
+    )
+    expected_sessions = successful_provider_sessions + (
         1 if cancellation_session is not None else 0
     )
     expected_input_bytes = sum(
-        execution.input_bytes for execution in successful_sessions
+        execution.provider_input_bytes_min or execution.input_bytes
+        for execution in successful_sessions
     ) + (cancellation_session.input_bytes if cancellation_session is not None else 0)
     expected_input_frames = sum(
         execution.input_frames for execution in successful_sessions
@@ -4521,10 +4661,10 @@ def _score_realtime_provider_diagnostics(
 
     requirements = {
         "admitted_streams": expected_sessions,
-        "completed_streams": len(successful_sessions),
+        "completed_streams": successful_provider_sessions,
         "input_media_bytes": expected_input_bytes,
         "input_frames": expected_input_frames,
-        "output_frames": len(successful_sessions) * 2,
+        "output_frames": successful_provider_sessions * 2,
     }
     if cancellation_session is not None:
         requirements["cancellation_requests"] = 1
