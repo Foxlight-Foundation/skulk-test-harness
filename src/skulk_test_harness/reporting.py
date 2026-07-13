@@ -72,6 +72,11 @@ def _markdown(report: RunReport) -> str:
         f"- Finished: `{report.finished_at.isoformat() if report.finished_at else 'running'}`",
         f"- Model set: `{report.spec.model_set}`",
         f"- Test set: `{report.spec.test_set}`",
+        *(
+            [f"  - {report.test_set_description}"]
+            if report.test_set_description
+            else []
+        ),
         f"- Mode: `{report.spec.mode}`",
         "",
         "## Models",
