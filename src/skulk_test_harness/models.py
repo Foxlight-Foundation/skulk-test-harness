@@ -774,6 +774,22 @@ class TestResult(HarnessBaseModel):
 
     model_id: str
     test_name: str
+    kind: TestKind = Field(
+        default="chat",
+        description=(
+            "The test's kind (chat, code, tool, audio_speech, ...), copied from "
+            "its PromptTest so a report is self-describing: a downstream reader "
+            "(the results ledger) can explain what a suite measures without the "
+            "harness config. Defaults to 'chat' for reports predating this field."
+        ),
+    )
+    description: str = Field(
+        default="",
+        description=(
+            "Human explanation of what this test checks, copied from its "
+            "PromptTest. Empty when the test declares none."
+        ),
+    )
     repetition: int
     passed: bool
     output_text: str
@@ -881,6 +897,15 @@ class RunReport(HarnessBaseModel):
     started_at: datetime
     finished_at: datetime | None = None
     spec: RunSpec
+    test_set_description: str = Field(
+        default="",
+        description=(
+            "Human explanation of what the run's test set measures, resolved "
+            "from the loaded TestSet. Lets a report describe its own suite "
+            "instead of relying on a name lookup. Empty for older reports or a "
+            "test set that declares no description."
+        ),
+    )
     models: list[ModelRef] = Field(default_factory=list)
     placements: list[PlacementResult] = Field(default_factory=list)
     results: list[TestResult] = Field(default_factory=list)

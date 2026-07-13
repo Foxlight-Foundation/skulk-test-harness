@@ -86,7 +86,9 @@ Every run writes a directory under `runs/`:
 - `report.json`: the machine-readable record of every request, every metric,
   pass/fail, plus a **fingerprint** of exactly what ran it (Skulk version,
   node hardware, cache state), so a number is never separated from its
-  context.
+  context. It also carries the test set's description and each result's kind
+  and description, so a downstream reader (the results ledger) can explain what
+  a suite measures without the harness config.
 - `summary.md`: the same story for humans.
 - `events.jsonl` and `artifacts/`: the raw trail (speech tests keep their
   generated audio here).
