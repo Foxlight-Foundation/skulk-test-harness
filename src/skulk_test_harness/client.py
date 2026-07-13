@@ -939,6 +939,7 @@ class SkulkClient:
         tool_calls: list[ToolCallRecord] = []
         raw_events: list[dict[str, object]] = []
         command_id: str | None = None
+        stream_stats: dict[str, object] | None = None
         chunks = 0
         logprob_tokens = 0
         top_logprob_tokens = 0
@@ -967,6 +968,16 @@ class SkulkClient:
                         continue
                     if line.startswith(": command_id"):
                         command_id = line.rsplit(" ", 1)[-1].strip()
+                        continue
+                    if line.startswith(": generation_stats"):
+                        # Engine-reported statistics ride the final chunk as an
+                        # SSE comment (Skulk's non-standard extension); without
+                        # parsing it, streamed tests report null skulk_* metrics
+                        # on every engine and the ledger loses engine-exact
+                        # token rates.
+                        stream_stats = _safe_json_object(
+                            line.removeprefix(": generation_stats").strip()
+                        )
                         continue
                     if not line.startswith("data:"):
                         continue
@@ -1024,6 +1035,21 @@ class SkulkClient:
             approx_output_tokens=approx_tokens,
             wall_tps=wall_tps,
         )
+        if isinstance(stream_stats, dict):
+            metrics = metrics.model_copy(
+                update={
+                    "skulk_prompt_tps": _float_or_none(stream_stats.get("prompt_tps")),
+                    "skulk_generation_tps": _float_or_none(
+                        stream_stats.get("generation_tps")
+                    ),
+                    "skulk_prompt_tokens": _int_or_none(
+                        stream_stats.get("prompt_tokens")
+                    ),
+                    "skulk_generation_tokens": _int_or_none(
+                        stream_stats.get("generation_tokens")
+                    ),
+                }
+            )
         return ChatExecution(
             text=text,
             reasoning_text=reasoning_text,
