@@ -1527,6 +1527,24 @@ class HarnessRunner:
                         evidence={"error": str(exc)},
                     )
                 )
+            else:
+                issues.extend(
+                    _score_data_plane_baseline(
+                        model_id=model_id,
+                        test_name=test.name,
+                        owners=owners,
+                        serving_node_id=serving_node_id,
+                        snapshots=diagnostics_before,
+                    )
+                )
+                if issues:
+                    return _speech_pressure_result(
+                        model_id=model_id,
+                        test=test,
+                        repetition=repetition,
+                        issues=issues,
+                        elapsed_s=0.0,
+                    )
 
         started_at = time.monotonic()
 
@@ -4725,6 +4743,7 @@ _DATA_PLANE_COUNTER_FIELDS = (
     "remote_frames_published",
     "remote_frames_dropped",
     "remote_publish_failures",
+    "idle_stream_reclaims",
 )
 
 _DATA_PLANE_ANOMALY_FIELDS = (
@@ -4740,6 +4759,7 @@ _DATA_PLANE_ANOMALY_FIELDS = (
     "transport_failures",
     "remote_frames_dropped",
     "remote_publish_failures",
+    "idle_stream_reclaims",
 )
 
 
@@ -4753,6 +4773,46 @@ def _data_plane_counter_delta(
         field_name: getattr(after, field_name) - getattr(before, field_name)
         for field_name in _DATA_PLANE_COUNTER_FIELDS
     }
+
+
+def _score_data_plane_baseline(
+    *,
+    model_id: str,
+    test_name: str,
+    owners: list[ClusterApiOwner],
+    serving_node_id: str | None,
+    snapshots: dict[str, DataPlaneDiagnosticsSnapshot],
+) -> list[Issue]:
+    """Reject a contaminated baseline whose workload ownership is unknowable."""
+
+    issues: list[Issue] = []
+    for owner_index, owner in enumerate(owners, start=1):
+        snapshot = snapshots.get(owner.node_id)
+        role = "serving_local" if owner.node_id == serving_node_id else "remote_owner"
+        label = f"owner-{owner_index}-{role}"
+        if snapshot is None:
+            continue
+        live_gauges = {
+            "active_streams": snapshot.active_streams,
+            "active_stream_queues": snapshot.active_stream_queues,
+            "queue_depth": snapshot.queue_depth,
+        }
+        live_gauges = {key: value for key, value in live_gauges.items() if value > 0}
+        if not live_gauges:
+            continue
+        issues.append(
+            Issue(
+                severity="error",
+                model_id=model_id,
+                test_name=test_name,
+                message=(
+                    "DATA diagnostics baseline is not idle; pressure attribution "
+                    "would be inconclusive"
+                ),
+                evidence={"owner": label, "live_gauges": live_gauges},
+            )
+        )
+    return issues
 
 
 def _sanitized_data_plane_snapshot(

@@ -55,6 +55,7 @@ from skulk_test_harness.orchestrator import (
     _pcm16_from_wav,
     _placement_from_preview,
     _score_audio_output,
+    _score_data_plane_diagnostics,
     _score_output,
     _score_realtime_provider_diagnostics,
     _score_streaming_audio_output,
@@ -792,6 +793,14 @@ def test_foxlight_realtime_suite_requires_local_remote_provider_evidence() -> No
     assert test.realtime_assert_provider_diagnostics is True
     assert test.success.required_substrings == ["battery"]
 
+    fabric_test = test_sets["fabric-speech-chain"].tests[0]
+    assert fabric_test.speech_synthesis_model_id == (
+        "mlx-community/LongCat-AudioDiT-1B-4bit"
+    )
+    assert fabric_test.realtime_response_tts_model_id == (
+        "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-4bit"
+    )
+
 
 def test_foxlight_e2e_battery_references_defined_sets() -> None:
     root = Path(__file__).parents[1]
@@ -1251,15 +1260,19 @@ class _FakeClient:
 def _data_snapshot(
     node_id: str,
     *,
+    active_streams: int = 0,
+    active_stream_queues: int = 0,
+    queue_depth: int = 0,
     started_frames: int = 0,
     completed_frames: int = 0,
     local_short_circuits: int = 0,
     remote_frames_enqueued: int = 0,
     remote_frames_published: int = 0,
+    idle_stream_reclaims: int = 0,
 ) -> DataPlaneDiagnosticsSnapshot:
     return DataPlaneDiagnosticsSnapshot(
         node_id=node_id,
-        active_streams=0,
+        active_streams=active_streams,
         started_frames=started_frames,
         completed_frames=completed_frames,
         failed_frames=0,
@@ -1272,13 +1285,14 @@ def _data_snapshot(
         missing_terminal_streams=0,
         idle_timeouts=0,
         transport_failures=0,
-        active_stream_queues=0,
-        queue_depth=0,
+        active_stream_queues=active_stream_queues,
+        queue_depth=queue_depth,
         local_short_circuits=local_short_circuits,
         remote_frames_enqueued=remote_frames_enqueued,
         remote_frames_published=remote_frames_published,
         remote_frames_dropped=0,
         remote_publish_failures=0,
+        idle_stream_reclaims=idle_stream_reclaims,
     )
 
 
@@ -1572,7 +1586,11 @@ def test_speech_pressure_proves_local_remote_paths_and_diagnostics(
     monkeypatch.setattr(
         runner, "_capture_data_plane_diagnostics", lambda _owners: before
     )
-    monkeypatch.setattr(runner, "_wait_for_data_plane_idle", lambda _owners: after)
+    monkeypatch.setattr(
+        runner,
+        "_wait_for_data_plane_idle",
+        lambda _owners: after,
+    )
     test = PromptTest(
         name="tts-local-remote",
         kind="audio_speech_pressure",
@@ -1609,6 +1627,103 @@ def test_speech_pressure_proves_local_remote_paths_and_diagnostics(
     ]
     assert payload["owners"][0]["delta"]["local_short_circuits"] == 8
     assert payload["owners"][0]["delta"]["remote_frames_published"] == 8
+
+
+def test_speech_pressure_rejects_non_idle_baseline_as_inconclusive(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _FakeClient(
+        live_placements=[
+            PlacementResult(
+                model_id="org/TTS",
+                instance_id="tts-instance",
+                node_ids=["node-a"],
+                ready=True,
+            )
+        ]
+    )
+    runner = _runner()
+    monkeypatch.setattr(
+        runner,
+        "_capture_data_plane_diagnostics",
+        lambda _owners: {
+            "node-a": _data_snapshot("node-a", active_stream_queues=1),
+            "node-b": _data_snapshot("node-b"),
+        },
+    )
+    monkeypatch.setattr(
+        runner,
+        "_wait_for_data_plane_idle",
+        lambda _owners: pytest.fail("contaminated baseline must not run pressure"),
+    )
+    test = PromptTest(
+        name="tts-local-remote",
+        kind="audio_speech_pressure",
+        prompt="hello",
+        audio_response_format="mp3",
+        speech_concurrency=2,
+        speech_owner_count=2,
+        speech_owner_topology="local_remote",
+        speech_assert_data_plane_diagnostics=True,
+        success=SuccessCriteria(
+            min_chars=0,
+            min_audio_bytes=1024,
+            min_stream_chunks=2,
+            min_stream_span_s=0.5,
+        ),
+    )
+
+    result = runner._run_test(
+        client,  # type: ignore[arg-type]
+        model_id="org/TTS",
+        test=test,
+        repetition=1,
+        artifact_dir=tmp_path,
+    )
+
+    assert result.passed is False
+    assert result.output_text == "speech pressure did not start"
+    assert result.issues[0].message == (
+        "DATA diagnostics baseline is not idle; pressure attribution would be "
+        "inconclusive"
+    )
+    assert result.issues[0].evidence == {
+        "owner": "owner-1-serving_local",
+        "live_gauges": {"active_stream_queues": 1},
+    }
+
+
+def test_speech_pressure_treats_idle_reclamation_as_a_workload_anomaly() -> None:
+    owners = [ClusterApiOwner(node_id="node-a", base_url="http://owner-a")]
+    before = {"node-a": _data_snapshot("node-a")}
+    after = {
+        "node-a": _data_snapshot(
+            "node-a",
+            started_frames=1,
+            completed_frames=1,
+            idle_stream_reclaims=1,
+        )
+    }
+
+    issues, _records = _score_data_plane_diagnostics(
+        model_id="org/TTS",
+        test_name="tts-pressure",
+        owners=owners,
+        serving_node_id="node-a",
+        before=before,
+        after=after,
+        successful_streams=1,
+        require_local_remote=False,
+    )
+
+    assert any(
+        issue.evidence == {
+            "owner": "owner-1-serving_local",
+            "anomalies": {"idle_stream_reclaims": 1},
+        }
+        for issue in issues
+    )
 
 
 def test_speech_pressure_runs_chat_and_tts_concurrently(
