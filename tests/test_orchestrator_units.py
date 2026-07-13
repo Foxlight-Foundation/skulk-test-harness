@@ -791,6 +791,14 @@ def test_foxlight_realtime_suite_requires_local_remote_provider_evidence() -> No
     assert test.realtime_assert_provider_diagnostics is True
     assert test.success.required_substrings == ["battery"]
 
+    fabric_test = test_sets["fabric-speech-chain"].tests[0]
+    assert fabric_test.speech_synthesis_model_id == (
+        "mlx-community/LongCat-AudioDiT-1B-4bit"
+    )
+    assert fabric_test.realtime_response_tts_model_id == (
+        "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-4bit"
+    )
+
 
 def test_foxlight_e2e_battery_references_defined_sets() -> None:
     root = Path(__file__).parents[1]

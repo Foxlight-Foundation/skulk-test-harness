@@ -856,7 +856,7 @@ test_sets:
         audio_response_format: wav
         speech_synthesis_model_id: mlx-community/LongCat-AudioDiT-1B-4bit
         realtime_response_model_id: mlx-community/Qwen3.5-9B-MLX-4bit
-        realtime_response_tts_model_id: mlx-community/LongCat-AudioDiT-1B-4bit
+        realtime_response_tts_model_id: mlx-community/Qwen3-TTS-12Hz-0.6B-Base-4bit
         speech_owner_count: 2
         speech_owner_topology: local_remote
         realtime_frame_duration_ms: 100
