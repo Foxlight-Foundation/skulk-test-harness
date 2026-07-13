@@ -111,6 +111,10 @@ class HarnessRunner:
             report.issues.extend(client.detect_runner_state_drift())
             writer = ReportWriter(self.config.output_dir)
             test_set = self._test_set(spec.test_set)
+            # Stamp the suite's own description onto the report so the artifact
+            # is self-describing (the results ledger explains what a suite
+            # measures from the report, not a name-keyed lookup).
+            report.test_set_description = test_set.description
             # Resolve each model's thinking-toggle support once so per-test
             # requests can default thinking OFF (dashboard parity) when a test
             # leaves it unspecified. Best-effort: a catalog hiccup leaves the
@@ -240,7 +244,17 @@ class HarnessRunner:
                         report=report,
                         writer=writer,
                     )
-                    report.results.append(result)
+                    # Copy the test's kind + description onto the result at the
+                    # single append point rather than threading them through
+                    # every per-kind handler that builds a TestResult.
+                    report.results.append(
+                        result.model_copy(
+                            update={
+                                "kind": test.kind,
+                                "description": test.description,
+                            }
+                        )
+                    )
                     writer.write(report)
             return True
         except Exception as exc:  # noqa: BLE001 - isolate per-model failure

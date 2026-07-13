@@ -37,6 +37,7 @@ from skulk_test_harness.models import (
     RunReport,
     RunSpec,
     SuccessCriteria,
+    TestResult,
     ToolCallRecord,
     ToolMock,
 )
@@ -61,7 +62,7 @@ from skulk_test_harness.orchestrator import (
     _store_registry_entries,
     _tool_roundtrip_messages,
 )
-from skulk_test_harness.reporting import ReportWriter
+from skulk_test_harness.reporting import ReportWriter, _markdown
 from skulk_test_harness.specs import load_config, load_model_sets, load_test_sets
 
 
@@ -2790,3 +2791,74 @@ def test_resolve_model_set_store_selector_still_queries_store() -> None:
 
     assert calls == ["registry"]
     assert [ref.model_id for ref in refs] == ["org/StoreModel"]
+
+
+def test_default_test_sets_all_declare_a_description() -> None:
+    # The results ledger surfaces each suite's description to explain what it
+    # measures. A suite that ships without one shows only its bare name, so
+    # keep every default suite described.
+    root = Path(__file__).parents[1]
+    test_sets = load_test_sets(root / "configs/test_sets.yaml").test_sets
+    undescribed = sorted(
+        name for name, suite in test_sets.items() if not suite.description.strip()
+    )
+    assert undescribed == []
+
+
+def _metric() -> GenerationMetrics:
+    return GenerationMetrics(elapsed_s=0.0)
+
+
+def test_report_carries_and_renders_suite_and_test_metadata() -> None:
+    # Mirrors the orchestrator: the suite description is stamped on the report,
+    # and each result is copied with its test's kind + description at the append
+    # point. Assert both survive a JSON round-trip (the ledger reads JSON) and
+    # that the suite description renders in the Markdown summary.
+    spec = RunSpec(model_set="s", test_set="chat-tests")
+    report = RunReport.start("run-meta", spec, [])
+    report.test_set_description = "General chat sanity and instruction-following tests."
+    result = TestResult(
+        model_id="m",
+        test_name="concise-factual-answer",
+        repetition=1,
+        passed=True,
+        output_text="Paris",
+        metrics=_metric(),
+    ).model_copy(update={"kind": "chat", "description": "Answers a factual prompt."})
+    report.results.append(result)
+
+    restored = RunReport.model_validate_json(report.model_dump_json())
+    assert restored.test_set_description == (
+        "General chat sanity and instruction-following tests."
+    )
+    assert restored.results[0].kind == "chat"
+    assert restored.results[0].description == "Answers a factual prompt."
+
+    markdown = _markdown(report.finish())
+    assert "General chat sanity and instruction-following tests." in markdown
+
+
+def test_legacy_report_without_descriptions_validates_with_defaults() -> None:
+    # A report produced before these fields existed (or a test/suite that
+    # declares no description) must still validate, defaulting to empty prose
+    # and kind "chat" rather than failing the read.
+    legacy = {
+        "run_id": "legacy",
+        "started_at": "2026-01-01T00:00:00Z",
+        "finished_at": "2026-01-01T00:00:01Z",
+        "spec": {"model_set": "s", "test_set": "chat-tests"},
+        "results": [
+            {
+                "model_id": "m",
+                "test_name": "t",
+                "repetition": 1,
+                "passed": True,
+                "output_text": "ok",
+                "metrics": {"elapsed_s": 0.0},
+            }
+        ],
+    }
+    restored = RunReport.model_validate(legacy)
+    assert restored.test_set_description == ""
+    assert restored.results[0].kind == "chat"
+    assert restored.results[0].description == ""
