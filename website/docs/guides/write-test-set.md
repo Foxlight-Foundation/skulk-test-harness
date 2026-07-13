@@ -227,8 +227,12 @@ discovered from `/v1/diagnostics/cluster`. Every request is scored and saved as
 audio plus a timing sidecar. `speech_owner_topology: local_remote` resolves the
 model's actual serving node and selects both routing paths instead of relying on
 discovery order. DATA diagnostics can become pass/fail evidence and are saved in
-a sanitized sidecar. Optional chat workers mount a secondary text model and put
-token and audio streams under pressure together. Slow-reader workers remain a
+a sanitized sidecar. Live stream and egress gauges must return to their
+pre-pressure values, so unrelated work already present on a shared fleet is not
+misattributed to the current cell; cumulative lifecycle, drop, timeout, publish
+failure, and idle-reclamation counters still fail the cell when their deltas are
+anomalous. Optional chat workers mount a secondary text model and put token and
+audio streams under pressure together. Slow-reader workers remain a
 non-destructive HTTP-consumer check; intentional read sleeps are excluded from
 recorded chunk timing, and the span floor applies to normal-reader workers:
 

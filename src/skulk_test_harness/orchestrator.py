@@ -1712,7 +1712,10 @@ class HarnessRunner:
         diagnostics_artifact: Path | None = None
         if test.speech_assert_data_plane_diagnostics and diagnostics_before:
             try:
-                diagnostics_after = self._wait_for_data_plane_idle(owners)
+                diagnostics_after = self._wait_for_data_plane_idle(
+                    owners,
+                    diagnostics_before,
+                )
                 diagnostic_issues, diagnostic_records = _score_data_plane_diagnostics(
                     model_id=model_id,
                     test_name=test.name,
@@ -1874,18 +1877,21 @@ class HarnessRunner:
         return snapshots
 
     def _wait_for_data_plane_idle(
-        self, owners: list[ClusterApiOwner]
+        self,
+        owners: list[ClusterApiOwner],
+        baseline: dict[str, DataPlaneDiagnosticsSnapshot],
     ) -> dict[str, DataPlaneDiagnosticsSnapshot]:
-        """Wait briefly for terminal delivery and egress queue cleanup."""
+        """Wait briefly for workload gauges to return to their starting levels."""
 
         deadline = time.monotonic() + 10.0
         snapshots = self._capture_data_plane_diagnostics(owners)
         while time.monotonic() < deadline:
             if all(
-                snapshot.active_streams == 0
-                and snapshot.active_stream_queues == 0
-                and snapshot.queue_depth == 0
-                for snapshot in snapshots.values()
+                (before := baseline.get(node_id)) is not None
+                and snapshot.active_streams <= before.active_streams
+                and snapshot.active_stream_queues <= before.active_stream_queues
+                and snapshot.queue_depth <= before.queue_depth
+                for node_id, snapshot in snapshots.items()
             ):
                 return snapshots
             time.sleep(0.1)
@@ -4725,6 +4731,7 @@ _DATA_PLANE_COUNTER_FIELDS = (
     "remote_frames_published",
     "remote_frames_dropped",
     "remote_publish_failures",
+    "idle_stream_reclaims",
 )
 
 _DATA_PLANE_ANOMALY_FIELDS = (
@@ -4740,6 +4747,7 @@ _DATA_PLANE_ANOMALY_FIELDS = (
     "transport_failures",
     "remote_frames_dropped",
     "remote_publish_failures",
+    "idle_stream_reclaims",
 )
 
 
@@ -4818,22 +4826,32 @@ def _score_data_plane_diagnostics(
                     evidence={"owner": label, "negative_deltas": negative},
                 )
             )
-        if (
-            after_snapshot.active_streams
-            or after_snapshot.active_stream_queues
-            or after_snapshot.queue_depth
-        ):
+        residual_gauges = {
+            "active_streams": (
+                after_snapshot.active_streams - before_snapshot.active_streams
+            ),
+            "active_stream_queues": (
+                after_snapshot.active_stream_queues
+                - before_snapshot.active_stream_queues
+            ),
+            "queue_depth": after_snapshot.queue_depth - before_snapshot.queue_depth,
+        }
+        residual_gauges = {
+            key: value for key, value in residual_gauges.items() if value > 0
+        }
+        if residual_gauges:
             issues.append(
                 Issue(
                     severity="error",
                     model_id=model_id,
                     test_name=test_name,
-                    message="DATA streams or egress queues did not drain after pressure",
+                    message=(
+                        "DATA streams or egress queues did not return to their "
+                        "pre-pressure baseline"
+                    ),
                     evidence={
                         "owner": label,
-                        "active_streams": after_snapshot.active_streams,
-                        "active_stream_queues": after_snapshot.active_stream_queues,
-                        "queue_depth": after_snapshot.queue_depth,
+                        "residual_gauges": residual_gauges,
                     },
                 )
             )

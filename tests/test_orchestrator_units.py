@@ -55,6 +55,7 @@ from skulk_test_harness.orchestrator import (
     _pcm16_from_wav,
     _placement_from_preview,
     _score_audio_output,
+    _score_data_plane_diagnostics,
     _score_output,
     _score_realtime_provider_diagnostics,
     _score_streaming_audio_output,
@@ -1259,15 +1260,19 @@ class _FakeClient:
 def _data_snapshot(
     node_id: str,
     *,
+    active_streams: int = 0,
+    active_stream_queues: int = 0,
+    queue_depth: int = 0,
     started_frames: int = 0,
     completed_frames: int = 0,
     local_short_circuits: int = 0,
     remote_frames_enqueued: int = 0,
     remote_frames_published: int = 0,
+    idle_stream_reclaims: int = 0,
 ) -> DataPlaneDiagnosticsSnapshot:
     return DataPlaneDiagnosticsSnapshot(
         node_id=node_id,
-        active_streams=0,
+        active_streams=active_streams,
         started_frames=started_frames,
         completed_frames=completed_frames,
         failed_frames=0,
@@ -1280,13 +1285,14 @@ def _data_snapshot(
         missing_terminal_streams=0,
         idle_timeouts=0,
         transport_failures=0,
-        active_stream_queues=0,
-        queue_depth=0,
+        active_stream_queues=active_stream_queues,
+        queue_depth=queue_depth,
         local_short_circuits=local_short_circuits,
         remote_frames_enqueued=remote_frames_enqueued,
         remote_frames_published=remote_frames_published,
         remote_frames_dropped=0,
         remote_publish_failures=0,
+        idle_stream_reclaims=idle_stream_reclaims,
     )
 
 
@@ -1560,7 +1566,7 @@ def test_speech_pressure_proves_local_remote_paths_and_diagnostics(
     monkeypatch.setattr(runner, "_client_for_url", lambda _url: _FakeClient())
     before = {
         "node-a": _data_snapshot("node-a"),
-        "node-b": _data_snapshot("node-b"),
+        "node-b": _data_snapshot("node-b", active_stream_queues=1),
     }
     after = {
         "node-a": _data_snapshot(
@@ -1573,6 +1579,7 @@ def test_speech_pressure_proves_local_remote_paths_and_diagnostics(
         ),
         "node-b": _data_snapshot(
             "node-b",
+            active_stream_queues=1,
             started_frames=2,
             completed_frames=2,
         ),
@@ -1580,7 +1587,11 @@ def test_speech_pressure_proves_local_remote_paths_and_diagnostics(
     monkeypatch.setattr(
         runner, "_capture_data_plane_diagnostics", lambda _owners: before
     )
-    monkeypatch.setattr(runner, "_wait_for_data_plane_idle", lambda _owners: after)
+    monkeypatch.setattr(
+        runner,
+        "_wait_for_data_plane_idle",
+        lambda _owners, _baseline: after,
+    )
     test = PromptTest(
         name="tts-local-remote",
         kind="audio_speech_pressure",
@@ -1617,6 +1628,38 @@ def test_speech_pressure_proves_local_remote_paths_and_diagnostics(
     ]
     assert payload["owners"][0]["delta"]["local_short_circuits"] == 8
     assert payload["owners"][0]["delta"]["remote_frames_published"] == 8
+
+
+def test_speech_pressure_treats_idle_reclamation_as_a_workload_anomaly() -> None:
+    owners = [ClusterApiOwner(node_id="node-a", base_url="http://owner-a")]
+    before = {"node-a": _data_snapshot("node-a")}
+    after = {
+        "node-a": _data_snapshot(
+            "node-a",
+            started_frames=1,
+            completed_frames=1,
+            idle_stream_reclaims=1,
+        )
+    }
+
+    issues, _records = _score_data_plane_diagnostics(
+        model_id="org/TTS",
+        test_name="tts-pressure",
+        owners=owners,
+        serving_node_id="node-a",
+        before=before,
+        after=after,
+        successful_streams=1,
+        require_local_remote=False,
+    )
+
+    assert any(
+        issue.evidence == {
+            "owner": "owner-1-serving_local",
+            "anomalies": {"idle_stream_reclaims": 1},
+        }
+        for issue in issues
+    )
 
 
 def test_speech_pressure_runs_chat_and_tts_concurrently(

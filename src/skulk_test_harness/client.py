@@ -37,6 +37,17 @@ def _required_int(payload: Mapping[str, object], key: str) -> int:
     return value
 
 
+def _optional_int(
+    payload: Mapping[str, object], key: str, *, default: int = 0
+) -> int:
+    """Read an additive integer counter while remaining compatible with older APIs."""
+
+    value = payload.get(key, default)
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise TypeError(f"Expected diagnostics field {key!r} to be an integer")
+    return value
+
+
 def _replace_url_host(url: str, host: str) -> str:
     """Replace a URL host while preserving its scheme and explicit port."""
 
@@ -202,6 +213,7 @@ class DataPlaneDiagnosticsSnapshot:
     remote_frames_published: int
     remote_frames_dropped: int
     remote_publish_failures: int
+    idle_stream_reclaims: int = 0
 
     @classmethod
     def from_payload(cls, payload: dict[str, object]) -> "DataPlaneDiagnosticsSnapshot":
@@ -244,6 +256,7 @@ class DataPlaneDiagnosticsSnapshot:
             remote_frames_published=_required_int(egress, "remoteFramesPublished"),
             remote_frames_dropped=_required_int(egress, "remoteFramesDropped"),
             remote_publish_failures=_required_int(egress, "remotePublishFailures"),
+            idle_stream_reclaims=_optional_int(egress, "idleStreamReclaims"),
         )
 
 
