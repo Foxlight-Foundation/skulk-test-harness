@@ -584,6 +584,53 @@ test_sets:
           min_chars: 0
           min_audio_bytes: 1024
 
+  speech-synthesis-semantic:
+    name: speech-synthesis-semantic
+    description: >
+      Text-to-speech semantic quality coverage. Synthesizes WAV audio through
+      each mounted TTS model, transcribes the exact response with Canary, and
+      rejects speech that does not preserve the prompt.
+    tests:
+      - name: tts-wav-semantic-roundtrip
+        kind: speech_roundtrip
+        prompt: The quick brown fox jumps over the lazy dog.
+        audio_response_format: wav
+        transcription_model_id: CogniSoftOrg/canary-1b-v2-mlx-bf16
+        transcription_response_format: json
+        transcription_language: en
+        temperature: 0
+        repetitions: 3
+        success:
+          min_chars: 5
+          min_audio_bytes: 1024
+          max_word_error_rate: 0.25
+      - name: tts-wav-library-roundtrip
+        kind: speech_roundtrip
+        prompt: Please carry the red package to the quiet library.
+        audio_response_format: wav
+        transcription_model_id: CogniSoftOrg/canary-1b-v2-mlx-bf16
+        transcription_response_format: json
+        transcription_language: en
+        temperature: 0
+        repetitions: 3
+        success:
+          min_chars: 5
+          min_audio_bytes: 1024
+          max_word_error_rate: 0.25
+      - name: tts-wav-brand-roundtrip
+        kind: speech_roundtrip
+        prompt: Hello world from the Skulk speech battery.
+        audio_response_format: wav
+        transcription_model_id: CogniSoftOrg/canary-1b-v2-mlx-bf16
+        transcription_response_format: json
+        transcription_language: en
+        temperature: 0
+        repetitions: 3
+        success:
+          min_chars: 5
+          min_audio_bytes: 1024
+          max_word_error_rate: 0.34
+
   speech-synthesis-streaming:
     name: speech-synthesis-streaming
     description: >
@@ -688,11 +735,11 @@ test_sets:
         transcription_model_id: mlx-community/parakeet-tdt-0.6b-v3
         transcription_response_format: json
         transcription_language: en
+        repetitions: 3
         success:
           min_chars: 5
           min_audio_bytes: 1024
-          required_substrings:
-            - hello
+          max_word_error_rate: 0.34
 
   realtime-transcription:
     name: realtime-transcription
@@ -706,7 +753,7 @@ test_sets:
         kind: realtime_transcription
         prompt: Hello world from the Skulk realtime speech battery.
         audio_response_format: wav
-        speech_synthesis_model_id: mlx-community/LongCat-AudioDiT-1B-4bit
+        speech_synthesis_model_id: mlx-community/fish-audio-s2-pro-8bit
         speech_owner_count: 2
         speech_owner_topology: local_remote
         realtime_frame_duration_ms: 100
@@ -736,7 +783,7 @@ test_sets:
           Answer in exactly two short sentences: why does the Skulk speech
           battery test interruption handling?
         audio_response_format: wav
-        speech_synthesis_model_id: mlx-community/LongCat-AudioDiT-1B-4bit
+        speech_synthesis_model_id: mlx-community/fish-audio-s2-pro-8bit
         realtime_response_model_id: mlx-community/Llama-3.2-1B-Instruct-4bit
         realtime_response_tts_model_id: mlx-community/Qwen3-TTS-12Hz-0.6B-Base-4bit
         speech_owner_count: 1
@@ -780,17 +827,23 @@ test_sets:
     name: speech-reference-conditioning
     description: >
       Generates a request-scoped donor clip, sends it through multipart
-      /v1/audio/speech reference conditioning, and retains both WAV artifacts.
+      /v1/audio/speech reference conditioning, retains both WAV artifacts, and
+      transcribes the conditioned output to enforce semantic fidelity.
     tests:
       - name: generated-reference-voice
         kind: speech_reference_roundtrip
-        prompt: Skulk keeps reference audio private and request scoped.
-        reference_model_id: mlx-community/LongCat-AudioDiT-1B-4bit
+        prompt: The reference voice reads this clear sentence for the speech test.
+        reference_model_id: mlx-community/fish-audio-s2-pro-8bit
         reference_text: This is the reference voice used by the Skulk speech test.
         audio_response_format: wav
+        transcription_model_id: mlx-community/parakeet-tdt-0.6b-v3
+        transcription_response_format: json
+        transcription_language: en
+        repetitions: 3
         success:
-          min_chars: 0
+          min_chars: 5
           min_audio_bytes: 1024
+          max_word_error_rate: 0.25
 
   speech-voice-catalog:
     name: speech-voice-catalog
@@ -831,7 +884,7 @@ test_sets:
       - name: streaming-stt-sse-and-cancel
         kind: audio_transcription_streaming
         prompt: Hello world from the Skulk streaming transcription battery.
-        speech_synthesis_model_id: mlx-community/LongCat-AudioDiT-1B-4bit
+        speech_synthesis_model_id: mlx-community/fish-audio-s2-pro-8bit
         audio_response_format: wav
         transcription_language: en
         transcription_cancel_after_deltas: 1
@@ -854,7 +907,7 @@ test_sets:
         kind: fabric_speech_chain
         prompt: Hello world from the Skulk realtime speech battery.
         audio_response_format: wav
-        speech_synthesis_model_id: mlx-community/LongCat-AudioDiT-1B-4bit
+        speech_synthesis_model_id: mlx-community/fish-audio-s2-pro-8bit
         realtime_response_model_id: mlx-community/Qwen3.5-9B-MLX-4bit
         realtime_response_tts_model_id: mlx-community/Qwen3-TTS-12Hz-0.6B-Base-4bit
         max_tokens: 96

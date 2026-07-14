@@ -92,6 +92,15 @@ model_sets:
       model families that are not part of the production fleet profile.
     models:
       - mlx-community/fish-audio-s2-pro-8bit
+      - mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-4bit
+
+  speech-tts-candidates:
+    name: speech-tts-candidates
+    description: >-
+      Loadable TTS candidates retained for explicit semantic requalification.
+      These models are excluded from the standard battery until every semantic
+      prompt meets its configured word-error-rate ceiling.
+    models:
       - mlx-community/LongCat-AudioDiT-1B-4bit
 
   speech-tts-streaming:
@@ -113,9 +122,9 @@ model_sets:
     description: >-
       Text-to-speech target used by the production TTS-to-STT roundtrip. This is
       intentionally narrower than speech-tts so semantic transcription checks
-      run on the TTS model that produces stable English output.
+      run on the TTS model that passed the full English qualification set.
     models:
-      - mlx-community/LongCat-AudioDiT-1B-4bit
+      - mlx-community/fish-audio-s2-pro-8bit
 
   speech-stt:
     name: speech-stt
@@ -140,7 +149,7 @@ model_sets:
       Multilingual TTS fixture model for the speech-to-English translation
       roundtrip. Canary is mounted as the secondary model by the test.
     models:
-      - mlx-community/LongCat-AudioDiT-1B-4bit
+      - mlx-community/fish-audio-s2-pro-8bit
 
   speech-reference-tts:
     name: speech-reference-tts

@@ -41,7 +41,7 @@ cell tensor-sharding  chat-tests        "--sharding Tensor --min-nodes 2"
 cell smoke            cancellation
 cell context-admission context-admission
 cell embeddings       embeddings
-cell speech-tts       speech-synthesis
+cell speech-tts       speech-synthesis-semantic
 cell speech-tts-streaming speech-data-pressure
 cell speech-roundtrip-tts speech-roundtrip
 cell speech-stt-realtime realtime-transcription

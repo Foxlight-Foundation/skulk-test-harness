@@ -296,6 +296,15 @@ class SuccessCriteria(HarnessBaseModel):
             "audio bytes. Use this instead of min_chars for binary audio output."
         ),
     )
+    max_word_error_rate: float | None = Field(
+        default=None,
+        ge=0,
+        le=1,
+        description=(
+            "For speech roundtrip tests, require the STT transcript's word error "
+            "rate against the synthesized prompt to be no greater than this value."
+        ),
+    )
     min_stream_chunks: int = Field(
         default=0,
         ge=0,
@@ -757,6 +766,14 @@ class GenerationMetrics(HarnessBaseModel):
     skulk_generation_tps: float | None = None
     skulk_prompt_tokens: int | None = None
     skulk_generation_tokens: int | None = None
+    word_error_rate: float | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Levenshtein word error rate between the source prompt and the STT "
+            "transcript for a non-translation speech roundtrip."
+        ),
+    )
 
 
 class ToolCallRecord(HarnessBaseModel):

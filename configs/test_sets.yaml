@@ -261,6 +261,26 @@ test_sets:
           min_chars: 0
           min_audio_bytes: 1024
 
+  speech-synthesis-semantic:
+    name: speech-synthesis-semantic
+    description: >
+      Text-to-speech semantic quality coverage. Synthesizes a WAV, transcribes
+      the exact response with a discovered STT model, and enforces prompt
+      fidelity using word error rate.
+    tests:
+      - name: tts-wav-semantic-roundtrip
+        kind: speech_roundtrip
+        prompt: The quick brown fox jumps over the lazy dog.
+        audio_response_format: wav
+        transcription_response_format: json
+        transcription_language: en
+        temperature: 0
+        repetitions: 3
+        success:
+          min_chars: 5
+          min_audio_bytes: 1024
+          max_word_error_rate: 0.25
+
   speech-synthesis-streaming:
     name: speech-synthesis-streaming
     description: >
@@ -335,15 +355,14 @@ test_sets:
     tests:
       - name: tts-to-stt-hello-world
         kind: speech_roundtrip
-        prompt: Hello world from the Skulk speech battery.
+        prompt: The quick brown fox jumps over the lazy dog.
         audio_response_format: wav
         transcription_response_format: json
         transcription_language: en
         success:
           min_chars: 5
           min_audio_bytes: 1024
-          required_substrings:
-            - hello
+          max_word_error_rate: 0.25
 
   realtime-transcription:
     name: realtime-transcription
