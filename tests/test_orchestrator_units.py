@@ -2,6 +2,7 @@ import io
 import json
 import math
 import shlex
+import time
 import wave
 from pathlib import Path
 from typing import Never
@@ -3058,6 +3059,10 @@ class _ConcurrentWorkerClient:
         self.calls += 1
         if self._raise:
             raise SkulkApiError("POST", "/v1/chat/completions", 503, "busy")
+        # A small, real duration so the per-request-timestamp span is reliably
+        # positive (the aggregate-throughput denominator) instead of collapsing
+        # to zero when the fake returns instantly.
+        time.sleep(0.005)
         return ChatExecution(
             text=self._text,
             reasoning_text="",

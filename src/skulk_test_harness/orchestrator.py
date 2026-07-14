@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import concurrent.futures
+import contextlib
 import io
 import json
 import mimetypes
 import re
 import statistics
+import threading
 import time
 import wave
 from collections.abc import Mapping
@@ -54,6 +56,13 @@ from skulk_test_harness.utils import (
     slugify,
     unwrap_tagged,
 )
+
+# Deadlock guard for the concurrent benchmark's start barrier: if one worker
+# never reaches the barrier (a client that hangs on construction), the others
+# release after this timeout and run without perfect simultaneity rather than
+# blocking the whole run forever. Generous because it only bounds the setup
+# window before any request is sent, not the requests themselves.
+_CONCURRENT_START_BARRIER_TIMEOUT_S = 120.0
 
 
 class HarnessRunner:
@@ -925,10 +934,14 @@ class HarnessRunner:
 
         * **Aggregate throughput** (``aggregate_generation_tps``): total generated
           tokens across every request divided by the wall span from the first
-          request starting to the last finishing. This is the number a batching
-          engine on a large GPU grows as concurrency rises, while a single-stream
-          decode rate cannot. It is also copied into ``skulk_generation_tps`` so
-          existing single-number readers (including the ledger) surface it.
+          request starting to the last finishing (measured from per-request
+          timestamps, not the submit/collect wall). Workers are released from a
+          start barrier once every thread has built its client, so the window
+          reflects genuinely simultaneous in-flight load rather than
+          thread/connection-pool ramp-up. This is the number a batching engine on
+          a large GPU grows as concurrency rises, while a single-stream decode
+          rate cannot. It is also copied into ``skulk_generation_tps`` so existing
+          single-number readers (including the ledger) surface it.
         * **Correctness under load**: every request must succeed and satisfy the
           same success criteria as a chat test. Any error or failed scoring fails
           the whole test, so this doubles as the concurrent-load smoke that the
@@ -947,13 +960,26 @@ class HarnessRunner:
         )
         base_url = client.base_url
         total_requests = test.concurrency * test.concurrent_requests_per_worker
+        # Release every worker's first request together once all threads have
+        # built their client, so the timed window reflects genuinely
+        # simultaneous in-flight load rather than thread and connection-pool
+        # ramp-up (fast or short-output cells could otherwise let early workers
+        # finish before later ones even start, understating the real
+        # concurrency the run is labeled with).
+        start_barrier = threading.Barrier(test.concurrency)
 
         def worker(
             _worker_index: int,
-        ) -> list[tuple[ChatExecution | None, str | None]]:
-            samples: list[tuple[ChatExecution | None, str | None]] = []
+        ) -> list[tuple[ChatExecution | None, str | None, float, float]]:
+            samples: list[tuple[ChatExecution | None, str | None, float, float]] = []
             with self._client_for_url(base_url) as worker_client:
+                # Best-effort barrier: a broken barrier (a worker died before
+                # arriving, or the wait timed out) still proceeds so one failed
+                # thread cannot wedge the whole benchmark.
+                with contextlib.suppress(threading.BrokenBarrierError):
+                    start_barrier.wait(timeout=_CONCURRENT_START_BARRIER_TIMEOUT_S)
                 for _ in range(test.concurrent_requests_per_worker):
+                    started = time.monotonic()
                     try:
                         execution = worker_client.stream_chat(
                             model_id=model_id,
@@ -963,21 +989,34 @@ class HarnessRunner:
                             top_p=test.top_p,
                             enable_thinking=enable_thinking,
                             reasoning_effort=test.reasoning_effort,
+                            # Mirror the chat request options so a concurrent
+                            # test that exercises tools or logprobs asks the
+                            # backend for them (dropping them would falsely fail
+                            # tool/logprob success criteria under load).
+                            tools=test.tools,
+                            tool_choice=test.tool_choice,
+                            parallel_tool_calls=test.parallel_tool_calls,
+                            top_logprobs=test.top_logprobs,
                         )
-                        samples.append((execution, None))
+                        samples.append((execution, None, started, time.monotonic()))
                     except (SkulkApiError, httpx.HTTPError) as exc:
-                        samples.append((None, str(exc)))
+                        samples.append((None, str(exc), started, time.monotonic()))
             return samples
 
-        span_start = time.monotonic()
-        records: list[tuple[ChatExecution | None, str | None]] = []
+        records: list[tuple[ChatExecution | None, str | None, float, float]] = []
         with concurrent.futures.ThreadPoolExecutor(
             max_workers=test.concurrency
         ) as pool:
             futures = [pool.submit(worker, i) for i in range(test.concurrency)]
             for future in concurrent.futures.as_completed(futures):
                 records.extend(future.result())
-        wall_span = time.monotonic() - span_start
+        # Span = first request start to last request finish (the real in-flight
+        # window), not the submit/collect wall, so thread scheduling overhead
+        # does not inflate the denominator of aggregate throughput. Each record
+        # is (execution, error, started_at, ended_at).
+        wall_span = (
+            max(r[3] for r in records) - min(r[2] for r in records) if records else 0.0
+        )
 
         issues: list[Issue] = []
         succeeded = 0
@@ -986,7 +1025,7 @@ class HarnessRunner:
         ttfts: list[float] = []
         total_generation_tokens = 0
         sample_text = ""
-        for execution, error in records:
+        for execution, error, _started, _ended in records:
             if execution is None:
                 failed += 1
                 issues.append(
@@ -1005,6 +1044,7 @@ class HarnessRunner:
                 execution.text,
                 test.success,
                 tool_calls=execution.tool_calls,
+                logprob_tokens=execution.logprob_tokens,
                 reasoning_text=execution.reasoning_text,
                 wall_tps=execution.metrics.wall_tps,
             )
