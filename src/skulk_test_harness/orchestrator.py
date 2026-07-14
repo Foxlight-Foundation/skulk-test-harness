@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import concurrent.futures
+import contextlib
 import io
 import json
 import mimetypes
 import re
 import statistics
+import threading
 import time
 import wave
 from collections.abc import Mapping
@@ -54,6 +56,13 @@ from skulk_test_harness.utils import (
     slugify,
     unwrap_tagged,
 )
+
+# Deadlock guard for the concurrent benchmark's start barrier: if one worker
+# never reaches the barrier (a client that hangs on construction), the others
+# release after this timeout and run without perfect simultaneity rather than
+# blocking the whole run forever. Generous because it only bounds the setup
+# window before any request is sent, not the requests themselves.
+_CONCURRENT_START_BARRIER_TIMEOUT_S = 120.0
 
 
 class HarnessRunner:
@@ -689,6 +698,14 @@ class HarnessRunner:
                 repetition=repetition,
                 thinking_default=thinking_default,
             )
+        if test.kind == "concurrent":
+            return self._run_concurrent_test(
+                client,
+                model_id=model_id,
+                test=test,
+                repetition=repetition,
+                thinking_default=thinking_default,
+            )
         if test.kind == "error":
             return self._run_expected_error_test(
                 client,
@@ -897,6 +914,273 @@ class HarnessRunner:
             request_timeout_s=self.config.request_timeout_s,
             generation_timeout_s=self.config.generation_timeout_s,
             stream_read_timeout_s=self.config.stream_read_timeout_s,
+        )
+
+    def _run_concurrent_test(
+        self,
+        client: SkulkClient,
+        *,
+        model_id: str,
+        test: PromptTest,
+        repetition: int,
+        thinking_default: bool | None = None,
+    ) -> TestResult:
+        """Drive ``concurrency`` simultaneous chat completions and measure load.
+
+        Fires ``test.concurrency`` worker threads, each with its own isolated
+        client and connection pool (a shared pool would serialize requests and
+        hide real parallelism), and each issuing ``concurrent_requests_per_worker``
+        streamed completions in sequence. Two things are measured at once:
+
+        * **Aggregate throughput** (``aggregate_generation_tps``): total generated
+          tokens across every request divided by the wall span from the first
+          request starting to the last finishing (measured from per-request
+          timestamps, not the submit/collect wall). Workers are released from a
+          start barrier once every thread has built its client, so the window
+          reflects genuinely simultaneous in-flight load rather than
+          thread/connection-pool ramp-up. This is the number a batching engine on
+          a large GPU grows as concurrency rises, while a single-stream decode
+          rate cannot. It is also copied into ``skulk_generation_tps`` so existing
+          single-number readers (including the ledger) surface it.
+        * **Correctness under load**: every request must succeed and satisfy the
+          same success criteria as a chat test. Any error or failed scoring fails
+          the whole test, so this doubles as the concurrent-load smoke that the
+          harness previously never exercised.
+
+        Per-request decode rate and TTFT are reported as mean/p50/p90 so the
+        expected per-stream slowdown (each stream shares the batch) is visible
+        alongside the aggregate gain.
+        """
+
+        messages = _messages_for_test(test)
+        enable_thinking = (
+            test.enable_thinking
+            if test.enable_thinking is not None
+            else thinking_default
+        )
+        base_url = client.base_url
+        total_requests = test.concurrency * test.concurrent_requests_per_worker
+        if test.tool_mocks:
+            # The concurrent kind is a single-turn load benchmark: it forwards
+            # `tools` so tool-call emission can be exercised under load, but it
+            # deliberately does not run the tool-result round trip the chat/tool
+            # kinds do (that would turn each timed request into a variable number
+            # of API calls and is the `tool` kind's job at concurrency 1). Scoring
+            # a tool_mocks response here would silently measure only the tool-call
+            # emission, not the follow-up answer, so reject it loudly instead.
+            return TestResult(
+                model_id=model_id,
+                test_name=test.name,
+                repetition=repetition,
+                passed=False,
+                output_text="",
+                metrics=GenerationMetrics(
+                    elapsed_s=0.0,
+                    concurrency=test.concurrency,
+                    concurrent_total_requests=total_requests,
+                    concurrent_succeeded=0,
+                    concurrent_failed=0,
+                ),
+                issues=[
+                    Issue(
+                        severity="error",
+                        model_id=model_id,
+                        test_name=test.name,
+                        message=(
+                            "kind: concurrent does not support tool_mocks (it is a "
+                            "single-turn load benchmark and does not run the "
+                            "tool-result round trip; use kind: tool for that)"
+                        ),
+                    )
+                ],
+            )
+        # Release every worker's first request together once all threads have
+        # built their client, so the timed window reflects genuinely
+        # simultaneous in-flight load rather than thread and connection-pool
+        # ramp-up (fast or short-output cells could otherwise let early workers
+        # finish before later ones even start, understating the real
+        # concurrency the run is labeled with).
+        start_barrier = threading.Barrier(test.concurrency)
+
+        def worker(
+            _worker_index: int,
+        ) -> list[tuple[ChatExecution | None, str | None, float, float]]:
+            samples: list[tuple[ChatExecution | None, str | None, float, float]] = []
+            try:
+                with self._client_for_url(base_url) as worker_client:
+                    # Best-effort barrier: a broken barrier (a worker died before
+                    # arriving, or the wait timed out) still proceeds so one
+                    # failed thread cannot wedge the whole benchmark.
+                    with contextlib.suppress(threading.BrokenBarrierError):
+                        start_barrier.wait(
+                            timeout=_CONCURRENT_START_BARRIER_TIMEOUT_S
+                        )
+                    for _ in range(test.concurrent_requests_per_worker):
+                        started = time.monotonic()
+                        try:
+                            execution = worker_client.stream_chat(
+                                model_id=model_id,
+                                messages=messages,
+                                max_tokens=test.max_tokens,
+                                temperature=test.temperature,
+                                top_p=test.top_p,
+                                enable_thinking=enable_thinking,
+                                reasoning_effort=test.reasoning_effort,
+                                # Mirror the chat request options so a concurrent
+                                # test that exercises tools or logprobs asks the
+                                # backend for them (dropping them would falsely
+                                # fail tool/logprob criteria under load).
+                                tools=test.tools,
+                                tool_choice=test.tool_choice,
+                                parallel_tool_calls=test.parallel_tool_calls,
+                                top_logprobs=test.top_logprobs,
+                            )
+                            samples.append(
+                                (execution, None, started, time.monotonic())
+                            )
+                        except (SkulkApiError, httpx.HTTPError) as exc:
+                            samples.append((None, str(exc), started, time.monotonic()))
+            except Exception as exc:  # noqa: BLE001
+                # A benchmark must record a failure and keep running, never abort
+                # the whole run: client construction or any unexpected worker
+                # fault becomes a failed request. Abort the barrier so peers
+                # still waiting on this thread release immediately instead of
+                # stalling for the full timeout.
+                start_barrier.abort()
+                now = time.monotonic()
+                samples.append((None, f"worker error: {exc}", now, now))
+            return samples
+
+        records: list[tuple[ChatExecution | None, str | None, float, float]] = []
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=test.concurrency
+        ) as pool:
+            futures = [pool.submit(worker, i) for i in range(test.concurrency)]
+            for future in concurrent.futures.as_completed(futures):
+                # The worker already converts its own faults to failed samples;
+                # this guard covers anything that still escapes (executor-level
+                # errors) so one thread cannot take down the run.
+                try:
+                    records.extend(future.result())
+                except Exception as exc:  # noqa: BLE001
+                    now = time.monotonic()
+                    records.append((None, f"worker crashed: {exc}", now, now))
+        # Span = first request start to last request finish (the real in-flight
+        # window), not the submit/collect wall, so thread scheduling overhead
+        # does not inflate the denominator of aggregate throughput. Each record
+        # is (execution, error, started_at, ended_at).
+        wall_span = (
+            max(r[3] for r in records) - min(r[2] for r in records) if records else 0.0
+        )
+
+        issues: list[Issue] = []
+        succeeded = 0
+        failed = 0
+        per_request_tps: list[float] = []
+        ttfts: list[float] = []
+        total_generation_tokens = 0
+        sample_text = ""
+        for execution, error, _started, _ended in records:
+            if execution is None:
+                failed += 1
+                issues.append(
+                    Issue(
+                        severity="error",
+                        model_id=model_id,
+                        test_name=test.name,
+                        message="Concurrent request failed",
+                        evidence={"error": error or "no execution"},
+                    )
+                )
+                continue
+            response_issues = _score_output(
+                model_id,
+                test.name,
+                execution.text,
+                test.success,
+                tool_calls=execution.tool_calls,
+                logprob_tokens=execution.logprob_tokens,
+                reasoning_text=execution.reasoning_text,
+                wall_tps=execution.metrics.wall_tps,
+            )
+            if any(issue.severity == "error" for issue in response_issues):
+                failed += 1
+                issues.extend(response_issues)
+                continue
+            succeeded += 1
+            metrics = execution.metrics
+            # Prefer Skulk's engine-reported decode rate, but fall back to the
+            # client-computed wall_tps when a stream carries no generation_stats
+            # (older runs or engines that only provide wall timing). Mirrors the
+            # aggregate path's token fallback and compare._decode_tps, so the
+            # per-request distribution is not blank in those environments.
+            per_request_rate = (
+                metrics.skulk_generation_tps
+                if metrics.skulk_generation_tps is not None
+                else metrics.wall_tps
+            )
+            if per_request_rate is not None:
+                per_request_tps.append(per_request_rate)
+            if metrics.ttft_s is not None:
+                ttfts.append(metrics.ttft_s)
+            if metrics.skulk_generation_tokens is not None:
+                total_generation_tokens += metrics.skulk_generation_tokens
+            elif metrics.approx_output_tokens is not None:
+                total_generation_tokens += metrics.approx_output_tokens
+            if not sample_text:
+                sample_text = execution.text
+
+        # A worker that aborts (an unexpected fault or a client-construction
+        # failure) with concurrent_requests_per_worker > 1 records a single
+        # failure and stops, so its remaining planned requests never reach
+        # records. Count those unissued slots as failures so concurrent_failed
+        # reflects all dropped work and succeeded + failed always equals the
+        # planned total (this also covers the degenerate no-records case).
+        dropped = total_requests - len(records)
+        if dropped > 0:
+            failed += dropped
+            issues.append(
+                Issue(
+                    severity="error",
+                    model_id=model_id,
+                    test_name=test.name,
+                    message="Concurrent worker aborted; planned requests were not issued",
+                    evidence={"dropped_requests": dropped},
+                )
+            )
+        aggregate_tps = (
+            total_generation_tokens / wall_span
+            if wall_span > 0 and total_generation_tokens > 0
+            else None
+        )
+        aggregated_metrics = GenerationMetrics(
+            elapsed_s=wall_span,
+            wall_span_s=wall_span,
+            skulk_generation_tps=aggregate_tps,
+            aggregate_generation_tps=aggregate_tps,
+            skulk_generation_tokens=total_generation_tokens or None,
+            concurrency=test.concurrency,
+            concurrent_total_requests=total_requests,
+            concurrent_succeeded=succeeded,
+            concurrent_failed=failed,
+            per_request_generation_tps_mean=(
+                statistics.fmean(per_request_tps) if per_request_tps else None
+            ),
+            per_request_generation_tps_p50=_percentile(per_request_tps, 50),
+            per_request_generation_tps_p90=_percentile(per_request_tps, 90),
+            ttft_p50_s=_percentile(ttfts, 50),
+            ttft_p90_s=_percentile(ttfts, 90),
+        )
+        return TestResult(
+            model_id=model_id,
+            test_name=test.name,
+            repetition=repetition,
+            passed=failed == 0 and succeeded == total_requests,
+            output_text=sample_text,
+            reasoning_text="",
+            tool_calls=[],
+            metrics=aggregated_metrics,
+            issues=issues,
         )
 
     def _run_cancel_test(
@@ -5008,6 +5292,25 @@ def _speech_pressure_result(
         metrics=GenerationMetrics(elapsed_s=elapsed_s),
         issues=issues,
     )
+
+
+def _percentile(values: list[float], percentile: float) -> float | None:
+    """Return the ``percentile`` (0-100) value via linear interpolation.
+
+    Used to summarize per-request decode rate and TTFT distributions for the
+    concurrent benchmark. Returns ``None`` for an empty sample so callers leave
+    the corresponding optional metric unset rather than reporting a fake zero.
+    """
+    if not values:
+        return None
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return ordered[0]
+    rank = (percentile / 100.0) * (len(ordered) - 1)
+    lower = int(rank)
+    upper = min(lower + 1, len(ordered) - 1)
+    weight = rank - lower
+    return ordered[lower] * (1.0 - weight) + ordered[upper] * weight
 
 
 def _empty_metrics() -> GenerationMetrics:

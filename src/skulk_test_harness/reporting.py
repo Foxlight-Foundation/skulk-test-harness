@@ -128,6 +128,36 @@ def _markdown(report: RunReport) -> str:
     else:
         lines.append("- None")
 
+    concurrent_results = [r for r in report.results if r.kind == "concurrent"]
+    if concurrent_results:
+        lines.extend(["", "## Concurrency", ""])
+        lines.append(
+            "| Model | Test | Conc | OK/Total | Aggregate TPS | Per-req TPS "
+            "(mean/p50/p90) | TTFT s (p50/p90) |"
+        )
+        lines.append("|---|---|---:|---:|---:|---:|---:|")
+        for result in concurrent_results:
+            metrics = result.metrics
+            ok_total = (
+                f"{metrics.concurrent_succeeded}/{metrics.concurrent_total_requests}"
+            )
+            per_req = (
+                f"{_fmt(metrics.per_request_generation_tps_mean)}/"
+                f"{_fmt(metrics.per_request_generation_tps_p50)}/"
+                f"{_fmt(metrics.per_request_generation_tps_p90)}"
+            )
+            ttft = f"{_fmt(metrics.ttft_p50_s)}/{_fmt(metrics.ttft_p90_s)}"
+            lines.append(
+                "| "
+                f"`{result.model_id}` | "
+                f"`{result.test_name}` | "
+                f"{metrics.concurrency} | "
+                f"{ok_total} | "
+                f"{_fmt(metrics.aggregate_generation_tps)} | "
+                f"{per_req} | "
+                f"{ttft} |"
+            )
+
     all_issues = [*report.issues, *(issue for r in report.results for issue in r.issues)]
     lines.extend(["", "## Issues", ""])
     if all_issues:
