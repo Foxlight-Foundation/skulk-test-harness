@@ -972,35 +972,49 @@ class HarnessRunner:
             _worker_index: int,
         ) -> list[tuple[ChatExecution | None, str | None, float, float]]:
             samples: list[tuple[ChatExecution | None, str | None, float, float]] = []
-            with self._client_for_url(base_url) as worker_client:
-                # Best-effort barrier: a broken barrier (a worker died before
-                # arriving, or the wait timed out) still proceeds so one failed
-                # thread cannot wedge the whole benchmark.
-                with contextlib.suppress(threading.BrokenBarrierError):
-                    start_barrier.wait(timeout=_CONCURRENT_START_BARRIER_TIMEOUT_S)
-                for _ in range(test.concurrent_requests_per_worker):
-                    started = time.monotonic()
-                    try:
-                        execution = worker_client.stream_chat(
-                            model_id=model_id,
-                            messages=messages,
-                            max_tokens=test.max_tokens,
-                            temperature=test.temperature,
-                            top_p=test.top_p,
-                            enable_thinking=enable_thinking,
-                            reasoning_effort=test.reasoning_effort,
-                            # Mirror the chat request options so a concurrent
-                            # test that exercises tools or logprobs asks the
-                            # backend for them (dropping them would falsely fail
-                            # tool/logprob success criteria under load).
-                            tools=test.tools,
-                            tool_choice=test.tool_choice,
-                            parallel_tool_calls=test.parallel_tool_calls,
-                            top_logprobs=test.top_logprobs,
+            try:
+                with self._client_for_url(base_url) as worker_client:
+                    # Best-effort barrier: a broken barrier (a worker died before
+                    # arriving, or the wait timed out) still proceeds so one
+                    # failed thread cannot wedge the whole benchmark.
+                    with contextlib.suppress(threading.BrokenBarrierError):
+                        start_barrier.wait(
+                            timeout=_CONCURRENT_START_BARRIER_TIMEOUT_S
                         )
-                        samples.append((execution, None, started, time.monotonic()))
-                    except (SkulkApiError, httpx.HTTPError) as exc:
-                        samples.append((None, str(exc), started, time.monotonic()))
+                    for _ in range(test.concurrent_requests_per_worker):
+                        started = time.monotonic()
+                        try:
+                            execution = worker_client.stream_chat(
+                                model_id=model_id,
+                                messages=messages,
+                                max_tokens=test.max_tokens,
+                                temperature=test.temperature,
+                                top_p=test.top_p,
+                                enable_thinking=enable_thinking,
+                                reasoning_effort=test.reasoning_effort,
+                                # Mirror the chat request options so a concurrent
+                                # test that exercises tools or logprobs asks the
+                                # backend for them (dropping them would falsely
+                                # fail tool/logprob criteria under load).
+                                tools=test.tools,
+                                tool_choice=test.tool_choice,
+                                parallel_tool_calls=test.parallel_tool_calls,
+                                top_logprobs=test.top_logprobs,
+                            )
+                            samples.append(
+                                (execution, None, started, time.monotonic())
+                            )
+                        except (SkulkApiError, httpx.HTTPError) as exc:
+                            samples.append((None, str(exc), started, time.monotonic()))
+            except Exception as exc:  # noqa: BLE001
+                # A benchmark must record a failure and keep running, never abort
+                # the whole run: client construction or any unexpected worker
+                # fault becomes a failed request. Abort the barrier so peers
+                # still waiting on this thread release immediately instead of
+                # stalling for the full timeout.
+                start_barrier.abort()
+                now = time.monotonic()
+                samples.append((None, f"worker error: {exc}", now, now))
             return samples
 
         records: list[tuple[ChatExecution | None, str | None, float, float]] = []
@@ -1009,7 +1023,14 @@ class HarnessRunner:
         ) as pool:
             futures = [pool.submit(worker, i) for i in range(test.concurrency)]
             for future in concurrent.futures.as_completed(futures):
-                records.extend(future.result())
+                # The worker already converts its own faults to failed samples;
+                # this guard covers anything that still escapes (executor-level
+                # errors) so one thread cannot take down the run.
+                try:
+                    records.extend(future.result())
+                except Exception as exc:  # noqa: BLE001
+                    now = time.monotonic()
+                    records.append((None, f"worker crashed: {exc}", now, now))
         # Span = first request start to last request finish (the real in-flight
         # window), not the submit/collect wall, so thread scheduling overhead
         # does not inflate the denominator of aggregate throughput. Each record

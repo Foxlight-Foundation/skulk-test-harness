@@ -3143,3 +3143,37 @@ def test_concurrent_test_fails_when_a_request_errors(
         issue.severity == "error" and "Concurrent request failed" in issue.message
         for issue in result.issues
     )
+
+
+def test_concurrent_test_records_unexpected_worker_error_without_aborting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _runner()
+
+    class _BoomClient:
+        base_url = "http://api"
+
+        def __enter__(self) -> "_BoomClient":
+            return self
+
+        def __exit__(self, *_exc: object) -> None:
+            return None
+
+        def stream_chat(self, **_kwargs: object) -> ChatExecution:
+            # An unexpected (non-API) exception must be recorded as a failed
+            # request, not propagate out and abort the whole benchmark run.
+            raise ValueError("unexpected worker fault")
+
+    monkeypatch.setattr(runner, "_client_for_url", lambda _url: _BoomClient())
+    driver = SkulkClient("http://api")
+
+    result = runner._run_concurrent_test(
+        driver, model_id="m", test=_concurrent_test(2, 1), repetition=1
+    )
+
+    assert result.passed is False
+    assert result.metrics.concurrent_failed == 2
+    assert result.metrics.concurrent_succeeded == 0
+    assert any(
+        "worker error" in str((i.evidence or {}).get("error", "")) for i in result.issues
+    )
