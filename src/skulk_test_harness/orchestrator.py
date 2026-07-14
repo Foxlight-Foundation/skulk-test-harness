@@ -1075,8 +1075,18 @@ class HarnessRunner:
                 continue
             succeeded += 1
             metrics = execution.metrics
-            if metrics.skulk_generation_tps is not None:
-                per_request_tps.append(metrics.skulk_generation_tps)
+            # Prefer Skulk's engine-reported decode rate, but fall back to the
+            # client-computed wall_tps when a stream carries no generation_stats
+            # (older runs or engines that only provide wall timing). Mirrors the
+            # aggregate path's token fallback and compare._decode_tps, so the
+            # per-request distribution is not blank in those environments.
+            per_request_rate = (
+                metrics.skulk_generation_tps
+                if metrics.skulk_generation_tps is not None
+                else metrics.wall_tps
+            )
+            if per_request_rate is not None:
+                per_request_tps.append(per_request_rate)
             if metrics.ttft_s is not None:
                 ttfts.append(metrics.ttft_s)
             if metrics.skulk_generation_tokens is not None:
@@ -1086,23 +1096,29 @@ class HarnessRunner:
             if not sample_text:
                 sample_text = execution.text
 
-        aggregate_tps = (
-            total_generation_tokens / wall_span
-            if wall_span > 0 and total_generation_tokens > 0
-            else None
-        )
-        if failed == 0 and succeeded == 0:
-            # No records at all (concurrency/per-worker cannot both be 0 given
-            # the field bounds, so this only fires if every worker returned an
-            # empty list, which would itself be a harness bug worth surfacing).
+        # A worker that aborts (an unexpected fault or a client-construction
+        # failure) with concurrent_requests_per_worker > 1 records a single
+        # failure and stops, so its remaining planned requests never reach
+        # records. Count those unissued slots as failures so concurrent_failed
+        # reflects all dropped work and succeeded + failed always equals the
+        # planned total (this also covers the degenerate no-records case).
+        dropped = total_requests - len(records)
+        if dropped > 0:
+            failed += dropped
             issues.append(
                 Issue(
                     severity="error",
                     model_id=model_id,
                     test_name=test.name,
-                    message="Concurrent test produced no requests",
+                    message="Concurrent worker aborted; planned requests were not issued",
+                    evidence={"dropped_requests": dropped},
                 )
             )
+        aggregate_tps = (
+            total_generation_tokens / wall_span
+            if wall_span > 0 and total_generation_tokens > 0
+            else None
+        )
         aggregated_metrics = GenerationMetrics(
             elapsed_s=wall_span,
             wall_span_s=wall_span,

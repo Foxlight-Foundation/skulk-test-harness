@@ -3177,3 +3177,41 @@ def test_concurrent_test_records_unexpected_worker_error_without_aborting(
     assert any(
         "worker error" in str((i.evidence or {}).get("error", "")) for i in result.issues
     )
+
+
+def test_concurrent_test_counts_dropped_worker_slots_as_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _runner()
+
+    class _BoomOnceClient:
+        base_url = "http://api"
+
+        def __enter__(self) -> "_BoomOnceClient":
+            return self
+
+        def __exit__(self, *_exc: object) -> None:
+            return None
+
+        def stream_chat(self, **_kwargs: object) -> ChatExecution:
+            # An unexpected fault on the first request aborts the worker, so the
+            # remaining two planned requests are never issued. They must still be
+            # counted as failures so total == succeeded + failed.
+            raise ValueError("boom")
+
+    monkeypatch.setattr(runner, "_client_for_url", lambda _url: _BoomOnceClient())
+    driver = SkulkClient("http://api")
+
+    # One worker, three planned requests; the worker aborts on the first.
+    result = runner._run_concurrent_test(
+        driver, model_id="m", test=_concurrent_test(1, 3), repetition=1
+    )
+
+    assert result.metrics.concurrent_total_requests == 3
+    assert result.metrics.concurrent_succeeded == 0
+    assert result.metrics.concurrent_failed == 3
+    assert result.passed is False
+    assert any(
+        "not issued" in i.message or "worker error" in str((i.evidence or {}).get("error", ""))
+        for i in result.issues
+    )
