@@ -1139,6 +1139,9 @@ class SkulkClient:
         response_format: str = "wav",
         voice: str | None = None,
         speed: float | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        max_tokens: int | None = None,
         stream: bool = False,
         streaming_interval: float | None = None,
         read_delay_s: float = 0.0,
@@ -1168,6 +1171,12 @@ class SkulkClient:
             payload["voice"] = voice
         if speed is not None:
             payload["speed"] = speed
+        if temperature is not None:
+            payload["temperature"] = temperature
+        if top_p is not None:
+            payload["top_p"] = top_p
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
 
         start = time.monotonic()
         if stream:
@@ -1533,8 +1542,10 @@ class SkulkClient:
 
         if not pcm16 or len(pcm16) % 2 != 0:
             raise ValueError("realtime PCM16 input must contain complete samples")
-        if not 8_000 <= sample_rate <= 96_000:
-            raise ValueError("realtime sample rate must be between 8000 and 96000 Hz")
+        if sample_rate != 24_000:
+            raise ValueError(
+                "realtime PCM16 input must use the protocol's 24000 Hz rate"
+            )
         if not 20 <= frame_duration_ms <= 1000:
             raise ValueError("realtime frame duration must be between 20 and 1000 ms")
         if cancel_after_frames < 0:

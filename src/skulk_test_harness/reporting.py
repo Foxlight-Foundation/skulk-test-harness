@@ -107,9 +107,9 @@ def _markdown(report: RunReport) -> str:
     lines.extend(["", "## Results", ""])
     if report.results:
         lines.append(
-            "| Model | Test | Rep | Pass | TTFT s | Wall TPS | Content Chars | Generated Chars | Artifact |"
+            "| Model | Test | Rep | Pass | TTFT s | Wall TPS | WER | Content Chars | Generated Chars | Artifact |"
         )
-        lines.append("|---|---|---:|---:|---:|---:|---:|---:|---|")
+        lines.append("|---|---|---:|---:|---:|---:|---:|---:|---:|---|")
         for result in report.results:
             metrics = result.metrics
             artifact = f"`{result.artifact_path}`" if result.artifact_path else ""
@@ -121,6 +121,7 @@ def _markdown(report: RunReport) -> str:
                 f"{'yes' if result.passed else 'no'} | "
                 f"{_fmt(metrics.ttft_s)} | "
                 f"{_fmt(metrics.wall_tps)} | "
+                f"{_fmt(metrics.word_error_rate)} | "
                 f"{metrics.output_chars} | "
                 f"{metrics.generated_chars} | "
                 f"{artifact} |"

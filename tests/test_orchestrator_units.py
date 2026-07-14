@@ -61,9 +61,12 @@ from skulk_test_harness.orchestrator import (
     _score_output,
     _score_realtime_provider_diagnostics,
     _score_streaming_audio_output,
+    _score_transcript_fidelity,
     _select_catalog_models,
     _store_registry_entries,
     _tool_roundtrip_messages,
+    _wav_from_pcm16,
+    _word_error_rate,
 )
 from skulk_test_harness.reporting import ReportWriter, _markdown
 from skulk_test_harness.specs import load_config, load_model_sets, load_test_sets
@@ -697,6 +700,7 @@ def test_public_default_sets_are_cluster_neutral() -> None:
         "context-admission",
         "embeddings",
         "speech-synthesis",
+        "speech-synthesis-semantic",
         "speech-synthesis-streaming",
         "speech-data-pressure",
         "speech-roundtrip",
@@ -719,6 +723,10 @@ def test_public_default_sets_are_cluster_neutral() -> None:
     )
     roundtrip_test = test_sets["speech-roundtrip"].tests[0]
     assert roundtrip_test.transcription_model_id is None
+    assert roundtrip_test.success.max_word_error_rate == 0.25
+    semantic_tts_test = test_sets["speech-synthesis-semantic"].tests[0]
+    assert semantic_tts_test.kind == "speech_roundtrip"
+    assert semantic_tts_test.success.max_word_error_rate == 0.25
     pressure_tests = test_sets["speech-data-pressure"].tests
     assert all(test.speech_assert_data_plane_diagnostics for test in pressure_tests)
     assert pressure_tests[1].speech_owner_topology == "local_remote"
@@ -780,6 +788,32 @@ def test_foxlight_speech_pressure_closes_data_plane_coverage() -> None:
     assert mixed.speech_chat_model_id == "mlx-community/Qwen3-0.6B-4bit"
 
 
+def test_foxlight_tts_battery_enforces_semantic_fidelity() -> None:
+    root = Path(__file__).parents[1]
+    model_sets = load_model_sets(root / "examples/foxlight/model_sets.yaml").model_sets
+    test_sets = load_test_sets(root / "examples/foxlight/test_sets.yaml").test_sets
+
+    semantic_tests = test_sets["speech-synthesis-semantic"].tests
+    semantic_test = semantic_tests[0]
+
+    assert len(semantic_tests) == 3
+    assert semantic_test.kind == "speech_roundtrip"
+    assert semantic_test.transcription_model_id == (
+        "CogniSoftOrg/canary-1b-v2-mlx-bf16"
+    )
+    assert semantic_test.success.max_word_error_rate == 0.25
+    assert all(test.repetitions == 3 for test in semantic_tests)
+    assert semantic_tests[-1].prompt == ("Hello world from the Skulk speech battery.")
+    assert semantic_tests[-1].success.max_word_error_rate == 0.34
+    assert model_sets["speech-tts"].models == [
+        "mlx-community/fish-audio-s2-pro-8bit",
+        "mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-4bit",
+    ]
+    assert model_sets["speech-tts-candidates"].models == [
+        "mlx-community/LongCat-AudioDiT-1B-4bit",
+    ]
+
+
 def test_foxlight_realtime_suite_requires_local_remote_provider_evidence() -> None:
     root = Path(__file__).parents[1]
     model_sets = load_model_sets(root / "examples/foxlight/model_sets.yaml").model_sets
@@ -789,7 +823,7 @@ def test_foxlight_realtime_suite_requires_local_remote_provider_evidence() -> No
         "mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit"
     ]
     test = test_sets["realtime-transcription"].tests[0]
-    assert test.speech_synthesis_model_id == ("mlx-community/LongCat-AudioDiT-1B-4bit")
+    assert test.speech_synthesis_model_id == ("mlx-community/fish-audio-s2-pro-8bit")
     assert test.speech_owner_count == 2
     assert test.speech_owner_topology == "local_remote"
     assert test.realtime_assert_provider_diagnostics is True
@@ -797,7 +831,7 @@ def test_foxlight_realtime_suite_requires_local_remote_provider_evidence() -> No
 
     fabric_test = test_sets["fabric-speech-chain"].tests[0]
     assert fabric_test.speech_synthesis_model_id == (
-        "mlx-community/LongCat-AudioDiT-1B-4bit"
+        "mlx-community/fish-audio-s2-pro-8bit"
     )
     assert fabric_test.realtime_response_tts_model_id == (
         "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-4bit"
@@ -819,6 +853,7 @@ def test_foxlight_e2e_battery_references_defined_sets() -> None:
     assert cells
     assert all(cell[1] in model_sets for cell in cells)
     assert all(cell[2] in test_sets for cell in cells)
+    assert ["cell", "speech-tts", "speech-synthesis-semantic"] in cells
 
 
 def test_score_output_require_logprobs_fails_when_absent() -> None:
@@ -1005,6 +1040,9 @@ class _FakeClient:
         response_format: str = "wav",
         voice: str | None = None,
         speed: float | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        max_tokens: int | None = None,
         stream: bool = False,
         streaming_interval: float | None = None,
         read_delay_s: float = 0.0,
@@ -1020,6 +1058,9 @@ class _FakeClient:
                 "response_format": response_format,
                 "voice": voice,
                 "speed": speed,
+                "temperature": temperature,
+                "top_p": top_p,
+                "max_tokens": max_tokens,
                 "stream": stream,
                 "streaming_interval": streaming_interval,
                 "read_delay_s": read_delay_s,
@@ -1429,6 +1470,9 @@ def test_run_test_dispatches_audio_speech(tmp_path: Path) -> None:
         name="tts",
         kind="audio_speech",
         prompt="hello",
+        max_tokens=256,
+        temperature=0.0,
+        top_p=0.8,
         success=SuccessCriteria(min_chars=0, min_audio_bytes=1024),
     )
 
@@ -1443,6 +1487,9 @@ def test_run_test_dispatches_audio_speech(tmp_path: Path) -> None:
     assert result.passed is True
     assert "audio_bytes=" in result.output_text
     assert client.speech_requests[0]["model_id"] == "org/TTS"
+    assert client.speech_requests[0]["temperature"] == 0.0
+    assert client.speech_requests[0]["top_p"] == 0.8
+    assert client.speech_requests[0]["max_tokens"] == 256
     assert result.artifact_path is not None
     assert result.artifact_path == tmp_path / "org-tts--tts--rep-1.wav"
     assert result.artifact_path.read_bytes() == _wav_bytes()
@@ -1462,8 +1509,8 @@ def test_run_test_dispatches_streaming_audio_speech(tmp_path: Path) -> None:
             min_audio_bytes=1024,
             min_stream_chunks=2,
             min_stream_span_s=0.5,
-            ),
-        )
+        ),
+    )
 
     result = runner._run_test(
         client,  # type: ignore[arg-type]
@@ -1797,6 +1844,11 @@ def test_speech_pressure_runs_chat_and_tts_concurrently(
     assert "speech_requests=2 speech_successes=2" in result.output_text
     assert "chat_requests=2 chat_successes=2 failures=0" in result.output_text
     assert sum(len(item.speech_requests) for item in pressure_clients) == 2
+    assert all(
+        request["max_tokens"] is None
+        for item in pressure_clients
+        for request in item.speech_requests
+    )
     assert sum(len(item.thinking_seen) for item in pressure_clients) == 2
 
 
@@ -1963,12 +2015,72 @@ def test_run_test_persists_streaming_transcription_timeline(tmp_path: Path) -> N
     assert len(client.streaming_transcription_requests) == 2
 
 
+def test_generated_streaming_transcription_fixture_is_normalized_to_24khz(
+    tmp_path: Path,
+) -> None:
+    tts_placement = PlacementResult(
+        model_id="org/TTS",
+        instance_id="tts-instance",
+        ready=True,
+    )
+    client = _FakeClient(
+        live_placements=[tts_placement],
+        models=[{"id": "org/STT"}, {"id": "org/TTS"}],
+    )
+    test = PromptTest(
+        name="streaming-stt-generated",
+        kind="audio_transcription_streaming",
+        prompt="transcribe this",
+        speech_synthesis_model_id="org/TTS",
+        success=SuccessCriteria(
+            min_chars=5,
+            min_audio_bytes=1024,
+            min_transcript_deltas=2,
+            required_substrings=["hello"],
+        ),
+    )
+
+    result = _runner()._run_test(
+        client,  # type: ignore[arg-type]
+        model_id="org/STT",
+        test=test,
+        repetition=1,
+        artifact_dir=tmp_path,
+        spec=RunSpec(model_set="m", test_set="t", mode="execute"),
+        report=_report(),
+    )
+
+    assert result.passed is True
+    submitted = client.streaming_transcription_requests[0]["audio"]
+    assert isinstance(submitted, bytes)
+    with wave.open(io.BytesIO(submitted), "rb") as reader:
+        assert reader.getnchannels() == 1
+        assert reader.getsampwidth() == 2
+        assert reader.getframerate() == 24_000
+
+
 def test_pcm16_from_wav_downmixes_stereo() -> None:
     pcm16, sample_rate = _pcm16_from_wav(_wav_bytes(channels=2, sample_rate=16_000))
 
     assert sample_rate == 16_000
     assert len(pcm16) == 800 * 2
     assert pcm16[:2] == b"\x00\x01"
+
+
+def test_pcm16_from_wav_resamples_realtime_fixture_to_24khz() -> None:
+    pcm16, sample_rate = _pcm16_from_wav(
+        _wav_bytes(sample_rate=16_000),
+        target_sample_rate=24_000,
+    )
+
+    assert sample_rate == 24_000
+    assert len(pcm16) == 1_200 * 2
+    normalized = _wav_from_pcm16(pcm16, sample_rate=sample_rate)
+    with wave.open(io.BytesIO(normalized), "rb") as reader:
+        assert reader.getnchannels() == 1
+        assert reader.getsampwidth() == 2
+        assert reader.getframerate() == 24_000
+        assert reader.getnframes() == 1_200
 
 
 def test_realtime_transcription_roundtrip_runs_local_remote_and_cancel(
@@ -2069,6 +2181,7 @@ def test_realtime_transcription_roundtrip_runs_local_remote_and_cancel(
     assert [request["cancel_after_frames"] for request in requests[1:]] == [0, 0]
     assert cancellation_release_checks == [1]
     assert all(request["model_id"] == "org/RealtimeSTT" for request in requests)
+    assert all(request["sample_rate"] == 24_000 for request in requests)
     assert all(request["response_model_id"] is None for request in requests)
     assert all(request["response_tts_model_id"] is None for request in requests)
     assert result.artifact_path is not None
@@ -2149,6 +2262,7 @@ def test_fabric_speech_chain_mounts_participants_and_persists_response_audio(
     assert request["response_tts_model_id"] == "org/TTS"
     assert request["response_max_output_tokens"] == 96
     assert request["response_enable_thinking"] is False
+    assert client.speech_requests[0]["max_tokens"] is None
     assert list(tmp_path.glob("*.mp3"))
     assert {placement.model_id for placement in report.placements} == {
         "org/TTS",
@@ -2500,11 +2614,73 @@ def test_speech_roundtrip_persists_generated_audio_artifact(
 
     assert result.passed is True
     assert result.output_text == "hello world"
+    assert result.metrics.word_error_rate == 1.0
     assert result.artifact_path is not None
     assert result.artifact_path == tmp_path / "org-tts--roundtrip--rep-1.wav"
     audio = result.artifact_path.read_bytes()
     assert audio.startswith(b"RIFF")
     assert client.transcription_requests[0]["audio"] == audio
+
+
+def test_word_error_rate_normalizes_case_and_punctuation() -> None:
+    assert _word_error_rate("Hello, WORLD!", "hello world") == 0.0
+    assert _word_error_rate("one two three four", "one two four") == 0.25
+
+
+def test_score_transcript_fidelity_rejects_unrelated_speech() -> None:
+    issues = _score_transcript_fidelity(
+        "org/TTS",
+        "semantic-roundtrip",
+        reference="the quick brown fox jumps over the lazy dog",
+        transcript="have a little",
+        criteria=SuccessCriteria(max_word_error_rate=0.25),
+    )
+
+    assert len(issues) == 1
+    assert issues[0].severity == "error"
+    assert "word error rate exceeded" in issues[0].message.lower()
+    measured_word_error_rate = issues[0].evidence["word_error_rate"]
+    assert isinstance(measured_word_error_rate, float)
+    assert measured_word_error_rate > 0.25
+
+
+def test_speech_roundtrip_applies_word_error_rate_gate(tmp_path: Path) -> None:
+    client = _FakeClient()
+    runner = _runner()
+    runner._ensure_model_placed = lambda *_args, **_kwargs: PlacementResult(  # type: ignore[method-assign]
+        model_id="org/STT",
+        instance_id="stt-instance",
+        ready=True,
+        created_by_harness=False,
+    )
+    test = PromptTest(
+        name="semantic-roundtrip",
+        kind="speech_roundtrip",
+        prompt="the quick brown fox jumps over the lazy dog",
+        transcription_model_id="org/STT",
+        success=SuccessCriteria(
+            min_chars=5,
+            min_audio_bytes=1024,
+            max_word_error_rate=0.25,
+        ),
+    )
+
+    result = runner._run_test(
+        client,  # type: ignore[arg-type]
+        model_id="org/TTS",
+        test=test,
+        repetition=1,
+        artifact_dir=tmp_path,
+        spec=RunSpec(model_set="m", test_set="t", mode="execute"),
+        report=_report(),
+    )
+
+    assert result.passed is False
+    assert result.metrics.word_error_rate is not None
+    assert result.metrics.word_error_rate > 0.25
+    assert any(
+        "word error rate exceeded" in issue.message.lower() for issue in result.issues
+    )
 
 
 def test_speech_translation_roundtrip_uses_translation_endpoint(
@@ -2530,6 +2706,7 @@ def test_speech_translation_roundtrip_uses_translation_endpoint(
             min_chars=5,
             min_audio_bytes=1024,
             required_substrings=["project"],
+            max_word_error_rate=0,
         ),
     )
 
@@ -2545,6 +2722,7 @@ def test_speech_translation_roundtrip_uses_translation_endpoint(
 
     assert result.passed is True
     assert result.output_text == "hello project"
+    assert result.metrics.word_error_rate is None
     assert client.translation_requests[0]["model_id"] == "org/Canary"
     assert client.translation_requests[0]["language"] == "fr"
     assert result.artifact_path is not None
@@ -2565,10 +2743,15 @@ def test_speech_reference_roundtrip_generates_and_conditions_audio(
     test = PromptTest(
         name="reference-roundtrip",
         kind="speech_reference_roundtrip",
-        prompt="conditioned words",
+        prompt="hello world",
         reference_model_id="org/Donor",
         reference_text="reference words",
-        success=SuccessCriteria(min_chars=0, min_audio_bytes=1024),
+        transcription_model_id="org/STT",
+        success=SuccessCriteria(
+            min_chars=5,
+            min_audio_bytes=1024,
+            max_word_error_rate=0.25,
+        ),
     )
 
     result = runner._run_test(
@@ -2582,7 +2765,10 @@ def test_speech_reference_roundtrip_generates_and_conditions_audio(
     )
 
     assert result.passed is True
+    assert result.output_text == "hello world"
+    assert result.metrics.word_error_rate == 0.0
     assert len(client.speech_requests) == 2
+    assert len(client.transcription_requests) == 1
     reference_audio = client.speech_requests[0]["reference_audio"]
     assert reference_audio is None
     assert client.speech_requests[1]["reference_audio"] == _wav_bytes()
@@ -2592,6 +2778,41 @@ def test_speech_reference_roundtrip_generates_and_conditions_audio(
     ).exists()
     assert result.artifact_path is not None
     assert result.artifact_path.exists()
+
+
+def test_speech_reference_roundtrip_requires_stt_for_wer(tmp_path: Path) -> None:
+    donor_placement = PlacementResult(
+        model_id="org/Donor",
+        instance_id="donor-instance",
+        ready=True,
+    )
+    client = _FakeClient(
+        live_placements=[donor_placement],
+        models=[{"id": "org/QwenBase"}, {"id": "org/Donor"}],
+    )
+    test = PromptTest(
+        name="reference-roundtrip-no-stt",
+        kind="speech_reference_roundtrip",
+        prompt="hello world",
+        reference_model_id="org/Donor",
+        success=SuccessCriteria(
+            min_audio_bytes=1024,
+            max_word_error_rate=0.25,
+        ),
+    )
+
+    result = _runner()._run_test(
+        client,  # type: ignore[arg-type]
+        model_id="org/QwenBase",
+        test=test,
+        repetition=1,
+        artifact_dir=tmp_path,
+        spec=RunSpec(model_set="m", test_set="t", mode="execute"),
+        report=_report(),
+    )
+
+    assert result.passed is False
+    assert any("No STT model found" in str(issue.evidence) for issue in result.issues)
 
 
 def test_audio_voices_requires_expected_inventory(tmp_path: Path) -> None:
@@ -2931,7 +3152,7 @@ def test_default_test_sets_all_declare_a_description() -> None:
 
 
 def _metric() -> GenerationMetrics:
-    return GenerationMetrics(elapsed_s=0.0)
+    return GenerationMetrics(elapsed_s=0.0, word_error_rate=0.125)
 
 
 def test_report_carries_and_renders_suite_and_test_metadata() -> None:
@@ -2958,9 +3179,12 @@ def test_report_carries_and_renders_suite_and_test_metadata() -> None:
     )
     assert restored.results[0].kind == "chat"
     assert restored.results[0].description == "Answers a factual prompt."
+    assert restored.results[0].metrics.word_error_rate == 0.125
 
     markdown = _markdown(report.finish())
     assert "General chat sanity and instruction-following tests." in markdown
+    assert "| WER |" in markdown
+    assert "| 0.12 |" in markdown
 
 
 def test_legacy_report_without_descriptions_validates_with_defaults() -> None:

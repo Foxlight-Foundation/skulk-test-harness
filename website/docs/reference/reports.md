@@ -50,6 +50,9 @@ arrival offsets. Realtime transcription writes a `.realtime.json` sidecar
 containing the selected TTS fixture model, PCM frame shape, protocol event
 types, first-transcript timing, cancellation outcome, and sanitized provider
 counter deltas. It contains no audio payload, route, or node identifier.
+Non-translation speech roundtrips also record `word_error_rate` in their result
+metrics, including successful runs, so semantic quality remains comparable over
+time instead of being reduced to a pass/fail threshold.
 
 ## Important Metrics
 
@@ -62,6 +65,7 @@ counter deltas. It contains no audio payload, route, or node identifier.
 | `output_chars` | Visible output character count |
 | `generated_chars` | Visible plus separated reasoning character count |
 | `chunks` | Number of streamed chunks observed |
+| `word_error_rate` | STT transcript edit distance divided by source-prompt word count for a speech roundtrip |
 
 For a `kind: concurrent` test the same block also carries the load aggregates
 below (all `null` for single-request tests). The aggregate throughput is also

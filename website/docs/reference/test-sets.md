@@ -46,9 +46,9 @@ Each map key must match the test set's `name`.
 | `realtime_transcription` | Semantic TTS-to-realtime-STT WebSocket roundtrip, disconnect recovery, local/remote ownership, and provider diagnostics |
 | `realtime_conversation` | Persistent server-VAD voice loop with automatic commits, multiple turns, assistant text/audio, optional barge-in, local/remote ownership, and saved event evidence |
 | `fabric_speech_chain` | Explicit Fabric STT-to-chat-to-TTS composition with transcript, assistant text, response audio, cancellation, local/remote ownership, and provider diagnostics |
-| `speech_roundtrip` | TTS output saved as an artifact and piped into a mounted STT model |
+| `speech_roundtrip` | TTS output saved as an artifact and piped into a mounted STT model, with optional semantic fidelity scoring |
 | `speech_translation_roundtrip` | TTS output saved and translated to English by a mounted translation model |
-| `speech_reference_roundtrip` | A donor TTS clip conditions a multipart TTS request; both clips are saved |
+| `speech_reference_roundtrip` | A donor TTS clip conditions a multipart TTS request; both clips are saved, with optional STT/WER scoring of the conditioned output |
 
 ## Prompt Test Fields
 
@@ -59,9 +59,9 @@ Each map key must match the test set's `name`.
 | `description` | Optional human explanation |
 | `system` | Optional system message |
 | `prompt` | Main user prompt |
-| `max_tokens` | Output token budget; for realtime conversation and Fabric-chain tests, bounds the automatic chat response before TTS |
-| `temperature` | Sampling temperature |
-| `top_p` | Optional nucleus sampling value |
+| `max_tokens` | Output token budget for chat and TTS; for realtime conversation and Fabric-chain tests, bounds the automatic chat response before TTS |
+| `temperature` | Sampling temperature for chat and TTS requests |
+| `top_p` | Optional nucleus sampling value for chat and TTS requests |
 | `enable_thinking` | Optional reasoning toggle; also controls automatic chat reasoning in realtime conversation and Fabric-chain tests |
 | `reasoning_effort` | Optional reasoning effort value |
 | `prompt_repetitions` | Repeat prompt text before sending |
@@ -99,7 +99,7 @@ Each map key must match the test set's `name`.
 | `input_audio_path` | Optional local fixture path for batch or streaming audio transcription; streaming tests can generate a TTS fixture instead |
 | `input_audio_mime_type` | Optional MIME type for transcription fixture upload; inferred from the fixture extension when omitted |
 | `transcription_model_id` | Optional STT model used by `kind: speech_roundtrip` |
-| `speech_synthesis_model_id` | Optional TTS fixture model used by realtime or uploaded-audio streaming transcription |
+| `speech_synthesis_model_id` | Optional TTS fixture model used by realtime or uploaded-audio streaming transcription; generated WAV fixtures are normalized to mono 24 kHz PCM16 |
 | `realtime_response_model_id` | Mounted chat participant required by conversational realtime and Fabric-chain tests |
 | `realtime_response_tts_model_id` | Mounted response TTS participant required by conversational realtime and Fabric-chain tests |
 | `transcription_response_format` | STT response format, such as `json` or `text` |
@@ -136,6 +136,7 @@ Each map key must match the test set's `name`.
 | `forbid_in_reasoning` | Apply forbidden strings to reasoning too |
 | `min_wall_tps` | Minimum wall-clock decode tokens per second |
 | `min_audio_bytes` | Minimum encoded audio bytes for speech synthesis |
+| `max_word_error_rate` | Maximum STT word error rate against the source prompt for `speech_roundtrip` |
 | `min_stream_chunks` | Minimum streamed response chunk count |
 | `max_first_byte_s` | Optional maximum time to first streamed byte/token |
 | `min_stream_span_s` | Minimum elapsed seconds between first and last streamed chunks |
@@ -153,6 +154,7 @@ Each map key must match the test set's `name`.
 | `context-admission` | Oversized request guard |
 | `embeddings` | Embeddings endpoint coverage |
 | `speech-synthesis` | Text-to-speech endpoint coverage |
+| `speech-synthesis-semantic` | TTS-to-STT prompt-fidelity coverage using word error rate |
 | `speech-synthesis-streaming` | Experimental text-to-speech streaming coverage |
 | `speech-data-pressure` | Concurrent local/remote TTS pressure with DATA diagnostics |
 | `speech-roundtrip` | TTS-to-STT endpoint coverage |

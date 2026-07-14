@@ -285,6 +285,9 @@ def test_audio_speech_posts_openai_payload_and_returns_bytes(
             response_format="wav",
             voice="af_heart",
             speed=1.1,
+            temperature=0.0,
+            top_p=0.8,
+            max_tokens=256,
         )
     finally:
         client.close()
@@ -297,6 +300,9 @@ def test_audio_speech_posts_openai_payload_and_returns_bytes(
             "response_format": "wav",
             "voice": "af_heart",
             "speed": 1.1,
+            "temperature": 0.0,
+            "top_p": 0.8,
+            "max_tokens": 256,
         },
     }
     assert execution.audio == wav
@@ -740,12 +746,12 @@ def test_realtime_transcription_maps_pcm_to_websocket_protocol(
 
     monkeypatch.setattr(client_module.websocket_client, "connect", connect)
     client = SkulkClient("https://skulk.test:52415")
-    pcm16 = bytes(range(256)) * 3
+    pcm16 = b"\x01\x00" * (24_000 * 20 // 1_000 * 3)
     try:
         execution = client.realtime_transcription(
             model_id="org/realtime stt",
             pcm16=pcm16,
-            sample_rate=8_000,
+            sample_rate=24_000,
             frame_duration_ms=20,
             pace_audio=False,
         )
@@ -817,7 +823,7 @@ def test_fabric_speech_chain_collects_transcript_text_and_audio(
         execution = client.realtime_transcription(
             model_id="org/realtime stt",
             pcm16=b"\x01\x00" * 160,
-            sample_rate=8_000,
+            sample_rate=24_000,
             frame_duration_ms=20,
             pace_audio=False,
             fabric_chain=True,
@@ -899,7 +905,7 @@ def test_realtime_conversation_uses_vad_multi_turn_and_barge_in(
         execution = client.realtime_transcription(
             model_id="org/STT",
             pcm16=b"\x01\x00" * 160,
-            sample_rate=8_000,
+            sample_rate=24_000,
             frame_duration_ms=20,
             pace_audio=False,
             response_model_id="org/chat",
@@ -951,7 +957,7 @@ def test_realtime_transcription_disconnect_probe_closes_without_commit(
         execution = client.realtime_transcription(
             model_id="org/STT",
             pcm16=b"\x00\x00" * 640,
-            sample_rate=8_000,
+            sample_rate=24_000,
             frame_duration_ms=20,
             pace_audio=False,
             cancel_after_frames=2,
@@ -985,7 +991,7 @@ def test_realtime_transcription_surfaces_server_error(
             client.realtime_transcription(
                 model_id="org/STT",
                 pcm16=b"\x00\x00" * 160,
-                sample_rate=8_000,
+                sample_rate=24_000,
                 pace_audio=False,
             )
     finally:
@@ -1008,7 +1014,7 @@ def test_realtime_transcription_wraps_handshake_failure(
             client.realtime_transcription(
                 model_id="org/STT",
                 pcm16=b"\x00\x00" * 160,
-                sample_rate=8_000,
+                sample_rate=24_000,
                 pace_audio=False,
             )
     finally:
@@ -1032,10 +1038,24 @@ def test_realtime_transcription_rejects_invalid_response_token_limit(
             client.realtime_transcription(
                 model_id="org/STT",
                 pcm16=b"\x00\x00" * 160,
-                sample_rate=8_000,
+                sample_rate=24_000,
                 pace_audio=False,
                 response_model_id="org/chat",
                 response_max_output_tokens=max_output_tokens,
+            )
+    finally:
+        client.close()
+
+
+def test_realtime_transcription_rejects_non_protocol_sample_rate() -> None:
+    client = SkulkClient("http://skulk.test")
+    try:
+        with pytest.raises(ValueError, match="24000 Hz"):
+            client.realtime_transcription(
+                model_id="org/STT",
+                pcm16=b"\x00\x00" * 160,
+                sample_rate=44_100,
+                pace_audio=False,
             )
     finally:
         client.close()

@@ -15,6 +15,7 @@ import wave
 from collections.abc import Mapping
 from dataclasses import asdict
 from pathlib import Path
+from typing import TypedDict
 
 import httpx
 
@@ -63,6 +64,14 @@ from skulk_test_harness.utils import (
 # blocking the whole run forever. Generous because it only bounds the setup
 # window before any request is sent, not the requests themselves.
 _CONCURRENT_START_BARRIER_TIMEOUT_S = 120.0
+
+
+class _SpeechGenerationKwargs(TypedDict):
+    """Explicit model-generation controls forwarded to speech synthesis."""
+
+    temperature: float | None
+    top_p: float | None
+    max_tokens: int | None
 
 
 class HarnessRunner:
@@ -1464,8 +1473,8 @@ class HarnessRunner:
             execution = None
         if execution is not None:
             if test.expected_embedding_dimensions is not None and any(
-                    dim != test.expected_embedding_dimensions
-                    for dim in execution.dimensions
+                dim != test.expected_embedding_dimensions
+                for dim in execution.dimensions
             ):
                 issues.append(
                     Issue(
@@ -1538,6 +1547,7 @@ class HarnessRunner:
                 response_format=test.audio_response_format,
                 voice=test.speech_voice,
                 speed=test.speech_speed,
+                **_speech_generation_kwargs(test),
                 stream=stream,
                 streaming_interval=test.speech_streaming_interval,
             )
@@ -1851,6 +1861,7 @@ class HarnessRunner:
                             response_format=test.audio_response_format,
                             voice=test.speech_voice,
                             speed=test.speech_speed,
+                            **_speech_generation_kwargs(test),
                             stream=True,
                             streaming_interval=test.speech_streaming_interval,
                             read_delay_s=read_delay_s,
@@ -2346,18 +2357,24 @@ class HarnessRunner:
                         response_format="wav",
                         voice=test.speech_voice,
                         speed=test.speech_speed,
+                        **_speech_generation_kwargs(test),
                     )
-                    audio = speech.audio
+                    source_audio = speech.audio
                     issues.extend(
                         _score_audio_output(
                             tts_model_id,
                             test.name,
-                            audio,
+                            source_audio,
                             test.success,
                             response_format="wav",
                             media_type=speech.media_type,
                         )
                     )
+                    pcm16, sample_rate = _pcm16_from_wav(
+                        source_audio,
+                        target_sample_rate=24_000,
+                    )
+                    audio = _wav_from_pcm16(pcm16, sample_rate=sample_rate)
                     fixture_artifact_path = _audio_artifact_path(
                         artifact_dir,
                         model_id,
@@ -2783,6 +2800,7 @@ class HarnessRunner:
                 response_format="wav",
                 voice=test.speech_voice,
                 speed=test.speech_speed,
+                **_speech_generation_kwargs(test),
             )
             issues.extend(
                 _score_audio_output(
@@ -2794,15 +2812,19 @@ class HarnessRunner:
                     media_type=speech.media_type,
                 )
             )
+            pcm16, sample_rate = _pcm16_from_wav(
+                speech.audio,
+                target_sample_rate=24_000,
+            )
+            realtime_fixture = _wav_from_pcm16(pcm16, sample_rate=sample_rate)
             artifact_path = _audio_artifact_path(
                 artifact_dir,
                 model_id,
                 test.name,
                 repetition,
                 "wav",
-                speech.audio,
+                realtime_fixture,
             )
-            pcm16, sample_rate = _pcm16_from_wav(speech.audio)
             owners, serving_node_id = self._select_speech_owners(
                 client,
                 model_id,
@@ -3155,9 +3177,9 @@ class HarnessRunner:
         while True:
             cancellation_observed = (
                 sum(
-                snapshot.cancellation_requests
-                - before.get(snapshot.node_id, snapshot).cancellation_requests
-                for snapshot in snapshots.values()
+                    snapshot.cancellation_requests
+                    - before.get(snapshot.node_id, snapshot).cancellation_requests
+                    for snapshot in snapshots.values()
                 )
                 >= 1
             )
@@ -3198,6 +3220,7 @@ class HarnessRunner:
         output = ""
         elapsed = 0.0
         artifact_path: Path | None = None
+        word_error_rate: float | None = None
         if spec is None or report is None:
             issues.append(
                 Issue(
@@ -3279,6 +3302,7 @@ class HarnessRunner:
                 response_format=test.audio_response_format,
                 voice=test.speech_voice,
                 speed=test.speech_speed,
+                **_speech_generation_kwargs(test),
             )
             elapsed = speech.elapsed_s
             issues.extend(
@@ -3324,6 +3348,19 @@ class HarnessRunner:
                     test.success,
                 )
             )
+            if not translate_to_english:
+                word_error_rate = _word_error_rate(
+                    _expanded_prompt(test), transcript.text
+                )
+                issues.extend(
+                    _score_transcript_fidelity(
+                        model_id,
+                        test.name,
+                        reference=_expanded_prompt(test),
+                        transcript=transcript.text,
+                        criteria=test.success,
+                    )
+                )
         except (SkulkApiError, httpx.HTTPError, TypeError, ValueError) as exc:
             issues.append(
                 Issue(
@@ -3363,6 +3400,7 @@ class HarnessRunner:
             elapsed,
             issues,
             artifact_path=artifact_path,
+            word_error_rate=word_error_rate,
         )
 
     def _run_speech_reference_roundtrip_test(
@@ -3381,9 +3419,13 @@ class HarnessRunner:
 
         issues: list[Issue] = []
         elapsed = 0.0
+        output = ""
         output_artifact: Path | None = None
+        word_error_rate: float | None = None
         donor_model_id = test.reference_model_id
         donor_placement: PlacementResult | None = None
+        transcription_model_id = test.transcription_model_id
+        stt_placement: PlacementResult | None = None
         if spec is None or report is None or donor_model_id is None:
             issues.append(
                 Issue(
@@ -3415,10 +3457,32 @@ class HarnessRunner:
                 raise ValueError("Reference TTS model could not be made ready")
             _append_unique_placement(report, donor_placement)
 
+            if (
+                transcription_model_id is None
+                and test.success.max_word_error_rate is not None
+            ):
+                transcription_model_id = _first_stt_model_id(
+                    client.list_models(), exclude_model_id=model_id
+                )
+                if transcription_model_id is None:
+                    raise ValueError(
+                        "No STT model found for reference-roundtrip semantic scoring"
+                    )
+            if transcription_model_id is not None:
+                stt_placement = self._ensure_model_placed(
+                    client, transcription_model_id, spec, report
+                )
+                if stt_placement is None or not stt_placement.ready:
+                    raise ValueError(
+                        "STT model could not be made ready for reference roundtrip"
+                    )
+                _append_unique_placement(report, stt_placement)
+
             reference = client.audio_speech(
                 model_id=donor_model_id,
                 input_text=reference_text,
                 response_format="wav",
+                **_speech_generation_kwargs(test),
             )
             elapsed += reference.elapsed_s
             issues.extend(
@@ -3446,6 +3510,7 @@ class HarnessRunner:
                 response_format=test.audio_response_format,
                 voice=test.speech_voice,
                 speed=test.speech_speed,
+                **_speech_generation_kwargs(test),
                 reference_audio=reference.audio,
                 reference_audio_filename="reference.wav",
                 reference_audio_media_type=reference.media_type or "audio/wav",
@@ -3470,6 +3535,30 @@ class HarnessRunner:
                 conditioned.response_format,
                 conditioned.audio,
             )
+            if transcription_model_id is not None:
+                transcript = client.audio_transcription(
+                    model_id=transcription_model_id,
+                    audio=conditioned.audio,
+                    filename=(f"{slugify(test.name)}.{test.audio_response_format}"),
+                    media_type=conditioned.media_type
+                    or _audio_media_type_for_format(test.audio_response_format),
+                    response_format=test.transcription_response_format,
+                    language=test.transcription_language,
+                    prompt=None,
+                )
+                elapsed += transcript.elapsed_s
+                output = transcript.text
+                issues.extend(_score_output(model_id, test.name, output, test.success))
+                word_error_rate = _word_error_rate(_expanded_prompt(test), output)
+                issues.extend(
+                    _score_transcript_fidelity(
+                        model_id,
+                        test.name,
+                        reference=_expanded_prompt(test),
+                        transcript=output,
+                        criteria=test.success,
+                    )
+                )
         except (SkulkApiError, httpx.HTTPError, TypeError, ValueError) as exc:
             issues.append(
                 Issue(
@@ -3477,7 +3566,11 @@ class HarnessRunner:
                     model_id=model_id,
                     test_name=test.name,
                     message="Reference-conditioned speech request failed",
-                    evidence={"error": str(exc), "reference_model_id": donor_model_id},
+                    evidence={
+                        "error": str(exc),
+                        "reference_model_id": donor_model_id,
+                        "transcription_model_id": transcription_model_id,
+                    },
                 )
             )
         finally:
@@ -3497,14 +3590,32 @@ class HarnessRunner:
                     self._evict_staged_model(client, donor_model_id, report)
                 if writer is not None:
                     writer.write(report)
+            if (
+                stt_placement is not None
+                and transcription_model_id is not None
+                and stt_placement.created_by_harness
+                and transcription_model_id not in {model_id, donor_model_id}
+                and not spec.retain_instances
+            ):
+                torn_down = self._teardown_harness_instances(
+                    client,
+                    transcription_model_id,
+                    stt_placement.instance_id,
+                    report,
+                )
+                if spec.delete_staged_models and torn_down:
+                    self._evict_staged_model(client, transcription_model_id, report)
+                if writer is not None:
+                    writer.write(report)
         return _speech_result(
             model_id,
             test.name,
             repetition,
-            "",
+            output,
             elapsed,
             issues,
             artifact_path=output_artifact,
+            word_error_rate=word_error_rate,
         )
 
     def _model_set(self, name: str) -> ModelSet:
@@ -3583,6 +3694,28 @@ def _is_retryable_placement_giveup(placement: PlacementResult) -> bool:
     return placement.created_by_harness and placement.instance_id is None
 
 
+def _speech_generation_kwargs(test: PromptTest) -> _SpeechGenerationKwargs:
+    """Forward only generation controls explicitly configured for a TTS test."""
+
+    configured = test.model_fields_set
+    tts_max_tokens = (
+        test.max_tokens
+        if "max_tokens" in configured
+        and test.kind
+        not in {
+            "audio_speech_pressure",
+            "realtime_conversation",
+            "fabric_speech_chain",
+        }
+        else None
+    )
+    return {
+        "temperature": test.temperature if "temperature" in configured else None,
+        "top_p": test.top_p if "top_p" in configured else None,
+        "max_tokens": tts_max_tokens,
+    }
+
+
 def _expanded_prompt(test: PromptTest) -> str:
     return test.prompt * test.prompt_repetitions
 
@@ -3634,8 +3767,12 @@ def _audio_media_type_for_format(response_format: str) -> str:
     return "application/octet-stream"
 
 
-def _pcm16_from_wav(audio: bytes) -> tuple[bytes, int]:
-    """Extract mono little-endian PCM16 and sample rate from a WAV response."""
+def _pcm16_from_wav(
+    audio: bytes,
+    *,
+    target_sample_rate: int | None = None,
+) -> tuple[bytes, int]:
+    """Extract mono PCM16 and optionally resample it to a required rate."""
 
     with wave.open(io.BytesIO(audio), "rb") as reader:
         channels = reader.getnchannels()
@@ -3651,21 +3788,98 @@ def _pcm16_from_wav(audio: bytes) -> tuple[bytes, int]:
     if not frames or len(frames) % frame_width != 0:
         raise ValueError("TTS WAV contained incomplete PCM frames")
     if channels == 1:
-        return frames, sample_rate
+        mono = frames
+    else:
+        downmixed = bytearray()
+        for frame_offset in range(0, len(frames), frame_width):
+            total = 0
+            for channel in range(channels):
+                offset = frame_offset + channel * sample_width
+                total += int.from_bytes(
+                    frames[offset : offset + sample_width],
+                    byteorder="little",
+                    signed=True,
+                )
+            sample = max(-32768, min(32767, round(total / channels)))
+            downmixed.extend(sample.to_bytes(2, byteorder="little", signed=True))
+        mono = bytes(downmixed)
 
-    mono = bytearray()
-    for frame_offset in range(0, len(frames), frame_width):
-        total = 0
-        for channel in range(channels):
-            offset = frame_offset + channel * sample_width
-            total += int.from_bytes(
-                frames[offset : offset + sample_width],
-                byteorder="little",
-                signed=True,
+    if target_sample_rate is None or target_sample_rate == sample_rate:
+        return mono, sample_rate
+    if target_sample_rate <= 0:
+        raise ValueError("Target sample rate must be positive")
+    return (
+        _resample_pcm16_linear(
+            mono,
+            input_sample_rate=sample_rate,
+            output_sample_rate=target_sample_rate,
+        ),
+        target_sample_rate,
+    )
+
+
+def _resample_pcm16_linear(
+    pcm16: bytes,
+    *,
+    input_sample_rate: int,
+    output_sample_rate: int,
+) -> bytes:
+    """Resample complete mono PCM16 with duration-preserving interpolation."""
+
+    if input_sample_rate <= 0 or output_sample_rate <= 0:
+        raise ValueError("PCM sample rates must be positive")
+    if not pcm16 or len(pcm16) % 2 != 0:
+        raise ValueError("PCM16 input must contain complete samples")
+    if input_sample_rate == output_sample_rate:
+        return pcm16
+
+    samples = [
+        int.from_bytes(pcm16[offset : offset + 2], "little", signed=True)
+        for offset in range(0, len(pcm16), 2)
+    ]
+    output_count = max(
+        1,
+        (len(samples) * output_sample_rate + input_sample_rate // 2)
+        // input_sample_rate,
+    )
+    output = bytearray()
+    for output_index in range(output_count):
+        position_numerator = output_index * input_sample_rate
+        left_index, fraction_numerator = divmod(
+            position_numerator,
+            output_sample_rate,
+        )
+        if left_index >= len(samples) - 1:
+            sample = samples[-1]
+        else:
+            left = samples[left_index]
+            right = samples[left_index + 1]
+            sample = round(
+                (
+                    left * (output_sample_rate - fraction_numerator)
+                    + right * fraction_numerator
+                )
+                / output_sample_rate
             )
-        sample = max(-32768, min(32767, round(total / channels)))
-        mono.extend(sample.to_bytes(2, byteorder="little", signed=True))
-    return bytes(mono), sample_rate
+        clipped = max(-32768, min(32767, sample))
+        output.extend(clipped.to_bytes(2, "little", signed=True))
+    return bytes(output)
+
+
+def _wav_from_pcm16(pcm16: bytes, *, sample_rate: int) -> bytes:
+    """Wrap mono little-endian PCM16 in a WAV container."""
+
+    if sample_rate <= 0:
+        raise ValueError("WAV sample rate must be positive")
+    if not pcm16 or len(pcm16) % 2 != 0:
+        raise ValueError("PCM16 input must contain complete samples")
+    output = io.BytesIO()
+    with wave.open(output, "wb") as writer:
+        writer.setnchannels(1)
+        writer.setsampwidth(2)
+        writer.setframerate(sample_rate)
+        writer.writeframes(pcm16)
+    return output.getvalue()
 
 
 def _score_audio_output(
@@ -3718,6 +3932,70 @@ def _score_audio_output(
     return issues
 
 
+def _transcript_words(text: str) -> list[str]:
+    """Normalize speech text into case-folded words for semantic comparison."""
+
+    return re.findall(r"\w+(?:['’]\w+)?", text.casefold(), flags=re.UNICODE)
+
+
+def _word_error_rate(reference: str, transcript: str) -> float:
+    """Return Levenshtein word error rate for a reference and transcript."""
+
+    reference_words = _transcript_words(reference)
+    transcript_words = _transcript_words(transcript)
+    if not reference_words:
+        return 0.0 if not transcript_words else float(len(transcript_words))
+
+    previous_row = list(range(len(transcript_words) + 1))
+    for reference_index, reference_word in enumerate(reference_words, start=1):
+        current_row = [reference_index]
+        for transcript_index, transcript_word in enumerate(transcript_words, start=1):
+            substitution_cost = int(reference_word != transcript_word)
+            current_row.append(
+                min(
+                    current_row[-1] + 1,
+                    previous_row[transcript_index] + 1,
+                    previous_row[transcript_index - 1] + substitution_cost,
+                )
+            )
+        previous_row = current_row
+    return previous_row[-1] / len(reference_words)
+
+
+def _score_transcript_fidelity(
+    model_id: str,
+    test_name: str,
+    *,
+    reference: str,
+    transcript: str,
+    criteria: SuccessCriteria,
+) -> list[Issue]:
+    """Score roundtrip transcript semantics when a WER ceiling is configured."""
+
+    if criteria.max_word_error_rate is None:
+        return []
+    word_error_rate = _word_error_rate(reference, transcript)
+    if word_error_rate <= criteria.max_word_error_rate:
+        return []
+    return [
+        Issue(
+            severity="error",
+            model_id=model_id,
+            test_name=test_name,
+            message=(
+                "Speech roundtrip word error rate exceeded the maximum "
+                f"({word_error_rate:.3f} > {criteria.max_word_error_rate:.3f})"
+            ),
+            evidence={
+                "word_error_rate": word_error_rate,
+                "max_word_error_rate": criteria.max_word_error_rate,
+                "reference_words": len(_transcript_words(reference)),
+                "transcript_words": len(_transcript_words(transcript)),
+            },
+        )
+    ]
+
+
 def _score_streaming_audio_output(
     model_id: str,
     test_name: str,
@@ -3741,8 +4019,8 @@ def _score_streaming_audio_output(
             )
         )
     if criteria.max_first_byte_s is not None and (
-            execution.first_byte_s is None
-            or execution.first_byte_s > criteria.max_first_byte_s
+        execution.first_byte_s is None
+        or execution.first_byte_s > criteria.max_first_byte_s
     ):
         issues.append(
             Issue(
@@ -3817,8 +4095,8 @@ def _score_realtime_transcription(
             )
         )
     if criteria.max_first_byte_s is not None and (
-            execution.first_transcript_s is None
-            or execution.first_transcript_s > criteria.max_first_byte_s
+        execution.first_transcript_s is None
+        or execution.first_transcript_s > criteria.max_first_byte_s
     ):
         issues.append(
             Issue(
@@ -3994,6 +4272,7 @@ def _speech_result(
     issues: list[Issue],
     *,
     artifact_path: Path | None = None,
+    word_error_rate: float | None = None,
 ) -> TestResult:
     """Build a standard result for speech endpoint tests."""
 
@@ -4007,6 +4286,7 @@ def _speech_result(
             elapsed_s=elapsed,
             output_chars=len(output),
             generated_chars=len(output),
+            word_error_rate=word_error_rate,
         ),
         issues=issues,
         artifact_path=artifact_path,

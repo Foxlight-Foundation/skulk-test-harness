@@ -199,6 +199,34 @@ test_sets:
           min_audio_bytes: 1024
 ```
 
+Container checks cannot establish that a TTS model spoke the requested text.
+For semantic qualification, use `speech_roundtrip`: the harness sends the exact
+generated audio to an STT model and computes word error rate against the source
+prompt. A threshold of `0.25` permits at most roughly one error per four source
+words while rejecting fluent but unrelated speech:
+
+```yaml
+test_sets:
+  my-semantic-speech-tests:
+    name: my-semantic-speech-tests
+    description: TTS output must preserve the requested sentence.
+    tests:
+      - name: tts-semantic-roundtrip
+        kind: speech_roundtrip
+        prompt: The quick brown fox jumps over the lazy dog.
+        audio_response_format: wav
+        transcription_model_id: org/my-stt-model
+        temperature: 0
+        success:
+          min_chars: 5
+          min_audio_bytes: 1024
+          max_word_error_rate: 0.25
+```
+
+Speech tests forward `temperature`, `top_p`, and `max_tokens` to
+`/v1/audio/speech`. Set them explicitly when a semantic qualification must be
+repeatable instead of relying on a model family's sampling defaults.
+
 Streaming speech synthesis tests call `/v1/audio/speech` with `stream=true`,
 score the final audio bytes, and save a `.stream.json` timing sidecar next to
 the generated audio. Use `min_stream_span_s` when the suite should reject
@@ -221,6 +249,11 @@ test_sets:
           min_stream_chunks: 2
           min_stream_span_s: 0.5
 ```
+
+When realtime or uploaded-audio streaming transcription generates its fixture
+through `speech_synthesis_model_id`, the harness preserves the exact submitted
+artifact after normalizing it to mono 24 kHz PCM16. This mirrors the dashboard
+realtime capture contract even when the TTS model emits another sample rate.
 
 Pressure tests distribute independent streaming clients across API owners
 discovered from `/v1/diagnostics/cluster`. Every request is scored and saved as
@@ -289,7 +322,9 @@ test_sets:
 
 Reference-conditioning tests generate their donor clip through a normally
 placed TTS model, then upload it with its transcript to the selected model. The
-harness retains both the donor and conditioned WAV files:
+harness retains both the donor and conditioned WAV files. Add a transcription
+model and `max_word_error_rate` when the conditioned output must also preserve
+the requested text:
 
 ```yaml
 test_sets:
@@ -303,9 +338,11 @@ test_sets:
         reference_model_id: org/donor-tts
         reference_text: This sentence establishes the reference voice.
         audio_response_format: wav
+        transcription_model_id: org/stt-model
         success:
-          min_chars: 0
+          min_chars: 5
           min_audio_bytes: 1024
+          max_word_error_rate: 0.25
 ```
 
 Realtime transcription tests reverse the primary model: the selected model is a
