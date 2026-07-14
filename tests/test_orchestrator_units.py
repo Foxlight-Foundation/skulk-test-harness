@@ -1842,6 +1842,11 @@ def test_speech_pressure_runs_chat_and_tts_concurrently(
     assert "speech_requests=2 speech_successes=2" in result.output_text
     assert "chat_requests=2 chat_successes=2 failures=0" in result.output_text
     assert sum(len(item.speech_requests) for item in pressure_clients) == 2
+    assert all(
+        request["max_tokens"] is None
+        for item in pressure_clients
+        for request in item.speech_requests
+    )
     assert sum(len(item.thinking_seen) for item in pressure_clients) == 2
 
 

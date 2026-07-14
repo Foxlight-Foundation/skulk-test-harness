@@ -3417,7 +3417,12 @@ def _speech_generation_kwargs(test: PromptTest) -> _SpeechGenerationKwargs:
     tts_max_tokens = (
         test.max_tokens
         if "max_tokens" in configured
-        and test.kind not in {"realtime_conversation", "fabric_speech_chain"}
+        and test.kind
+        not in {
+            "audio_speech_pressure",
+            "realtime_conversation",
+            "fabric_speech_chain",
+        }
         else None
     )
     return {
