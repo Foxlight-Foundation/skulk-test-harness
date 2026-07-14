@@ -960,6 +960,40 @@ class HarnessRunner:
         )
         base_url = client.base_url
         total_requests = test.concurrency * test.concurrent_requests_per_worker
+        if test.tool_mocks:
+            # The concurrent kind is a single-turn load benchmark: it forwards
+            # `tools` so tool-call emission can be exercised under load, but it
+            # deliberately does not run the tool-result round trip the chat/tool
+            # kinds do (that would turn each timed request into a variable number
+            # of API calls and is the `tool` kind's job at concurrency 1). Scoring
+            # a tool_mocks response here would silently measure only the tool-call
+            # emission, not the follow-up answer, so reject it loudly instead.
+            return TestResult(
+                model_id=model_id,
+                test_name=test.name,
+                repetition=repetition,
+                passed=False,
+                output_text="",
+                metrics=GenerationMetrics(
+                    elapsed_s=0.0,
+                    concurrency=test.concurrency,
+                    concurrent_total_requests=total_requests,
+                    concurrent_succeeded=0,
+                    concurrent_failed=0,
+                ),
+                issues=[
+                    Issue(
+                        severity="error",
+                        model_id=model_id,
+                        test_name=test.name,
+                        message=(
+                            "kind: concurrent does not support tool_mocks (it is a "
+                            "single-turn load benchmark and does not run the "
+                            "tool-result round trip; use kind: tool for that)"
+                        ),
+                    )
+                ],
+            )
         # Release every worker's first request together once all threads have
         # built their client, so the timed window reflects genuinely
         # simultaneous in-flight load rather than thread and connection-pool

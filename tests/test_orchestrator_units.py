@@ -3179,6 +3179,30 @@ def test_concurrent_test_records_unexpected_worker_error_without_aborting(
     )
 
 
+def test_concurrent_test_rejects_tool_mocks_loudly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _runner()
+    # Should never dispatch a request; the guard returns before any client use.
+    monkeypatch.setattr(
+        runner,
+        "_client_for_url",
+        lambda _url: pytest.fail("tool_mocks concurrent test must not dispatch"),
+    )
+    test = _concurrent_test(4, 2)
+    test = test.model_copy(update={"tool_mocks": [ToolMock(name="t", content="x")]})
+    driver = SkulkClient("http://api")
+
+    result = runner._run_concurrent_test(
+        driver, model_id="m", test=test, repetition=1
+    )
+
+    assert result.passed is False
+    assert any(
+        "does not support tool_mocks" in i.message for i in result.issues
+    )
+
+
 def test_concurrent_test_counts_dropped_worker_slots_as_failures(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
