@@ -34,6 +34,7 @@ Each map key must match the test set's `name`.
 | `artifact` | Artifact-style generation checks |
 | `tool` | OpenAI-style tool call behavior |
 | `cancel` | Streaming cancellation and follow-up health |
+| `concurrent` | Aggregate decode throughput and correctness under many simultaneous requests; reports aggregate tokens per second, per-request decode-rate distribution, and time-to-first-token under load |
 | `error` | Expected API error behavior |
 | `embedding` | Embeddings endpoint behavior |
 | `audio_speech` | Text-to-speech endpoint behavior; generated audio is saved as an artifact |
@@ -70,6 +71,8 @@ Each map key must match the test set's `name`.
 | `parallel_tool_calls` | Whether parallel tool calls are allowed |
 | `tool_mocks` | Static tool results |
 | `cancel_after_chunks` | Stream chunks before cancellation |
+| `concurrency` | Simultaneous in-flight requests for `kind: concurrent` (worker threads, each with its own client) |
+| `concurrent_requests_per_worker` | Sequential requests each concurrent worker issues; total load is `concurrency * concurrent_requests_per_worker` |
 | `followup_prompt` | Health check after cancel or expected error |
 | `expected_error_statuses` | Acceptable statuses for `kind: error` |
 | `expected_error_substrings` | Required text in an expected error |

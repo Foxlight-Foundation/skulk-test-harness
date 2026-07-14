@@ -208,6 +208,68 @@ test_sets:
         success:
           min_chars: 800
 
+  concurrency:
+    name: concurrency
+    description: >
+      Concurrent-load decode throughput and correctness. Fires many
+      simultaneous requests at one placed model and reports aggregate tokens
+      per second (total generated tokens over the wall span), the per-request
+      decode-rate distribution, and time-to-first-token under load. Every
+      request must also succeed and satisfy its success criteria, so the suite
+      is both a throughput benchmark and the concurrent-load smoke the harness
+      otherwise lacks. Running several levels traces the scaling curve: a
+      batching engine on a large GPU should grow aggregate throughput as
+      concurrency rises, while per-request decode rate falls.
+    tests:
+      - name: concurrent-2
+        kind: concurrent
+        concurrency: 2
+        concurrent_requests_per_worker: 2
+        system: You are a thorough technical writer. Write continuous prose.
+        prompt: >
+          Write a detailed, self-contained explanation (around 500 words) of how
+          a distributed inference system streams tokens back to many clients at
+          once: request admission, batching, the KV cache, and backpressure. Use
+          flowing paragraphs, no lists.
+        max_tokens: 384
+        temperature: 0.7
+        enable_thinking: false
+        repetitions: 1
+        success:
+          min_chars: 500
+      - name: concurrent-8
+        kind: concurrent
+        concurrency: 8
+        concurrent_requests_per_worker: 2
+        system: You are a thorough technical writer. Write continuous prose.
+        prompt: >
+          Write a detailed, self-contained explanation (around 500 words) of how
+          a distributed inference system streams tokens back to many clients at
+          once: request admission, batching, the KV cache, and backpressure. Use
+          flowing paragraphs, no lists.
+        max_tokens: 384
+        temperature: 0.7
+        enable_thinking: false
+        repetitions: 1
+        success:
+          min_chars: 500
+      - name: concurrent-16
+        kind: concurrent
+        concurrency: 16
+        concurrent_requests_per_worker: 2
+        system: You are a thorough technical writer. Write continuous prose.
+        prompt: >
+          Write a detailed, self-contained explanation (around 500 words) of how
+          a distributed inference system streams tokens back to many clients at
+          once: request admission, batching, the KV cache, and backpressure. Use
+          flowing paragraphs, no lists.
+        max_tokens: 384
+        temperature: 0.7
+        enable_thinking: false
+        repetitions: 1
+        success:
+          min_chars: 500
+
   cancellation:
     name: cancellation
     description: Streaming cancellation coverage with a healthy follow-up request.

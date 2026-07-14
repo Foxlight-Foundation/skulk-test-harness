@@ -22,6 +22,7 @@ TestKind = Literal[
     "artifact",
     "tool",
     "cancel",
+    "concurrent",
     "error",
     "embedding",
     "audio_speech",
@@ -393,6 +394,27 @@ class PromptTest(HarnessBaseModel):
             "reasoning chunks, then verify a follow-up request still succeeds."
         ),
     )
+    concurrency: int = Field(
+        default=1,
+        ge=1,
+        le=256,
+        description=(
+            "For `kind: concurrent`, the number of simultaneous in-flight "
+            "requests (worker threads, each with its own client and connection "
+            "pool). This is the batch pressure the placed model sees at once."
+        ),
+    )
+    concurrent_requests_per_worker: int = Field(
+        default=1,
+        ge=1,
+        le=1000,
+        description=(
+            "For `kind: concurrent`, requests each worker issues sequentially. "
+            "Total requests = `concurrency * concurrent_requests_per_worker`; "
+            "raising this sustains the load past a single wave so the engine "
+            "reaches steady-state batching instead of a transient burst."
+        ),
+    )
     followup_prompt: str | None = Field(
         default=None,
         description=(
@@ -757,6 +779,62 @@ class GenerationMetrics(HarnessBaseModel):
     skulk_generation_tps: float | None = None
     skulk_prompt_tokens: int | None = None
     skulk_generation_tokens: int | None = None
+    # Concurrency-benchmark aggregates (populated only for `kind: concurrent`;
+    # None everywhere else, so single-request reports and the ledger are
+    # unaffected). For a concurrent run `skulk_generation_tps` above carries the
+    # aggregate throughput so existing readers still see one headline number.
+    concurrency: int | None = Field(
+        default=None,
+        description="Simultaneous in-flight requests driven for a concurrent test.",
+    )
+    concurrent_total_requests: int | None = Field(
+        default=None,
+        description="Total requests issued across all workers in a concurrent test.",
+    )
+    concurrent_succeeded: int | None = Field(
+        default=None,
+        description="Requests that succeeded and met the success criteria under load.",
+    )
+    concurrent_failed: int | None = Field(
+        default=None,
+        description="Requests that errored or failed scoring under load.",
+    )
+    aggregate_generation_tps: float | None = Field(
+        default=None,
+        description=(
+            "Total generated tokens across all concurrent requests divided by "
+            "the wall span from first request start to last request end. The "
+            "headline concurrency number: where a batching engine on a large "
+            "GPU pulls away from its single-stream decode rate."
+        ),
+    )
+    per_request_generation_tps_mean: float | None = Field(
+        default=None,
+        description="Mean per-request decode tok/s across successful concurrent requests.",
+    )
+    per_request_generation_tps_p50: float | None = Field(
+        default=None,
+        description="Median per-request decode tok/s under concurrent load.",
+    )
+    per_request_generation_tps_p90: float | None = Field(
+        default=None,
+        description="90th-percentile per-request decode tok/s under concurrent load.",
+    )
+    ttft_p50_s: float | None = Field(
+        default=None,
+        description="Median time-to-first-token across concurrent requests.",
+    )
+    ttft_p90_s: float | None = Field(
+        default=None,
+        description="90th-percentile time-to-first-token across concurrent requests.",
+    )
+    wall_span_s: float | None = Field(
+        default=None,
+        description=(
+            "Wall-clock seconds from the first concurrent request starting to "
+            "the last one finishing (the denominator for aggregate throughput)."
+        ),
+    )
 
 
 class ToolCallRecord(HarnessBaseModel):
