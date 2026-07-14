@@ -67,6 +67,21 @@ time instead of being reduced to a pass/fail threshold.
 | `chunks` | Number of streamed chunks observed |
 | `word_error_rate` | STT transcript edit distance divided by source-prompt word count for a speech roundtrip |
 
+For a `kind: concurrent` test the same block also carries the load aggregates
+below (all `null` for single-request tests). The aggregate throughput is also
+copied into `skulk_generation_tps` so a reader that knows only the single
+headline field still sees the concurrency number.
+
+| Metric | Meaning |
+| --- | --- |
+| `concurrency` | Simultaneous in-flight requests driven |
+| `concurrent_total_requests` | Total requests issued across all workers |
+| `concurrent_succeeded` / `concurrent_failed` | Requests that passed or failed scoring under load |
+| `aggregate_generation_tps` | Total generated tokens divided by the wall span from first request start to last request end |
+| `per_request_generation_tps_mean` / `_p50` / `_p90` | Per-request decode-rate distribution under load |
+| `ttft_p50_s` / `ttft_p90_s` | Time-to-first-token distribution under load |
+| `wall_span_s` | Wall-clock span used as the aggregate-throughput denominator |
+
 ## The Fingerprint
 
 Every `report.json` from a plan or run carries a top-level `fingerprint`

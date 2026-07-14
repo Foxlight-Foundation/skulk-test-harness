@@ -2,6 +2,7 @@ import io
 import json
 import math
 import shlex
+import time
 import wave
 from pathlib import Path
 from typing import Never
@@ -53,6 +54,7 @@ from skulk_test_harness.orchestrator import (
     _first_translation_model_id,
     _messages_for_test,
     _pcm16_from_wav,
+    _percentile,
     _placement_from_preview,
     _score_audio_output,
     _score_data_plane_diagnostics,
@@ -3238,3 +3240,226 @@ def test_plan_report_stamps_suite_description(monkeypatch) -> None:
 
     report = runner.plan(RunSpec(model_set="any", test_set="described"))
     assert report.test_set_description == "What the suite measures."
+
+
+# --- concurrency benchmark ------------------------------------------------
+
+
+def test_percentile_interpolates_and_handles_empty() -> None:
+    assert _percentile([], 50) is None
+    assert _percentile([42.0], 90) == 42.0
+    assert _percentile([0.0, 10.0], 50) == pytest.approx(5.0)
+    assert _percentile([1.0, 2.0, 3.0, 4.0], 90) == pytest.approx(3.7)
+
+
+class _ConcurrentWorkerClient:
+    """Worker-side stand-in returning a fixed chat execution per request."""
+
+    base_url = "http://api"
+
+    def __init__(
+        self,
+        *,
+        text: str = "x" * 600,
+        generation_tps: float | None = 50.0,
+        generation_tokens: int | None = 100,
+        ttft_s: float | None = 0.2,
+        raise_on_call: bool = False,
+    ) -> None:
+        self._text = text
+        self._generation_tps = generation_tps
+        self._generation_tokens = generation_tokens
+        self._ttft_s = ttft_s
+        self._raise = raise_on_call
+        self.calls = 0
+
+    def __enter__(self) -> "_ConcurrentWorkerClient":
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        return None
+
+    def stream_chat(self, **_kwargs: object) -> ChatExecution:
+        self.calls += 1
+        if self._raise:
+            raise SkulkApiError("POST", "/v1/chat/completions", 503, "busy")
+        # A small, real duration so the per-request-timestamp span is reliably
+        # positive (the aggregate-throughput denominator) instead of collapsing
+        # to zero when the fake returns instantly.
+        time.sleep(0.005)
+        return ChatExecution(
+            text=self._text,
+            reasoning_text="",
+            tool_calls=[],
+            metrics=GenerationMetrics(
+                elapsed_s=2.0,
+                ttft_s=self._ttft_s,
+                skulk_generation_tps=self._generation_tps,
+                skulk_generation_tokens=self._generation_tokens,
+                approx_output_tokens=self._generation_tokens,
+            ),
+            command_id=None,
+            raw_events=[],
+        )
+
+
+def _concurrent_test(concurrency: int, per_worker: int) -> PromptTest:
+    return PromptTest(
+        name=f"concurrent-{concurrency}",
+        kind="concurrent",
+        prompt="Write a long paragraph about distributed inference batching.",
+        max_tokens=128,
+        concurrency=concurrency,
+        concurrent_requests_per_worker=per_worker,
+        success=SuccessCriteria(min_chars=100),
+    )
+
+
+def test_concurrent_test_aggregates_throughput_and_passes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _runner()
+    monkeypatch.setattr(
+        runner, "_client_for_url", lambda _url: _ConcurrentWorkerClient()
+    )
+    # The driver client is only read for its base_url; workers come from the
+    # monkeypatched _client_for_url above, so no network call is made.
+    driver = SkulkClient("http://api")
+
+    result = runner._run_concurrent_test(
+        driver, model_id="m", test=_concurrent_test(4, 2), repetition=1
+    )
+
+    assert result.passed is True
+    metrics = result.metrics
+    assert metrics.concurrency == 4
+    assert metrics.concurrent_total_requests == 8
+    assert metrics.concurrent_succeeded == 8
+    assert metrics.concurrent_failed == 0
+    # 8 requests * 100 tokens each over a positive wall span -> positive rate.
+    assert metrics.aggregate_generation_tps is not None
+    assert metrics.aggregate_generation_tps > 0
+    assert metrics.skulk_generation_tps == metrics.aggregate_generation_tps
+    assert metrics.per_request_generation_tps_mean == pytest.approx(50.0)
+    assert metrics.ttft_p90_s == pytest.approx(0.2)
+
+
+def test_concurrent_test_fails_when_a_request_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _runner()
+
+    def client_for_url(_url: str) -> _ConcurrentWorkerClient:
+        # Every worker's request raises, so the whole test must fail loudly.
+        return _ConcurrentWorkerClient(raise_on_call=True)
+
+    monkeypatch.setattr(runner, "_client_for_url", client_for_url)
+    driver = SkulkClient("http://api")
+
+    result = runner._run_concurrent_test(
+        driver, model_id="m", test=_concurrent_test(3, 1), repetition=1
+    )
+
+    assert result.passed is False
+    assert result.metrics.concurrent_failed == 3
+    assert result.metrics.concurrent_succeeded == 0
+    assert any(
+        issue.severity == "error" and "Concurrent request failed" in issue.message
+        for issue in result.issues
+    )
+
+
+def test_concurrent_test_records_unexpected_worker_error_without_aborting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _runner()
+
+    class _BoomClient:
+        base_url = "http://api"
+
+        def __enter__(self) -> "_BoomClient":
+            return self
+
+        def __exit__(self, *_exc: object) -> None:
+            return None
+
+        def stream_chat(self, **_kwargs: object) -> ChatExecution:
+            # An unexpected (non-API) exception must be recorded as a failed
+            # request, not propagate out and abort the whole benchmark run.
+            raise ValueError("unexpected worker fault")
+
+    monkeypatch.setattr(runner, "_client_for_url", lambda _url: _BoomClient())
+    driver = SkulkClient("http://api")
+
+    result = runner._run_concurrent_test(
+        driver, model_id="m", test=_concurrent_test(2, 1), repetition=1
+    )
+
+    assert result.passed is False
+    assert result.metrics.concurrent_failed == 2
+    assert result.metrics.concurrent_succeeded == 0
+    assert any(
+        "worker error" in str((i.evidence or {}).get("error", "")) for i in result.issues
+    )
+
+
+def test_concurrent_test_rejects_tool_mocks_loudly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _runner()
+    # Should never dispatch a request; the guard returns before any client use.
+    monkeypatch.setattr(
+        runner,
+        "_client_for_url",
+        lambda _url: pytest.fail("tool_mocks concurrent test must not dispatch"),
+    )
+    test = _concurrent_test(4, 2)
+    test = test.model_copy(update={"tool_mocks": [ToolMock(name="t", content="x")]})
+    driver = SkulkClient("http://api")
+
+    result = runner._run_concurrent_test(
+        driver, model_id="m", test=test, repetition=1
+    )
+
+    assert result.passed is False
+    assert any(
+        "does not support tool_mocks" in i.message for i in result.issues
+    )
+
+
+def test_concurrent_test_counts_dropped_worker_slots_as_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _runner()
+
+    class _BoomOnceClient:
+        base_url = "http://api"
+
+        def __enter__(self) -> "_BoomOnceClient":
+            return self
+
+        def __exit__(self, *_exc: object) -> None:
+            return None
+
+        def stream_chat(self, **_kwargs: object) -> ChatExecution:
+            # An unexpected fault on the first request aborts the worker, so the
+            # remaining two planned requests are never issued. They must still be
+            # counted as failures so total == succeeded + failed.
+            raise ValueError("boom")
+
+    monkeypatch.setattr(runner, "_client_for_url", lambda _url: _BoomOnceClient())
+    driver = SkulkClient("http://api")
+
+    # One worker, three planned requests; the worker aborts on the first.
+    result = runner._run_concurrent_test(
+        driver, model_id="m", test=_concurrent_test(1, 3), repetition=1
+    )
+
+    assert result.metrics.concurrent_total_requests == 3
+    assert result.metrics.concurrent_succeeded == 0
+    assert result.metrics.concurrent_failed == 3
+    assert result.passed is False
+    assert any(
+        "not issued" in i.message or "worker error" in str((i.evidence or {}).get("error", ""))
+        for i in result.issues
+    )

@@ -208,6 +208,91 @@ test_sets:
         success:
           min_chars: 800
 
+  concurrency:
+    name: concurrency
+    description: >
+      Concurrent-load decode throughput and correctness. Fires many
+      simultaneous requests at one placed model and reports aggregate tokens
+      per second (total generated tokens over the wall span), the per-request
+      decode-rate distribution, and time-to-first-token under load. Every
+      request must also succeed and satisfy its success criteria, so the suite
+      is both a throughput benchmark and the concurrent-load smoke the harness
+      otherwise lacks. Running several levels traces the scaling curve: a
+      batching engine on a large GPU should grow aggregate throughput as
+      concurrency rises, while per-request decode rate falls.
+    # The levels below share one prompt and token budget so their aggregate and
+    # per-request throughput are directly comparable. `concurrent-1` is the
+    # single-stream anchor, measured by the exact same code path as the loaded
+    # levels (not the separate `throughput` suite), so single-vs-concurrent is a
+    # clean apples-to-apples read within one run. Together they trace one
+    # hardware/model throughput-vs-concurrency curve: per-request rate should
+    # fall while aggregate rate rises until the engine saturates.
+    tests:
+      - name: concurrent-1
+        kind: concurrent
+        concurrency: 1
+        concurrent_requests_per_worker: 3
+        system: You are a thorough technical writer. Write continuous prose.
+        prompt: >
+          Write a detailed, self-contained explanation (around 500 words) of how
+          a distributed inference system streams tokens back to many clients at
+          once: request admission, batching, the KV cache, and backpressure. Use
+          flowing paragraphs, no lists.
+        max_tokens: 384
+        temperature: 0.7
+        enable_thinking: false
+        repetitions: 1
+        success:
+          min_chars: 500
+      - name: concurrent-4
+        kind: concurrent
+        concurrency: 4
+        concurrent_requests_per_worker: 2
+        system: You are a thorough technical writer. Write continuous prose.
+        prompt: >
+          Write a detailed, self-contained explanation (around 500 words) of how
+          a distributed inference system streams tokens back to many clients at
+          once: request admission, batching, the KV cache, and backpressure. Use
+          flowing paragraphs, no lists.
+        max_tokens: 384
+        temperature: 0.7
+        enable_thinking: false
+        repetitions: 1
+        success:
+          min_chars: 500
+      - name: concurrent-16
+        kind: concurrent
+        concurrency: 16
+        concurrent_requests_per_worker: 2
+        system: You are a thorough technical writer. Write continuous prose.
+        prompt: >
+          Write a detailed, self-contained explanation (around 500 words) of how
+          a distributed inference system streams tokens back to many clients at
+          once: request admission, batching, the KV cache, and backpressure. Use
+          flowing paragraphs, no lists.
+        max_tokens: 384
+        temperature: 0.7
+        enable_thinking: false
+        repetitions: 1
+        success:
+          min_chars: 500
+      - name: concurrent-32
+        kind: concurrent
+        concurrency: 32
+        concurrent_requests_per_worker: 2
+        system: You are a thorough technical writer. Write continuous prose.
+        prompt: >
+          Write a detailed, self-contained explanation (around 500 words) of how
+          a distributed inference system streams tokens back to many clients at
+          once: request admission, batching, the KV cache, and backpressure. Use
+          flowing paragraphs, no lists.
+        max_tokens: 384
+        temperature: 0.7
+        enable_thinking: false
+        repetitions: 1
+        success:
+          min_chars: 500
+
   cancellation:
     name: cancellation
     description: Streaming cancellation coverage with a healthy follow-up request.
