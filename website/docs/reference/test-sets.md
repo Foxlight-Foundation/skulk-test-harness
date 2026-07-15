@@ -49,6 +49,7 @@ Each map key must match the test set's `name`.
 | `speech_roundtrip` | TTS output saved as an artifact and piped into a mounted STT model, with optional semantic fidelity scoring |
 | `speech_translation_roundtrip` | TTS output saved and translated to English by a mounted translation model |
 | `speech_reference_roundtrip` | A donor TTS clip conditions a multipart TTS request; both clips are saved, with optional STT/WER scoring of the conditioned output |
+| `vision_data_plane` | Send the same image through colocated and remote API owners, require equivalent output, prove local/remote vision-media routing, reject transport anomalies, and save sanitized diagnostics |
 
 ## Prompt Test Fields
 
@@ -160,6 +161,7 @@ Each map key must match the test set's `name`.
 | `speech-roundtrip` | TTS-to-STT endpoint coverage |
 | `realtime-transcription` | Realtime WebSocket STT, semantic transcript, cancellation, and provider diagnostics |
 | `vision` | Multimodal image input coverage |
+| `vision-data-plane` | Multi-node local/remote VLM media routing and cleanup qualification |
 | `served-speculation` | Served speculation correctness and throughput |
 
 ## Validation

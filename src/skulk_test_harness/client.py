@@ -261,6 +261,92 @@ class DataPlaneDiagnosticsSnapshot:
 
 
 @dataclass(frozen=True)
+class VisionMediaDiagnosticsSnapshot:
+    """Bounded ingress and egress state for one node's vision media path."""
+
+    node_id: str
+    active_stream_queues: int
+    queue_depth: int
+    local_short_circuits: int
+    remote_frames_enqueued: int
+    remote_frames_published: int
+    remote_frames_dropped: int
+    remote_publish_failures: int
+    inbound_payload_queue_depth: int
+    inbound_terminal_queue_depth: int
+    inbound_frames_dropped: int
+    idle_stream_reclaims: int
+    pending_api_commands: int
+    pending_api_bytes: int
+    active_api_commands: int
+    active_api_bytes: int
+    pending_worker_acknowledgements: int
+    active_streams: int
+    pending_frames: int
+    retained_bytes: int
+    verified_streams: int
+    pending_failures: int
+    completed_streams: int
+    rejected_streams: int
+    expired_streams: int
+
+    @classmethod
+    def from_payload(
+        cls, payload: dict[str, object]
+    ) -> "VisionMediaDiagnosticsSnapshot":
+        """Parse vision media diagnostics from ``GET /v1/diagnostics/node``."""
+
+        runtime = payload.get("runtime")
+        egress = payload.get("visionMediaEgress")
+        ingress = payload.get("visionMediaIngress")
+        if (
+            not isinstance(runtime, dict)
+            or not isinstance(egress, dict)
+            or not isinstance(ingress, dict)
+        ):
+            raise TypeError(
+                "Node diagnostics did not include runtime/vision media objects"
+            )
+        node_id = runtime.get("nodeId")
+        if not isinstance(node_id, str) or not node_id:
+            raise TypeError("Node diagnostics did not include runtime.nodeId")
+
+        return cls(
+            node_id=node_id,
+            active_stream_queues=_required_int(egress, "activeStreamQueues"),
+            queue_depth=_required_int(egress, "queueDepth"),
+            local_short_circuits=_required_int(egress, "localShortCircuits"),
+            remote_frames_enqueued=_required_int(egress, "remoteFramesEnqueued"),
+            remote_frames_published=_required_int(egress, "remoteFramesPublished"),
+            remote_frames_dropped=_required_int(egress, "remoteFramesDropped"),
+            remote_publish_failures=_required_int(egress, "remotePublishFailures"),
+            inbound_payload_queue_depth=_required_int(
+                egress, "inboundPayloadQueueDepth"
+            ),
+            inbound_terminal_queue_depth=_required_int(
+                egress, "inboundTerminalQueueDepth"
+            ),
+            inbound_frames_dropped=_required_int(egress, "inboundFramesDropped"),
+            idle_stream_reclaims=_required_int(egress, "idleStreamReclaims"),
+            pending_api_commands=_required_int(ingress, "pendingApiCommands"),
+            pending_api_bytes=_required_int(ingress, "pendingApiBytes"),
+            active_api_commands=_required_int(ingress, "activeApiCommands"),
+            active_api_bytes=_required_int(ingress, "activeApiBytes"),
+            pending_worker_acknowledgements=_required_int(
+                ingress, "pendingWorkerAcknowledgements"
+            ),
+            active_streams=_required_int(ingress, "activeStreams"),
+            pending_frames=_required_int(ingress, "pendingFrames"),
+            retained_bytes=_required_int(ingress, "retainedBytes"),
+            verified_streams=_required_int(ingress, "verifiedStreams"),
+            pending_failures=_required_int(ingress, "pendingFailures"),
+            completed_streams=_required_int(ingress, "completedStreams"),
+            rejected_streams=_required_int(ingress, "rejectedStreams"),
+            expired_streams=_required_int(ingress, "expiredStreams"),
+        )
+
+
+@dataclass(frozen=True)
 class ProviderCapabilityDiagnosticsSnapshot:
     """Lifecycle and media counters for one provider capability on one node."""
 
@@ -623,6 +709,13 @@ class SkulkClient:
         """Return typed DATA lifecycle and egress counters for this API node."""
 
         return DataPlaneDiagnosticsSnapshot.from_payload(self.get_diagnostics_node())
+
+    def get_vision_media_diagnostics(self) -> VisionMediaDiagnosticsSnapshot:
+        """Return typed vision upload ingress and egress diagnostics."""
+
+        return VisionMediaDiagnosticsSnapshot.from_payload(
+            self.get_diagnostics_node()
+        )
 
     def get_provider_capability_diagnostics(
         self,

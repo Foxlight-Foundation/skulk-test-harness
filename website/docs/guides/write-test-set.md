@@ -179,6 +179,40 @@ test_sets:
           min_chars: 0
 ```
 
+## A Vision DATA Test
+
+Use `vision_data_plane` when a multi-node cluster must prove both inbound VLM
+routes. The harness discovers one API owner colocated with the mounted model and
+one remote API owner, sends the same image through both, scores each response,
+and validates the `visionMediaEgress` and `visionMediaIngress` diagnostics. The
+test fails when two reachable owners are unavailable, any request-scoped queue
+or retained byte does not drain, or the transport reports drops, failures,
+expiry, rejection, or idle reclamation.
+
+```yaml
+test_sets:
+  my-vision-data-plane-tests:
+    name: my-vision-data-plane-tests
+    description: Local and remote VLM media routing.
+    tests:
+      - name: image-local-remote-routing
+        kind: vision_data_plane
+        system: You are a careful vision assistant.
+        prompt: What is the dominant color? Answer in one word.
+        max_tokens: 64
+        temperature: 0
+        images:
+          - url: data:image/png;base64,AAAA
+        success:
+          min_chars: 3
+          required_substrings:
+            - blue
+```
+
+Each run writes a `.vision-media.json` artifact containing sanitized pre/post
+snapshots and counter deltas labeled only by owner role. Pair the suite with a
+multi-rank placement policy when qualification must cover sharded VLM serving.
+
 ## Speech Tests
 
 Speech synthesis tests call `/v1/audio/speech`, score the binary response, and

@@ -960,6 +960,26 @@ test_sets:
           required_substrings:
             - blue
 
+  vision-data-plane:
+    name: vision-data-plane
+    description: >
+      Multi-node VLM qualification through colocated and remote API owners with
+      vision media ingress/egress diagnostics and bounded cleanup assertions.
+    tests:
+      - name: image-local-remote-routing
+        kind: vision_data_plane
+        system: You are a careful vision assistant.
+        prompt: What is the dominant color in this image? Answer in one word.
+        max_tokens: 64
+        temperature: 0
+        enable_thinking: false
+        images:
+          - url: data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFUlEQVR42mNgYPhPIhrVMKph2GoAAJLb/wHQPqPSAAAAAElFTkSuQmCC
+        success:
+          min_chars: 3
+          required_substrings:
+            - blue
+
   served-speculation:
     name: served-speculation
     description: >
