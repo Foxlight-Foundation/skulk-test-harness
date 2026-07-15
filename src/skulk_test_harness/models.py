@@ -79,6 +79,61 @@ class ClusterNode(HarnessBaseModel):
     )
 
 
+class FleetLock(HarnessBaseModel):
+    """Config for the git-backed fleet lease (exclusive shared-fleet access).
+
+    When two agents work the same codebase and both deploy branches to one
+    shared test fleet, two end-to-end runs at once corrupt each other because
+    Skulk does not support mixed-version clusters. The fleet lease is a mutex
+    over the fleet, backed by a small JSON file in a shared git repo: acquiring
+    means committing a claim and pushing, and a rejected non-fast-forward push
+    means another agent won the race.
+
+    This section is optional. With no ``fleet_lock`` config the lease is disabled
+    and every fleet-lock operation is a no-op, so community users of the public
+    harness are unaffected.
+    """
+
+    remote: str = Field(
+        description=(
+            "Git remote URL of the coordination repo that holds the lock file "
+            "(e.g. the private foxlight-docs repo). The harness clones it into "
+            "cache_dir and pushes lock updates to it."
+        )
+    )
+    holder: str = Field(
+        description=(
+            "This agent's stable name (e.g. 'claude' or 'codex'). Identifies who "
+            "holds the fleet so the other agent's runs are refused, and so only "
+            "the holder can extend or release without --force."
+        )
+    )
+    branch: str = Field(
+        default="main",
+        description="Branch in the coordination repo that carries the lock file.",
+    )
+    path: str = Field(
+        default="coordination/fleet-lock.json",
+        description="Path to the lock JSON within the coordination repo.",
+    )
+    default_ttl_s: float = Field(
+        default=1800.0,
+        gt=0,
+        description=(
+            "Default lease lifetime in seconds. A lock past its expiry is treated "
+            "as free, so a crashed run that never releases cannot wedge the fleet. "
+            "Long batteries should extend the lease to stay live."
+        ),
+    )
+    cache_dir: Path | None = Field(
+        default=None,
+        description=(
+            "Local directory for the coordination-repo clone. Defaults to "
+            "~/.cache/skulk-test-harness/fleet-lock when unset."
+        ),
+    )
+
+
 class HarnessConfig(HarnessBaseModel):
     """Top-level local coordinator settings."""
 
@@ -136,6 +191,14 @@ class HarnessConfig(HarnessBaseModel):
             "Map of friendly node name to its SSH control surface. Required for "
             "the failover and churn stability suites; keyed by the friendly name "
             "reported in cluster state (nodeIdentities[<nodeId>].friendlyName)."
+        ),
+    )
+    fleet_lock: FleetLock | None = Field(
+        default=None,
+        description=(
+            "Optional git-backed fleet lease for coordinating exclusive access "
+            "to a shared test fleet across multiple agents. Disabled (no-op) when "
+            "absent, so single-operator use is unaffected."
         ),
     )
 
