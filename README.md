@@ -147,6 +147,42 @@ and
 - Listing sets and configs never needs a live cluster; the offline test suite
   (`uv run pytest`) never touches one either.
 
+## Coordinating a shared fleet
+
+When more than one operator (or agent) deploys branches to the same test fleet,
+two end-to-end runs at once collide: Skulk does not support mixed-version
+clusters, so one deploy silently corrupts the other's run. The optional
+**fleet lease** is a mutex over the fleet, backed by a small JSON file in a
+shared git repo. It is off by default, so single-operator use is unaffected.
+
+Enable it by adding a `fleet_lock` section to your config with the git remote
+that holds the lock and a stable name for this operator:
+
+```yaml
+fleet_lock:
+  remote: git@github.com:your-org/your-coordination-repo.git
+  holder: operator-a           # your stable name; the other side uses another
+  branch: main                 # optional (default: main)
+  path: coordination/fleet-lock.json   # optional
+  default_ttl_s: 1800          # optional; a lock past its TTL is treated as free
+```
+
+Bracket a fleet session with the lease:
+
+```bash
+uv run skulk-test-harness fleet acquire --branch feature/my-work
+# ... deploy your branch to the fleet and run batteries ...
+uv run skulk-test-harness fleet extend    # push the TTL forward on a long run
+uv run skulk-test-harness fleet release
+uv run skulk-test-harness fleet status    # see who holds it
+```
+
+The mutex is git itself: acquiring commits your claim and pushes, and a rejected
+non-fast-forward push means the other side got it first (no race). The TTL is a
+safety valve so a crashed run cannot wedge the fleet forever. As a backstop,
+`run`/`goal`/stability commands refuse (in `--execute` mode) when another holder
+holds the lease; pass `--force` to override.
+
 ## Learn more
 
 | | |

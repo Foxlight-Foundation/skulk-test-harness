@@ -10,3 +10,13 @@ output_dir: runs
 model_sets_path: configs/model_sets.yaml
 test_sets_path: configs/test_sets.yaml
 cluster_nodes: {}
+
+# Optional: coordinate exclusive access to a shared test fleet across multiple
+# operators/agents. Off by default (omit this whole section for single-operator
+# use). See the "Coordinating a shared fleet" section of the README.
+# fleet_lock:
+#   remote: git@github.com:your-org/your-coordination-repo.git
+#   holder: operator-a
+#   branch: main
+#   path: coordination/fleet-lock.json
+#   default_ttl_s: 1800

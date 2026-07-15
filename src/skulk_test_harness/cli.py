@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import socket
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 
@@ -15,6 +17,7 @@ from skulk_test_harness import stability
 from skulk_test_harness import submit as submit_module
 from skulk_test_harness.client import SkulkClient
 from skulk_test_harness.compare import compare, load_reports, select_run_dirs
+from skulk_test_harness.fleet_lock import FleetLockStore
 from skulk_test_harness.goal_parser import parse_goal
 from skulk_test_harness.models import (
     ComparisonRecord,
@@ -31,9 +34,13 @@ app = typer.Typer(help="Agent-controlled Skulk end-to-end test and benchmark har
 models_app = typer.Typer(help="Inspect model sets and live Skulk model catalog.")
 tests_app = typer.Typer(help="Inspect named test sets.")
 stability_app = typer.Typer(help="Run cluster stability suites (failover/churn/soak/refusal).")
+fleet_app = typer.Typer(
+    help="Coordinate exclusive access to a shared test fleet across agents."
+)
 app.add_typer(models_app, name="models")
 app.add_typer(tests_app, name="tests")
 app.add_typer(stability_app, name="stability")
+app.add_typer(fleet_app, name="fleet")
 
 console = Console()
 
@@ -61,6 +68,177 @@ def _load_runner(config_path: Path) -> tuple[HarnessConfig, HarnessRunner]:
         model_sets=model_sets,
         test_sets=test_sets,
     )
+
+
+def _load_fleet_store(cfg: HarnessConfig) -> FleetLockStore | None:
+    """Build the fleet-lock store, or ``None`` when the lease is not configured."""
+
+    if cfg.fleet_lock is None:
+        return None
+    return FleetLockStore(cfg.fleet_lock)
+
+
+def _require_fleet_or_refuse(cfg: HarnessConfig, *, force: bool) -> None:
+    """Refuse to touch the fleet when another agent holds the lease.
+
+    A safety net for the execute paths: the primary mechanism is the explicit
+    ``fleet acquire`` / ``fleet release`` bracket an agent wraps a whole deploy
+    session in. Does nothing when the lease is unconfigured (single-operator
+    use) or already held by this agent. ``force`` overrides the refusal.
+    """
+
+    store = _load_fleet_store(cfg)
+    if store is None:
+        return
+    assert cfg.fleet_lock is not None
+    lease = store.read()
+    now = datetime.now(UTC)
+    if lease.is_held(now) and lease.holder != cfg.fleet_lock.holder:
+        if force:
+            console.print(
+                f"[yellow]--force[/]: proceeding although the fleet is held by "
+                f"{lease.holder} (branch {lease.branch})"
+            )
+            return
+        console.print(
+            f"[bold red]REFUSED[/]: the shared fleet is held by {lease.holder} "
+            f"(branch {lease.branch}, expires {lease.expires_at}). Wait for it to "
+            "free, or pass --force to override."
+        )
+        raise typer.Exit(code=1)
+
+
+def _print_lease(store: FleetLockStore) -> None:
+    lease = store.read()
+    now = datetime.now(UTC)
+    table = Table(title="Fleet lease")
+    table.add_column("Field")
+    table.add_column("Value")
+    held = lease.is_held(now)
+    table.add_row("state", "HELD" if held else "free")
+    if lease.state == "held" and not held:
+        table.add_row("(note)", "lock is past its TTL and is treated as free")
+    for label, value in (
+        ("holder", lease.holder),
+        ("branch", lease.branch),
+        ("host", lease.host),
+        ("battery", lease.battery),
+        ("acquired_at", lease.acquired_at),
+        ("expires_at", lease.expires_at),
+        ("heartbeat_at", lease.heartbeat_at),
+        ("note", lease.note),
+    ):
+        if value:
+            table.add_row(label, str(value))
+    console.print(table)
+
+
+@fleet_app.command("status")
+def fleet_status(config: ConfigPath = Path("skulk-harness.yaml")) -> None:
+    """Show the current fleet lease."""
+
+    cfg = load_config(config)
+    store = _load_fleet_store(cfg)
+    if store is None:
+        console.print(
+            "fleet lock is not configured (no `fleet_lock` in the harness "
+            "config); shared-fleet coordination is disabled."
+        )
+        return
+    _print_lease(store)
+
+
+@fleet_app.command("acquire")
+def fleet_acquire(
+    branch: Annotated[
+        str, typer.Option("--branch", help="Branch being deployed to the fleet.")
+    ],
+    config: ConfigPath = Path("skulk-harness.yaml"),
+    host: Annotated[
+        str | None,
+        typer.Option("--host", help="Driving host (defaults to this machine)."),
+    ] = None,
+    battery: Annotated[
+        str | None, typer.Option("--battery", help="Battery/suite being run.")
+    ] = None,
+    ttl_minutes: Annotated[
+        float | None,
+        typer.Option("--ttl-minutes", help="Lease lifetime; config default if unset."),
+    ] = None,
+    note: Annotated[str | None, typer.Option("--note")] = None,
+) -> None:
+    """Acquire the shared fleet, or refuse if another agent holds it."""
+
+    cfg = load_config(config)
+    store = _load_fleet_store(cfg)
+    if store is None:
+        console.print("fleet lock is not configured; nothing to acquire.")
+        return
+    outcome = store.acquire(
+        branch=branch,
+        host=host or socket.gethostname(),
+        battery=battery,
+        ttl_s=None if ttl_minutes is None else ttl_minutes * 60.0,
+        note=note,
+    )
+    if outcome.ok:
+        console.print(f"[bold green]OK[/]: {outcome.message}")
+        _print_lease(store)
+        return
+    console.print(f"[bold red]REFUSED[/]: {outcome.message}")
+    raise typer.Exit(code=1)
+
+
+@fleet_app.command("extend")
+def fleet_extend(
+    config: ConfigPath = Path("skulk-harness.yaml"),
+    ttl_minutes: Annotated[
+        float | None,
+        typer.Option("--ttl-minutes", help="New lifetime; config default if unset."),
+    ] = None,
+) -> None:
+    """Push the lease TTL forward (holder only). Use during a long battery."""
+
+    cfg = load_config(config)
+    store = _load_fleet_store(cfg)
+    if store is None:
+        console.print("fleet lock is not configured; nothing to extend.")
+        return
+    outcome = store.extend(
+        ttl_s=None if ttl_minutes is None else ttl_minutes * 60.0
+    )
+    if outcome.ok:
+        console.print(f"[bold green]OK[/]: {outcome.message}")
+        _print_lease(store)
+        return
+    console.print(f"[bold red]FAILED[/]: {outcome.message}")
+    raise typer.Exit(code=1)
+
+
+@fleet_app.command("release")
+def fleet_release(
+    config: ConfigPath = Path("skulk-harness.yaml"),
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            help="Release even if another agent holds it (break a stuck lock).",
+        ),
+    ] = False,
+) -> None:
+    """Release the shared fleet so another agent can take it."""
+
+    cfg = load_config(config)
+    store = _load_fleet_store(cfg)
+    if store is None:
+        console.print("fleet lock is not configured; nothing to release.")
+        return
+    outcome = store.release(force=force)
+    if outcome.ok:
+        console.print(f"[bold green]OK[/]: {outcome.message}")
+        return
+    console.print(f"[bold red]FAILED[/]: {outcome.message}")
+    raise typer.Exit(code=1)
 
 
 @app.command()
@@ -298,10 +476,21 @@ def run(
             "CI goes red on a regression instead of silently green.",
         ),
     ] = True,
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            help="Proceed even if another agent holds the shared-fleet lease.",
+        ),
+    ] = False,
 ) -> None:
     """Run or dry-run a named test set against a named model set."""
 
     cfg, runner = _load_runner(config)
+    # An executed run mutates the shared fleet; refuse if another agent holds the
+    # lease. A dry-run only reads/plans, so it never needs the fleet.
+    if execute:
+        _require_fleet_or_refuse(cfg, force=force)
     # Resolve friendly names to live libp2p node IDs before building the
     # spec: placement exclusion is by node ID, but node IDs are ephemeral so a
     # battery cell can only name a node by its stable friendly name.
@@ -365,10 +554,19 @@ def goal(
         bool,
         typer.Option("--execute/--dry-run", help="Execute the parsed goal."),
     ] = False,
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            help="Proceed even if another agent holds the shared-fleet lease.",
+        ),
+    ] = False,
 ) -> None:
     """Parse a constrained natural-language goal into a plan or run."""
 
     cfg, runner = _load_runner(config)
+    if execute:
+        _require_fleet_or_refuse(cfg, force=force)
     spec = parse_goal(
         text,
         model_set_names=list(runner.model_sets),
@@ -482,11 +680,19 @@ def stability_failover(
             help="Allow this command to kill/relaunch Skulk over SSH.",
         ),
     ] = False,
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            help="Proceed even if another agent holds the shared-fleet lease.",
+        ),
+    ] = False,
 ) -> None:
     """Crash the master mid-stream and assert the cluster survives (#273)."""
 
     _require_destructive_opt_in(execute_destructive)
     cfg = load_config(config)
+    _require_fleet_or_refuse(cfg, force=force)
     with _stability_client(cfg) as client:
         report = stability.run_failover(client, cfg, model, min_nodes=min_nodes)
     _write_stability(cfg, report)
@@ -504,11 +710,19 @@ def stability_churn(
             help="Allow this command to kill/relaunch Skulk over SSH.",
         ),
     ] = False,
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            help="Proceed even if another agent holds the shared-fleet lease.",
+        ),
+    ] = False,
 ) -> None:
     """Repeatedly crash and relaunch a non-master node, asserting recovery."""
 
     _require_destructive_opt_in(execute_destructive)
     cfg = load_config(config)
+    _require_fleet_or_refuse(cfg, force=force)
     with _stability_client(cfg) as client:
         report = stability.run_churn(client, cfg, model, rounds=rounds)
     _write_stability(cfg, report)
@@ -520,10 +734,18 @@ def stability_soak(
     config: ConfigPath = Path("skulk-harness.yaml"),
     concurrency: Annotated[int, typer.Option(help="Concurrent completion workers.")] = 4,
     duration_s: Annotated[float, typer.Option(help="Soak duration in seconds.")] = 120.0,
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            help="Proceed even if another agent holds the shared-fleet lease.",
+        ),
+    ] = False,
 ) -> None:
     """Drive sustained concurrent load and report latency/failures."""
 
     cfg = load_config(config)
+    _require_fleet_or_refuse(cfg, force=force)
     with _stability_client(cfg) as client:
         report = stability.run_soak(
             client, cfg, model, concurrency=concurrency, duration_s=duration_s
@@ -542,11 +764,19 @@ def stability_refusal(
             help="Allow this command to run a destructive placement-refusal suite.",
         ),
     ] = False,
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            help="Proceed even if another agent holds the shared-fleet lease.",
+        ),
+    ] = False,
 ) -> None:
     """Assert an impossible placement is refused or re-placed, not wedged (#290)."""
 
     _require_destructive_opt_in(execute_destructive)
     cfg = load_config(config)
+    _require_fleet_or_refuse(cfg, force=force)
     with _stability_client(cfg) as client:
         report = stability.run_placement_refusal(client, cfg, model)
     _write_stability(cfg, report)
