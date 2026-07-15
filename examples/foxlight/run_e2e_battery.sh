@@ -52,6 +52,7 @@ cell speech-voice-catalog-tts speech-voice-catalog
 cell speech-stt-realtime streaming-transcription
 cell speech-stt-realtime fabric-speech-chain
 cell vision           vision
+cell vision           vision-data-plane "--min-nodes 2"
 
 # --- AMD / llama.cpp leg (kite4): GGUF coherence + the big models Bug A unlocked ---
 cell gguf-llama-cpp   llama-cpp

@@ -11,6 +11,7 @@ from skulk_test_harness.client import (
     ProviderCapabilityDiagnosticsSnapshot,
     SkulkApiError,
     SkulkClient,
+    VisionMediaDiagnosticsSnapshot,
 )
 
 
@@ -177,6 +178,47 @@ def test_data_plane_diagnostics_snapshot_parses_camel_case_payload() -> None:
     assert snapshot.started_frames == 4
     assert snapshot.local_short_circuits == 8
     assert snapshot.remote_frames_published == 8
+
+
+def test_vision_media_diagnostics_snapshot_parses_camel_case_payload() -> None:
+    payload: dict[str, object] = {
+        "runtime": {"nodeId": "node-a"},
+        "visionMediaEgress": {
+            "activeStreamQueues": 0,
+            "queueDepth": 0,
+            "localShortCircuits": 4,
+            "remoteFramesEnqueued": 4,
+            "remoteFramesPublished": 4,
+            "remoteFramesDropped": 0,
+            "remotePublishFailures": 0,
+            "inboundPayloadQueueDepth": 0,
+            "inboundTerminalQueueDepth": 0,
+            "inboundFramesDropped": 0,
+            "idleStreamReclaims": 0,
+        },
+        "visionMediaIngress": {
+            "pendingApiCommands": 0,
+            "pendingApiBytes": 0,
+            "activeApiCommands": 0,
+            "activeApiBytes": 0,
+            "pendingWorkerAcknowledgements": 0,
+            "activeStreams": 0,
+            "pendingFrames": 0,
+            "retainedBytes": 0,
+            "verifiedStreams": 0,
+            "pendingFailures": 0,
+            "completedStreams": 2,
+            "rejectedStreams": 0,
+            "expiredStreams": 0,
+        },
+    }
+
+    snapshot = VisionMediaDiagnosticsSnapshot.from_payload(payload)
+
+    assert snapshot.node_id == "node-a"
+    assert snapshot.local_short_circuits == 4
+    assert snapshot.remote_frames_published == 4
+    assert snapshot.completed_streams == 2
 
 
 def test_get_store_registry_maps_storeless_503_to_none(

@@ -29,6 +29,7 @@ from skulk_test_harness.client import (
     SkulkApiError,
     SkulkClient,
     StreamingAudioTranscriptionExecution,
+    VisionMediaDiagnosticsSnapshot,
 )
 from skulk_test_harness.fingerprint import gather_fingerprint
 from skulk_test_harness.models import (
@@ -39,6 +40,7 @@ from skulk_test_harness.models import (
     ModelRef,
     ModelSelector,
     ModelSet,
+    OwnerTopology,
     PlacementPolicy,
     PlacementResult,
     PromptTest,
@@ -727,6 +729,15 @@ class HarnessRunner:
             return self._run_embedding_test(
                 client, model_id=model_id, test=test, repetition=repetition
             )
+        if test.kind == "vision_data_plane":
+            return self._run_vision_data_plane_test(
+                client,
+                model_id=model_id,
+                test=test,
+                repetition=repetition,
+                artifact_dir=artifact_dir,
+                thinking_default=thinking_default,
+            )
         if test.kind in {"audio_speech", "audio_speech_streaming"}:
             return self._run_audio_speech_test(
                 client,
@@ -923,6 +934,248 @@ class HarnessRunner:
             request_timeout_s=self.config.request_timeout_s,
             generation_timeout_s=self.config.generation_timeout_s,
             stream_read_timeout_s=self.config.stream_read_timeout_s,
+        )
+
+    def _run_vision_data_plane_test(
+        self,
+        client: SkulkClient,
+        *,
+        model_id: str,
+        test: PromptTest,
+        repetition: int,
+        artifact_dir: Path,
+        thinking_default: bool | None = None,
+    ) -> TestResult:
+        """Prove equivalent VLM input through local and remote API owners."""
+
+        issues: list[Issue] = []
+        if not test.images:
+            issues.append(
+                Issue(
+                    severity="error",
+                    model_id=model_id,
+                    test_name=test.name,
+                    message="Vision DATA qualification requires at least one image",
+                )
+            )
+            return _vision_data_plane_result(
+                model_id=model_id,
+                test=test,
+                repetition=repetition,
+                issues=issues,
+            )
+
+        owners, serving_node_id = self._select_model_owners(
+            client,
+            model_id=model_id,
+            test_name=test.name,
+            owner_count=2,
+            owner_topology="local_remote",
+            workload_name="vision DATA qualification",
+            issues=issues,
+        )
+        if not owners:
+            return _vision_data_plane_result(
+                model_id=model_id,
+                test=test,
+                repetition=repetition,
+                issues=issues,
+            )
+
+        serving_node_ids = {
+            node_id
+            for placement in client.find_placements_for_model(model_id)
+            if placement.ready
+            for node_id in placement.node_ids
+        }
+        reachable_owners = {
+            owner.node_id: owner for owner in client.get_cluster_api_owners()
+        }
+        missing_serving_owners = serving_node_ids - reachable_owners.keys()
+        if missing_serving_owners:
+            issues.append(
+                Issue(
+                    severity="error",
+                    model_id=model_id,
+                    test_name=test.name,
+                    message=(
+                        "Not every VLM serving participant has a reachable API "
+                        "route for diagnostics"
+                    ),
+                    evidence={
+                        "serving_participant_count": len(serving_node_ids),
+                        "unreachable_participant_count": len(missing_serving_owners),
+                    },
+                )
+            )
+            return _vision_data_plane_result(
+                model_id=model_id,
+                test=test,
+                repetition=repetition,
+                issues=issues,
+            )
+        remote_request_owners = [
+            owner for owner in owners if owner.node_id != serving_node_id
+        ]
+        diagnostic_owners = [owners[0]]
+        diagnostic_owners.extend(
+            reachable_owners[node_id]
+            for node_id in sorted(serving_node_ids)
+            if node_id != serving_node_id
+        )
+        diagnostic_owners.extend(remote_request_owners)
+
+        try:
+            diagnostics_before = self._capture_vision_media_diagnostics(
+                diagnostic_owners
+            )
+        except (SkulkApiError, httpx.HTTPError, TypeError, ValueError) as exc:
+            issues.append(
+                Issue(
+                    severity="error",
+                    model_id=model_id,
+                    test_name=test.name,
+                    message="Unable to capture pre-request vision media diagnostics",
+                    evidence={"error": str(exc)},
+                )
+            )
+            return _vision_data_plane_result(
+                model_id=model_id,
+                test=test,
+                repetition=repetition,
+                issues=issues,
+            )
+
+        issues.extend(
+            _score_vision_media_baseline(
+                model_id=model_id,
+                test_name=test.name,
+                owners=diagnostic_owners,
+                serving_node_id=serving_node_id,
+                serving_node_ids=serving_node_ids,
+                snapshots=diagnostics_before,
+            )
+        )
+        if any(issue.severity == "error" for issue in issues):
+            return _vision_data_plane_result(
+                model_id=model_id,
+                test=test,
+                repetition=repetition,
+                issues=issues,
+            )
+
+        messages = _messages_for_test(test)
+        enable_thinking = (
+            test.enable_thinking
+            if test.enable_thinking is not None
+            else thinking_default
+        )
+        output_records: list[tuple[str, ChatExecution]] = []
+        successful_requests = 0
+        elapsed_s = 0.0
+        for owner_index, owner in enumerate(owners, start=1):
+            role = (
+                "serving_local"
+                if owner.node_id == serving_node_id
+                else "remote_owner"
+            )
+            label = f"owner-{owner_index}-{role}"
+            try:
+                with self._client_for_url(owner.base_url) as owner_client:
+                    execution = owner_client.stream_chat(
+                        model_id=model_id,
+                        messages=messages,
+                        max_tokens=test.max_tokens,
+                        temperature=test.temperature,
+                        top_p=test.top_p,
+                        enable_thinking=enable_thinking,
+                        reasoning_effort=test.reasoning_effort,
+                        top_logprobs=test.top_logprobs,
+                    )
+            except (SkulkApiError, httpx.HTTPError) as exc:
+                issues.append(
+                    Issue(
+                        severity="error",
+                        model_id=model_id,
+                        test_name=test.name,
+                        message="Vision request failed through selected API owner",
+                        evidence={"owner": label, "error": str(exc)},
+                    )
+                )
+                continue
+            successful_requests += 1
+            elapsed_s += execution.metrics.elapsed_s
+            output_records.append((label, execution))
+            for issue in _score_output(
+                model_id,
+                test.name,
+                execution.text,
+                test.success,
+                logprob_tokens=execution.logprob_tokens,
+                reasoning_text=execution.reasoning_text,
+                wall_tps=execution.metrics.wall_tps,
+            ):
+                issues.append(
+                    issue.model_copy(
+                        update={"evidence": {**issue.evidence, "owner": label}}
+                    )
+                )
+
+        diagnostics_artifact: Path | None = None
+        try:
+            diagnostics_after = self._wait_for_vision_media_idle(diagnostic_owners)
+            diagnostic_issues, diagnostic_records = _score_vision_media_diagnostics(
+                model_id=model_id,
+                test_name=test.name,
+                owners=diagnostic_owners,
+                request_owners=owners,
+                serving_node_id=serving_node_id,
+                serving_node_ids=serving_node_ids,
+                before=diagnostics_before,
+                after=diagnostics_after,
+                successful_requests=successful_requests,
+            )
+            issues.extend(diagnostic_issues)
+            diagnostics_artifact = _vision_media_diagnostics_artifact_path(
+                artifact_dir,
+                model_id,
+                test.name,
+                repetition,
+                diagnostic_records,
+            )
+        except (SkulkApiError, httpx.HTTPError, TypeError, ValueError) as exc:
+            issues.append(
+                Issue(
+                    severity="error",
+                    model_id=model_id,
+                    test_name=test.name,
+                    message="Unable to validate post-request vision media diagnostics",
+                    evidence={"error": str(exc)},
+                )
+            )
+
+        output = "\n".join(
+            f"{label}: {execution.text}" for label, execution in output_records
+        )
+        return TestResult(
+            model_id=model_id,
+            test_name=test.name,
+            repetition=repetition,
+            passed=not any(issue.severity == "error" for issue in issues),
+            output_text=output,
+            reasoning_text="\n".join(
+                execution.reasoning_text for _, execution in output_records
+            ),
+            metrics=GenerationMetrics(
+                elapsed_s=elapsed_s,
+                output_chars=len(output),
+                generated_chars=sum(
+                    len(execution.text) + len(execution.reasoning_text)
+                    for _, execution in output_records
+                ),
+            ),
+            issues=issues,
+            artifact_path=diagnostics_artifact,
         )
 
     def _run_concurrent_test(
@@ -2104,6 +2357,29 @@ class HarnessRunner:
     ) -> tuple[list[ClusterApiOwner], str | None]:
         """Choose API owners, optionally relative to the model's serving node."""
 
+        return self._select_model_owners(
+            client,
+            model_id=model_id,
+            test_name=test.name,
+            owner_count=test.speech_owner_count,
+            owner_topology=test.speech_owner_topology,
+            workload_name="speech test",
+            issues=issues,
+        )
+
+    def _select_model_owners(
+        self,
+        client: SkulkClient,
+        *,
+        model_id: str,
+        test_name: str,
+        owner_count: int,
+        owner_topology: OwnerTopology,
+        workload_name: str,
+        issues: list[Issue],
+    ) -> tuple[list[ClusterApiOwner], str | None]:
+        """Choose reachable API owners relative to a mounted model placement."""
+
         owners = client.get_cluster_api_owners()
         serving_node_ids = {
             node_id
@@ -2111,17 +2387,20 @@ class HarnessRunner:
             if placement.ready
             for node_id in placement.node_ids
         }
-        if test.speech_owner_topology == "any":
-            selected = owners[: test.speech_owner_count]
+        if owner_topology == "any":
+            selected = owners[:owner_count]
             serving_node_id = next(iter(sorted(serving_node_ids)), None)
         else:
-            if test.speech_owner_count < 2:
+            if owner_count < 2:
                 issues.append(
                     Issue(
                         severity="error",
                         model_id=model_id,
-                        test_name=test.name,
-                        message="local_remote pressure requires at least two owners",
+                        test_name=test_name,
+                        message=(
+                            f"{workload_name} local_remote topology requires at "
+                            "least two owners"
+                        ),
                     )
                 )
                 return [], None
@@ -2133,12 +2412,12 @@ class HarnessRunner:
                 (owner for owner in owners if owner.node_id not in serving_node_ids),
                 key=lambda owner: owner.node_id,
             )
-            if not local or len(remote) < test.speech_owner_count - 1:
+            if not local or len(remote) < owner_count - 1:
                 issues.append(
                     Issue(
                         severity="error",
                         model_id=model_id,
-                        test_name=test.name,
+                        test_name=test_name,
                         message=(
                             "Could not resolve the requested deterministic local/remote "
                             "API owner topology"
@@ -2146,29 +2425,59 @@ class HarnessRunner:
                         evidence={
                             "serving_owner_count": len(local),
                             "remote_owner_count": len(remote),
-                            "required_owner_count": test.speech_owner_count,
+                            "required_owner_count": owner_count,
                         },
                     )
                 )
                 return [], None
-            selected = [local[0], *remote[: test.speech_owner_count - 1]]
+            selected = [local[0], *remote[: owner_count - 1]]
             serving_node_id = local[0].node_id
 
-        if len(selected) < test.speech_owner_count:
+        if len(selected) < owner_count:
             issues.append(
                 Issue(
                     severity="error",
                     model_id=model_id,
-                    test_name=test.name,
-                    message="Not enough reachable API owners for speech test",
+                    test_name=test_name,
+                    message=f"Not enough reachable API owners for {workload_name}",
                     evidence={
-                        "required_owner_count": test.speech_owner_count,
+                        "required_owner_count": owner_count,
                         "reachable_owner_count": len(owners),
                     },
                 )
             )
             return [], serving_node_id
         return selected, serving_node_id
+
+    def _capture_vision_media_diagnostics(
+        self, owners: list[ClusterApiOwner]
+    ) -> dict[str, VisionMediaDiagnosticsSnapshot]:
+        """Read one vision media snapshot from every selected owner."""
+
+        snapshots: dict[str, VisionMediaDiagnosticsSnapshot] = {}
+        for owner in owners:
+            with self._client_for_url(owner.base_url) as owner_client:
+                snapshot = owner_client.get_vision_media_diagnostics()
+            if snapshot.node_id != owner.node_id:
+                raise ValueError(
+                    "Resolved API route returned diagnostics for another node"
+                )
+            snapshots[owner.node_id] = snapshot
+        return snapshots
+
+    def _wait_for_vision_media_idle(
+        self, owners: list[ClusterApiOwner]
+    ) -> dict[str, VisionMediaDiagnosticsSnapshot]:
+        """Wait briefly for vision transfer and retained-media cleanup."""
+
+        deadline = time.monotonic() + 10.0
+        snapshots = self._capture_vision_media_diagnostics(owners)
+        while time.monotonic() < deadline:
+            if all(_vision_media_snapshot_is_idle(item) for item in snapshots.values()):
+                return snapshots
+            time.sleep(0.1)
+            snapshots = self._capture_vision_media_diagnostics(owners)
+        return snapshots
 
     def _capture_data_plane_diagnostics(
         self, owners: list[ClusterApiOwner]
@@ -5295,6 +5604,351 @@ def _score_realtime_provider_diagnostics(
             )
         )
     return issues, records
+
+
+_VISION_MEDIA_COUNTER_FIELDS = (
+    "local_short_circuits",
+    "remote_frames_enqueued",
+    "remote_frames_published",
+    "remote_frames_dropped",
+    "remote_publish_failures",
+    "inbound_frames_dropped",
+    "idle_stream_reclaims",
+    "completed_streams",
+    "rejected_streams",
+    "expired_streams",
+)
+
+_VISION_MEDIA_ANOMALY_FIELDS = (
+    "remote_frames_dropped",
+    "remote_publish_failures",
+    "inbound_frames_dropped",
+    "idle_stream_reclaims",
+    "rejected_streams",
+    "expired_streams",
+)
+
+_VISION_MEDIA_LIVE_GAUGE_FIELDS = (
+    "active_stream_queues",
+    "queue_depth",
+    "inbound_payload_queue_depth",
+    "inbound_terminal_queue_depth",
+    "pending_api_commands",
+    "pending_api_bytes",
+    "active_api_commands",
+    "active_api_bytes",
+    "pending_worker_acknowledgements",
+    "active_streams",
+    "pending_frames",
+    "retained_bytes",
+    "verified_streams",
+    "pending_failures",
+)
+
+
+def _vision_media_snapshot_is_idle(
+    snapshot: VisionMediaDiagnosticsSnapshot,
+) -> bool:
+    """Return whether all request-scoped vision media resources are released."""
+
+    return all(
+        getattr(snapshot, field_name) == 0
+        for field_name in _VISION_MEDIA_LIVE_GAUGE_FIELDS
+    )
+
+
+def _vision_media_counter_delta(
+    before: VisionMediaDiagnosticsSnapshot,
+    after: VisionMediaDiagnosticsSnapshot,
+) -> dict[str, int]:
+    """Subtract cumulative vision media counters from same-process snapshots."""
+
+    return {
+        field_name: getattr(after, field_name) - getattr(before, field_name)
+        for field_name in _VISION_MEDIA_COUNTER_FIELDS
+    }
+
+
+def _score_vision_media_baseline(
+    *,
+    model_id: str,
+    test_name: str,
+    owners: list[ClusterApiOwner],
+    serving_node_id: str | None,
+    serving_node_ids: set[str],
+    snapshots: dict[str, VisionMediaDiagnosticsSnapshot],
+) -> list[Issue]:
+    """Reject a non-idle vision baseline whose request ownership is unknown."""
+
+    issues: list[Issue] = []
+    for owner_index, owner in enumerate(owners, start=1):
+        snapshot = snapshots.get(owner.node_id)
+        if snapshot is None:
+            continue
+        role = _vision_media_owner_role(
+            owner.node_id,
+            serving_node_id=serving_node_id,
+            serving_node_ids=serving_node_ids,
+        )
+        live_gauges = {
+            field_name: getattr(snapshot, field_name)
+            for field_name in _VISION_MEDIA_LIVE_GAUGE_FIELDS
+            if getattr(snapshot, field_name) > 0
+        }
+        if live_gauges:
+            issues.append(
+                Issue(
+                    severity="error",
+                    model_id=model_id,
+                    test_name=test_name,
+                    message=(
+                        "Vision media diagnostics baseline is not idle; routing "
+                        "attribution would be inconclusive"
+                    ),
+                    evidence={
+                        "owner": f"owner-{owner_index}-{role}",
+                        "live_gauges": live_gauges,
+                    },
+                )
+            )
+    return issues
+
+
+def _sanitized_vision_media_snapshot(
+    snapshot: VisionMediaDiagnosticsSnapshot,
+) -> dict[str, int]:
+    """Return vision diagnostics without node identity or route details."""
+
+    values = asdict(snapshot)
+    values.pop("node_id")
+    return {key: value for key, value in values.items() if isinstance(value, int)}
+
+
+def _vision_media_owner_role(
+    node_id: str,
+    *,
+    serving_node_id: str | None,
+    serving_node_ids: set[str],
+) -> str:
+    """Return a sanitized topology role for one diagnostics owner."""
+
+    if node_id == serving_node_id:
+        return "serving_local"
+    if node_id in serving_node_ids:
+        return "serving_participant"
+    return "remote_owner"
+
+
+def _score_vision_media_diagnostics(
+    *,
+    model_id: str,
+    test_name: str,
+    owners: list[ClusterApiOwner],
+    request_owners: list[ClusterApiOwner],
+    serving_node_id: str | None,
+    serving_node_ids: set[str],
+    before: dict[str, VisionMediaDiagnosticsSnapshot],
+    after: dict[str, VisionMediaDiagnosticsSnapshot],
+    successful_requests: int,
+) -> tuple[list[Issue], list[dict[str, object]]]:
+    """Prove local/remote vision routing, bounded cleanup, and clean outcomes."""
+
+    issues: list[Issue] = []
+    records: list[dict[str, object]] = []
+    deltas: dict[str, dict[str, int]] = {}
+    for owner_index, owner in enumerate(owners, start=1):
+        before_snapshot = before.get(owner.node_id)
+        after_snapshot = after.get(owner.node_id)
+        role = _vision_media_owner_role(
+            owner.node_id,
+            serving_node_id=serving_node_id,
+            serving_node_ids=serving_node_ids,
+        )
+        label = f"owner-{owner_index}-{role}"
+        if before_snapshot is None or after_snapshot is None:
+            issues.append(
+                Issue(
+                    severity="error",
+                    model_id=model_id,
+                    test_name=test_name,
+                    message="Vision media diagnostics missing for selected owner",
+                    evidence={"owner": label},
+                )
+            )
+            continue
+        delta = _vision_media_counter_delta(before_snapshot, after_snapshot)
+        deltas[owner.node_id] = delta
+        records.append(
+            {
+                "owner": label,
+                "before": _sanitized_vision_media_snapshot(before_snapshot),
+                "after": _sanitized_vision_media_snapshot(after_snapshot),
+                "delta": delta,
+            }
+        )
+        negative = {key: value for key, value in delta.items() if value < 0}
+        if negative:
+            issues.append(
+                Issue(
+                    severity="error",
+                    model_id=model_id,
+                    test_name=test_name,
+                    message="Vision media counters reset during qualification",
+                    evidence={"owner": label, "negative_deltas": negative},
+                )
+            )
+        live_gauges = {
+            field_name: getattr(after_snapshot, field_name)
+            for field_name in _VISION_MEDIA_LIVE_GAUGE_FIELDS
+            if getattr(after_snapshot, field_name) > 0
+        }
+        if live_gauges:
+            issues.append(
+                Issue(
+                    severity="error",
+                    model_id=model_id,
+                    test_name=test_name,
+                    message="Vision media resources did not drain after requests",
+                    evidence={"owner": label, "live_gauges": live_gauges},
+                )
+            )
+        anomalies = {
+            key: delta[key]
+            for key in _VISION_MEDIA_ANOMALY_FIELDS
+            if delta[key] > 0
+        }
+        if anomalies:
+            issues.append(
+                Issue(
+                    severity="error",
+                    model_id=model_id,
+                    test_name=test_name,
+                    message="Vision media diagnostics recorded transfer anomalies",
+                    evidence={"owner": label, "anomalies": anomalies},
+                )
+            )
+
+    local_serving_delta = deltas.get(serving_node_id or "")
+    if local_serving_delta is None:
+        issues.append(
+            Issue(
+                severity="error",
+                model_id=model_id,
+                test_name=test_name,
+                message="Serving-node vision media diagnostics were unavailable",
+            )
+        )
+    else:
+        if local_serving_delta["local_short_circuits"] <= 0:
+            issues.append(
+                Issue(
+                    severity="error",
+                    model_id=model_id,
+                    test_name=test_name,
+                    message="Local VLM request did not use the vision fast path",
+                )
+            )
+
+    for serving_participant_id in sorted(serving_node_ids):
+        serving_delta = deltas.get(serving_participant_id)
+        if serving_delta is None:
+            issues.append(
+                Issue(
+                    severity="error",
+                    model_id=model_id,
+                    test_name=test_name,
+                    message=(
+                        "Vision media diagnostics missing for a serving participant"
+                    ),
+                )
+            )
+            continue
+        if serving_delta["completed_streams"] < successful_requests:
+            issues.append(
+                Issue(
+                    severity="error",
+                    model_id=model_id,
+                    test_name=test_name,
+                    message="Vision ingress completion counters missed requests",
+                    evidence={
+                        "successful_requests": successful_requests,
+                        "completed_streams_delta": serving_delta[
+                            "completed_streams"
+                        ],
+                    },
+                )
+            )
+
+    for owner in request_owners:
+        if owner.node_id == serving_node_id:
+            continue
+        remote_delta = deltas.get(owner.node_id)
+        if remote_delta is None:
+            continue
+        if remote_delta["remote_frames_published"] <= 0:
+            issues.append(
+                Issue(
+                    severity="error",
+                    model_id=model_id,
+                    test_name=test_name,
+                    message="Remote VLM request did not publish vision media frames",
+                )
+            )
+        elif (
+            remote_delta["remote_frames_enqueued"]
+            != remote_delta["remote_frames_published"]
+        ):
+            issues.append(
+                Issue(
+                    severity="error",
+                    model_id=model_id,
+                    test_name=test_name,
+                    message="Remote vision media egress did not publish every frame",
+                    evidence={
+                        "enqueued": remote_delta["remote_frames_enqueued"],
+                        "published": remote_delta["remote_frames_published"],
+                    },
+                )
+            )
+    return issues, records
+
+
+def _vision_media_diagnostics_artifact_path(
+    artifact_dir: Path,
+    model_id: str,
+    test_name: str,
+    repetition: int,
+    records: list[dict[str, object]],
+) -> Path:
+    """Persist sanitized local/remote vision transport evidence."""
+
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    path = artifact_dir / (
+        f"{slugify(model_id)}--{slugify(test_name)}--rep-{repetition}"
+        ".vision-media.json"
+    )
+    path.write_text(json.dumps({"owners": records}, indent=2, sort_keys=True))
+    return path
+
+
+def _vision_data_plane_result(
+    *,
+    model_id: str,
+    test: PromptTest,
+    repetition: int,
+    issues: list[Issue],
+) -> TestResult:
+    """Build a pre-workload failure result for vision DATA qualification."""
+
+    return TestResult(
+        model_id=model_id,
+        test_name=test.name,
+        repetition=repetition,
+        passed=False,
+        output_text="vision DATA qualification did not start",
+        metrics=_empty_metrics(),
+        issues=issues,
+    )
 
 
 _DATA_PLANE_COUNTER_FIELDS = (

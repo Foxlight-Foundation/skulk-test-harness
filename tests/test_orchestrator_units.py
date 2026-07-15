@@ -21,6 +21,7 @@ from skulk_test_harness.client import (
     SkulkApiError,
     SkulkClient,
     StreamingAudioTranscriptionExecution,
+    VisionMediaDiagnosticsSnapshot,
     _extract_stream_delta,
     _extract_stream_logprobs,
 )
@@ -854,6 +855,12 @@ def test_foxlight_e2e_battery_references_defined_sets() -> None:
     assert all(cell[1] in model_sets for cell in cells)
     assert all(cell[2] in test_sets for cell in cells)
     assert ["cell", "speech-tts", "speech-synthesis-semantic"] in cells
+    assert [
+        "cell",
+        "vision",
+        "vision-data-plane",
+        "--min-nodes 2",
+    ] in cells
 
 
 def test_score_output_require_logprobs_fails_when_absent() -> None:
@@ -954,9 +961,12 @@ def test_vision_smoke_fixture_expects_blue_square() -> None:
     root = Path(__file__).parents[1]
     test_sets = load_test_sets(root / "configs/test_sets.yaml").test_sets
     vision = test_sets["vision"].tests[0]
+    data_plane = test_sets["vision-data-plane"].tests[0]
 
     assert vision.success.required_substrings == ["blue"]
     assert "ABAAAAAQ" in vision.images[0].url
+    assert data_plane.kind == "vision_data_plane"
+    assert data_plane.success.required_substrings == ["blue"]
 
 
 def test_default_placement_appearance_timeout_handles_large_cached_models() -> None:
@@ -1343,6 +1353,45 @@ def _data_snapshot(
     )
 
 
+def _vision_snapshot(
+    node_id: str,
+    *,
+    local_short_circuits: int = 0,
+    remote_frames_enqueued: int = 0,
+    remote_frames_published: int = 0,
+    completed_streams: int = 0,
+    active_stream_queues: int = 0,
+    retained_bytes: int = 0,
+) -> VisionMediaDiagnosticsSnapshot:
+    return VisionMediaDiagnosticsSnapshot(
+        node_id=node_id,
+        active_stream_queues=active_stream_queues,
+        queue_depth=0,
+        local_short_circuits=local_short_circuits,
+        remote_frames_enqueued=remote_frames_enqueued,
+        remote_frames_published=remote_frames_published,
+        remote_frames_dropped=0,
+        remote_publish_failures=0,
+        inbound_payload_queue_depth=0,
+        inbound_terminal_queue_depth=0,
+        inbound_frames_dropped=0,
+        idle_stream_reclaims=0,
+        pending_api_commands=0,
+        pending_api_bytes=0,
+        active_api_commands=0,
+        active_api_bytes=0,
+        pending_worker_acknowledgements=0,
+        active_streams=0,
+        pending_frames=0,
+        retained_bytes=retained_bytes,
+        verified_streams=0,
+        pending_failures=0,
+        completed_streams=completed_streams,
+        rejected_streams=0,
+        expired_streams=0,
+    )
+
+
 def _provider_snapshot(
     node_id: str,
     *,
@@ -1461,6 +1510,135 @@ def test_run_test_explicit_thinking_overrides_default(tmp_path: Path) -> None:
         thinking_default=False,
     )
     assert client.thinking_seen == [True]
+
+
+def test_vision_data_plane_proves_local_and_remote_media_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _ThreeOwnerClient(_FakeClient):
+        def get_cluster_api_owners(self) -> list[ClusterApiOwner]:
+            return [
+                ClusterApiOwner(node_id="node-a", base_url="http://owner-a"),
+                ClusterApiOwner(node_id="node-b", base_url="http://owner-b"),
+                ClusterApiOwner(node_id="node-c", base_url="http://owner-c"),
+            ]
+
+    client = _ThreeOwnerClient(
+        live_placements=[
+            PlacementResult(
+                model_id="org/VLM",
+                instance_id="vlm-instance",
+                node_ids=["node-a", "node-c"],
+                ready=True,
+            )
+        ]
+    )
+    runner = _runner()
+    monkeypatch.setattr(runner, "_client_for_url", lambda _url: _FakeClient())
+    before = {
+        "node-a": _vision_snapshot("node-a"),
+        "node-b": _vision_snapshot("node-b"),
+        "node-c": _vision_snapshot("node-c"),
+    }
+    after = {
+        "node-a": _vision_snapshot(
+            "node-a",
+            local_short_circuits=4,
+            completed_streams=2,
+        ),
+        "node-b": _vision_snapshot(
+            "node-b",
+            remote_frames_enqueued=4,
+            remote_frames_published=4,
+        ),
+        "node-c": _vision_snapshot("node-c", completed_streams=2),
+    }
+    monkeypatch.setattr(
+        runner, "_capture_vision_media_diagnostics", lambda _owners: before
+    )
+    monkeypatch.setattr(
+        runner, "_wait_for_vision_media_idle", lambda _owners: after
+    )
+    test = PromptTest(
+        name="vision-local-remote",
+        kind="vision_data_plane",
+        prompt="What color is the image?",
+        images=[PromptImage(url="data:image/png;base64,AAAA")],
+        success=SuccessCriteria(min_chars=2, required_substrings=["ok"]),
+    )
+
+    result = runner._run_test(
+        client,  # type: ignore[arg-type]
+        model_id="org/VLM",
+        test=test,
+        repetition=1,
+        artifact_dir=tmp_path,
+    )
+
+    assert result.passed is True
+    assert result.output_text == (
+        "owner-1-serving_local: ok\nowner-2-remote_owner: ok"
+    )
+    assert result.artifact_path is not None
+    payload = json.loads(result.artifact_path.read_text())
+    assert [owner["owner"] for owner in payload["owners"]] == [
+        "owner-1-serving_local",
+        "owner-2-serving_participant",
+        "owner-3-remote_owner",
+    ]
+    assert payload["owners"][0]["delta"]["local_short_circuits"] == 4
+    assert payload["owners"][1]["delta"]["completed_streams"] == 2
+    assert payload["owners"][2]["delta"]["remote_frames_published"] == 4
+
+
+def test_vision_data_plane_rejects_non_idle_baseline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _FakeClient(
+        live_placements=[
+            PlacementResult(
+                model_id="org/VLM",
+                instance_id="vlm-instance",
+                node_ids=["node-a"],
+                ready=True,
+            )
+        ]
+    )
+    runner = _runner()
+    monkeypatch.setattr(
+        runner,
+        "_capture_vision_media_diagnostics",
+        lambda _owners: {
+            "node-a": _vision_snapshot("node-a", retained_bytes=1024),
+            "node-b": _vision_snapshot("node-b"),
+        },
+    )
+    test = PromptTest(
+        name="vision-local-remote",
+        kind="vision_data_plane",
+        prompt="What color is the image?",
+        images=[PromptImage(url="data:image/png;base64,AAAA")],
+    )
+
+    result = runner._run_test(
+        client,  # type: ignore[arg-type]
+        model_id="org/VLM",
+        test=test,
+        repetition=1,
+        artifact_dir=tmp_path,
+    )
+
+    assert result.passed is False
+    assert result.issues[0].message == (
+        "Vision media diagnostics baseline is not idle; routing attribution "
+        "would be inconclusive"
+    )
+    assert result.issues[0].evidence == {
+        "owner": "owner-1-serving_local",
+        "live_gauges": {"retained_bytes": 1024},
+    }
 
 
 def test_run_test_dispatches_audio_speech(tmp_path: Path) -> None:

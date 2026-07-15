@@ -15,7 +15,8 @@ AudioResponseFormat = Literal["mp3", "wav", "flac", "ogg", "opus"]
 TranscriptionResponseFormat = Literal[
     "json", "text", "verbose_json", "srt", "vtt", "ndjson"
 ]
-SpeechOwnerTopology = Literal["any", "local_remote"]
+OwnerTopology = Literal["any", "local_remote"]
+SpeechOwnerTopology = OwnerTopology
 TestKind = Literal[
     "chat",
     "code",
@@ -37,6 +38,7 @@ TestKind = Literal[
     "speech_roundtrip",
     "speech_translation_roundtrip",
     "speech_reference_roundtrip",
+    "vision_data_plane",
 ]
 RunMode = Literal["plan", "execute"]
 IssueSeverity = Literal["info", "warning", "error"]
