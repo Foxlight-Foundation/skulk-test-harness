@@ -916,6 +916,7 @@ class SkulkClient:
                 continue
             node_to_runner = assignments.get("nodeToRunner")
             runner_to_shard = assignments.get("runnerToShard")
+            ready, runner_failure_messages = _instance_runner_summary(state, body)
             placements.append(
                 PlacementResult(
                     model_id=model_id,
@@ -928,7 +929,9 @@ class SkulkClient:
                     else [],
                     instance_meta=tag,
                     reused_existing=True,
-                    ready=self.instance_is_ready(str(instance_id)),
+                    ready=ready,
+                    terminal_failure=bool(runner_failure_messages),
+                    runner_failure_messages=runner_failure_messages,
                 )
             )
         return placements
@@ -940,24 +943,8 @@ class SkulkClient:
         instance = _get_instance_body(state, instance_id)
         if instance is None:
             return False
-        assignments = instance.get("shardAssignments")
-        if not isinstance(assignments, dict):
-            return False
-        runner_to_shard = assignments.get("runnerToShard")
-        if not isinstance(runner_to_shard, dict) or not runner_to_shard:
-            return False
-        runners = state.get("runners")
-        if not isinstance(runners, dict):
-            return False
-        for runner_id in runner_to_shard:
-            raw_status = runners.get(runner_id)
-            parsed = unwrap_tagged(raw_status)
-            if parsed is None:
-                return False
-            tag, _body = parsed
-            if tag not in {"RunnerReady", "RunnerRunning"}:
-                return False
-        return True
+        ready, _runner_failure_messages = _instance_runner_summary(state, instance)
+        return ready
 
     def wait_for_instance_ready(
         self,
@@ -974,7 +961,7 @@ class SkulkClient:
             result = self.describe_instance(instance_id)
             if result is not None:
                 last_result = result
-                if result.ready:
+                if result.ready or result.terminal_failure:
                     return result
             time.sleep(poll_interval_s)
         if last_result is not None:
@@ -995,6 +982,7 @@ class SkulkClient:
         runner_to_shard = assignments.get("runnerToShard")
         model_id = str(assignments.get("modelId") or "")
         tag = _get_instance_tag(state, instance_id)
+        ready, runner_failure_messages = _instance_runner_summary(state, body)
         return PlacementResult(
             model_id=model_id,
             instance_id=instance_id,
@@ -1003,7 +991,9 @@ class SkulkClient:
             if isinstance(runner_to_shard, dict)
             else [],
             instance_meta=tag,
-            ready=self.instance_is_ready(instance_id),
+            ready=ready,
+            terminal_failure=bool(runner_failure_messages),
+            runner_failure_messages=runner_failure_messages,
         )
 
     def stream_chat(
@@ -2361,6 +2351,43 @@ def _get_instance_body(
         return None
     parsed = unwrap_tagged(instances.get(instance_id))
     return parsed[1] if parsed is not None else None
+
+
+def _instance_runner_summary(
+    state: dict[str, object], instance: dict[str, object]
+) -> tuple[bool, list[str]]:
+    """Return dispatch readiness and terminal errors for assigned runners."""
+
+    assignments = instance.get("shardAssignments")
+    if not isinstance(assignments, dict):
+        return False, []
+    runner_to_shard = assignments.get("runnerToShard")
+    if not isinstance(runner_to_shard, dict) or not runner_to_shard:
+        return False, []
+    runners = state.get("runners")
+    if not isinstance(runners, dict):
+        return False, []
+
+    ready = True
+    failure_messages: list[str] = []
+    for runner_id in runner_to_shard:
+        parsed = unwrap_tagged(runners.get(runner_id))
+        if parsed is None:
+            ready = False
+            continue
+        tag, body = parsed
+        if tag == "RunnerFailed":
+            ready = False
+            raw_message = body.get("errorMessage")
+            message = (
+                raw_message
+                if isinstance(raw_message, str) and raw_message
+                else "Runner entered RunnerFailed without an error message"
+            )
+            failure_messages.append(f"{runner_id}: {message}")
+        elif tag not in {"RunnerReady", "RunnerRunning"}:
+            ready = False
+    return ready, failure_messages
 
 
 def _float_or_none(value: object) -> float | None:

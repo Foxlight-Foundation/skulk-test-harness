@@ -1232,6 +1232,48 @@ def test_resolve_node_ids_raises_on_unknown(
         client.close()
 
 
+def test_wait_for_instance_ready_returns_immediately_on_runner_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = SkulkClient("http://skulk.test")
+    state: dict[str, object] = {
+        "instances": {
+            "instance-a": {
+                "MlxRingInstance": {
+                    "shardAssignments": {
+                        "modelId": "m/Broken",
+                        "nodeToRunner": {"node-a": "runner-a"},
+                        "runnerToShard": {"runner-a": {}},
+                    }
+                }
+            }
+        },
+        "runners": {
+            "runner-a": {
+                "RunnerFailed": {"errorMessage": "model vocabulary is invalid"}
+            }
+        },
+    }
+    monkeypatch.setattr(client, "get_state", lambda: state)
+    monkeypatch.setattr(
+        client_module.time,
+        "sleep",
+        lambda _seconds: pytest.fail("terminal failure must not be polled"),
+    )
+    try:
+        placement = client.wait_for_instance_ready(
+            "instance-a", timeout_s=1800.0, poll_interval_s=2.0
+        )
+    finally:
+        client.close()
+
+    assert placement.ready is False
+    assert placement.terminal_failure is True
+    assert placement.runner_failure_messages == [
+        "runner-a: model vocabulary is invalid"
+    ]
+
+
 def test_streaming_chat_parses_generation_stats_comment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

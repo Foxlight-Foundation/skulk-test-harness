@@ -244,11 +244,18 @@ class HarnessRunner:
                         ),
                         model_id=model.model_id,
                         message=(
-                            "Instance was placed but never became ready (torn "
-                            "down by cluster recovery, or load failed); see "
-                            "master logs"
+                            "Instance runner failed while loading"
+                            if placement.terminal_failure
+                            else (
+                                "Instance was placed but never became ready (torn "
+                                "down by cluster recovery, or load failed); see "
+                                "master logs"
+                            )
                         ),
-                        evidence={"instance_id": placement.instance_id or ""},
+                        evidence={
+                            "instance_id": placement.instance_id or "",
+                            "runner_failures": placement.runner_failure_messages,
+                        },
                     )
                 )
                 writer.write(report)

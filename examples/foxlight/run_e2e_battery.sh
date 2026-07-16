@@ -9,10 +9,19 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$REPO_ROOT"
 CONFIG="examples/foxlight/skulk-harness.yaml"
-LOG=runs/e2e_battery.log
+LOG="${SKULK_E2E_BATTERY_LOG:-runs/e2e_battery.log}"
 mkdir -p "$(dirname "$LOG")"
 : > "$LOG"
 say() { echo "[$(date '+%H:%M:%S')] $*" | tee -a "$LOG"; }
+
+stop_battery() {
+  local rc="$1"
+  trap - INT TERM
+  say "BATTERY INTERRUPTED (rc=$rc)"
+  exit "$rc"
+}
+trap 'stop_battery 130' INT
+trap 'stop_battery 143' TERM
 
 battery_rc=0
 cell() {
@@ -27,6 +36,9 @@ cell() {
     --ensure-store-downloads \
     --delete-created-instances $extra >>"$LOG" 2>&1
   local rc=$?
+  if [ "$rc" -eq 130 ] || [ "$rc" -eq 143 ]; then
+    stop_battery "$rc"
+  fi
   [ "$rc" -ne 0 ] && battery_rc=$rc
   say "==== CELL  model-set=$mset  test-set=$tset  END (rc=$rc) ===="
 }

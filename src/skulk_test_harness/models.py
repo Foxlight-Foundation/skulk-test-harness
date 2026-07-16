@@ -837,6 +837,16 @@ class PlacementResult(HarnessBaseModel):
     reused_existing: bool = False
     created_by_harness: bool = False
     ready: bool = False
+    terminal_failure: bool = Field(
+        default=False,
+        description=(
+            "Whether at least one assigned runner entered a terminal failed state."
+        ),
+    )
+    runner_failure_messages: list[str] = Field(
+        default_factory=list,
+        description="Runner failure messages observed while waiting for readiness.",
+    )
 
 
 class GenerationMetrics(HarnessBaseModel):
