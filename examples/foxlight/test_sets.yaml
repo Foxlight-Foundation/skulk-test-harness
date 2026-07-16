@@ -1092,6 +1092,18 @@ test_sets:
         repetitions: 1
         success:
           min_chars: 500
+      - name: concurrent-16
+        kind: concurrent
+        concurrency: 16
+        concurrent_requests_per_worker: 2
+        system: You are a thorough technical writer. Write continuous prose.
+        prompt: *conc_prompt
+        max_tokens: 384
+        temperature: 0.7
+        enable_thinking: false
+        repetitions: 1
+        success:
+          min_chars: 500
       - name: concurrent-32
         kind: concurrent
         concurrency: 32
@@ -1110,6 +1122,69 @@ test_sets:
         concurrent_requests_per_worker: 2
         system: You are a thorough technical writer. Write continuous prose.
         prompt: *conc_prompt
+        max_tokens: 384
+        temperature: 0.7
+        enable_thinking: false
+        repetitions: 1
+        success:
+          min_chars: 500
+
+  # --- Concurrency capped at 16 (for MLX, whose runtime batches up to
+  # SKULK_MAX_CONCURRENT_REQUESTS=16). Beyond the batch cap the MLX path just
+  # queues, so testing past 16 measures queue latency, not the engine. AMD uses
+  # the full `concurrency` set (up to 64), where continuous batching scales.
+  concurrency-16:
+    name: concurrency-16
+    description: >
+      Throughput-vs-concurrency sweep capped at 1/4/8/16, for the MLX batch
+      path whose admission cap is 16. Same prompt/token budget as `concurrency`.
+    tests:
+      - name: concurrent-1
+        kind: concurrent
+        concurrency: 1
+        concurrent_requests_per_worker: 3
+        system: You are a thorough technical writer. Write continuous prose.
+        prompt: &conc16_prompt >
+          Write a detailed, self-contained explanation (around 500 words) of how
+          a distributed inference system streams tokens back to many clients at
+          once: request admission, batching, the KV cache, and backpressure. Use
+          flowing paragraphs, no lists.
+        max_tokens: 384
+        temperature: 0.7
+        enable_thinking: false
+        repetitions: 1
+        success:
+          min_chars: 500
+      - name: concurrent-4
+        kind: concurrent
+        concurrency: 4
+        concurrent_requests_per_worker: 2
+        system: You are a thorough technical writer. Write continuous prose.
+        prompt: *conc16_prompt
+        max_tokens: 384
+        temperature: 0.7
+        enable_thinking: false
+        repetitions: 1
+        success:
+          min_chars: 500
+      - name: concurrent-8
+        kind: concurrent
+        concurrency: 8
+        concurrent_requests_per_worker: 2
+        system: You are a thorough technical writer. Write continuous prose.
+        prompt: *conc16_prompt
+        max_tokens: 384
+        temperature: 0.7
+        enable_thinking: false
+        repetitions: 1
+        success:
+          min_chars: 500
+      - name: concurrent-16
+        kind: concurrent
+        concurrency: 16
+        concurrent_requests_per_worker: 2
+        system: You are a thorough technical writer. Write continuous prose.
+        prompt: *conc16_prompt
         max_tokens: 384
         temperature: 0.7
         enable_thinking: false
