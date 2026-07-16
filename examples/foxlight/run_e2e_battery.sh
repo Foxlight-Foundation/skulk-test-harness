@@ -98,6 +98,16 @@ cell pooled-rpc       llama-cpp        "--min-nodes 2 --instance-meta LlamaRpc"
 cell gguf-llama-cpp   llama-cpp        "--exclude-nodes kite4"
 cell mtp-served-9b    mtp-correctness  "--exclude-nodes kite4 --delete-staged-models"
 
+# --- Throughput-vs-concurrency sweep (non-MTP text, levels 1/4/8/32/64) ------
+# The concurrency leg: same cells as run_concurrency_battery.sh, folded into the
+# e2e so every run traces the throughput-vs-concurrency curve per model x engine
+# x hardware, single-rank and multi-rank. A level that saturates (admission
+# refuses) fails its cell, which is the finding, not a flake.
+cell concurrency-mlx            concurrency
+cell concurrency-mlx-multinode  concurrency  "--sharding Tensor --min-nodes 2"
+cell concurrency-gguf           concurrency
+cell concurrency-gguf-pooled    concurrency  "--min-nodes 2 --instance-meta LlamaRpc"
+
 say "BATTERY COMPLETE (rc=$battery_rc)"
 
 # --- Publish results to the ledger + prune published local runs (ON by
