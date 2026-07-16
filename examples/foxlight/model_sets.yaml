@@ -371,10 +371,12 @@ model_sets:
   concurrency-gguf:
     name: concurrency-gguf
     description: >-
-      Single-node llama.cpp on an AMD GPU node (kite4), small -> large: a 7B, a
-      30B MoE, and the 120B. The single-rank leg for the served/GGUF engine,
-      where continuous batching (--parallel) actually scales aggregate throughput.
+      Single-node llama.cpp on an AMD GPU node (kite4), small -> large: a tiny
+      1B (the overhead-dominated small end), a 7B, a 30B MoE, and the 120B. The
+      single-rank leg for the served/GGUF engine, where continuous batching
+      (--parallel) actually scales aggregate throughput.
     models:
+      - unsloth/Llama-3.2-1B-Instruct-GGUF
       - Qwen/Qwen2.5-7B-Instruct-GGUF
       - unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF
       - bartowski/openai_gpt-oss-120b-GGUF
