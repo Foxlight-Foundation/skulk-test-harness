@@ -3790,6 +3790,48 @@ def test_wait_for_model_ready_clock_starts_at_appearance_not_request() -> None:
     assert result.instance_id == "late"  # clock started when it appeared
 
 
+def test_wait_for_model_ready_ignores_preexisting_instance_on_forced_placement() -> None:
+    # A forced placement (reuse=False) must never adopt a pre-existing user-owned
+    # instance that is already ready: it would run the "fresh" test against it and
+    # then tear it down. The wait must select the harness's own placement.
+    pre = _placement("preexisting", ready=True)
+    client = _ScriptedPlacementClient(
+        [[pre, _placement("mine")], [pre, _placement("mine", ready=True)]]
+    )
+    spec = RunSpec(model_set="m", test_set="t", mode="execute")
+    result = _fast_runner()._wait_for_model_ready(
+        client,  # type: ignore[arg-type]
+        "m",
+        spec,
+        _report(),
+        created_by_harness=True,
+        reused=False,
+        ignore_instance_ids=frozenset({"preexisting"}),
+    )
+    assert result.ready is True
+    assert result.instance_id == "mine"
+
+
+def test_wait_for_model_ready_never_adopts_ignored_ready_instance() -> None:
+    # If the ONLY ready instance is the ignored pre-existing one and the harness's
+    # own placement never appears, do not adopt it -- report a give-up instead.
+    pre = _placement("preexisting", ready=True)
+    client = _ScriptedPlacementClient([[pre]])
+    spec = RunSpec(model_set="m", test_set="t", mode="execute")
+    result = _fast_runner()._wait_for_model_ready(
+        client,  # type: ignore[arg-type]
+        "m",
+        spec,
+        _report(),
+        created_by_harness=True,
+        reused=False,
+        ignore_instance_ids=frozenset({"preexisting"}),
+    )
+    assert result.ready is False
+    assert result.instance_id != "preexisting"
+    assert result.unavailable_reason == "never_appeared"
+
+
 def test_not_ready_message_names_each_cause() -> None:
     from skulk_test_harness.orchestrator import _not_ready_message
 

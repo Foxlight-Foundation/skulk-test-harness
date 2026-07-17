@@ -537,6 +537,14 @@ class HarnessRunner:
             self._ensure_store_download(client, model_id, report)
 
         existing = client.find_placements_for_model(model_id)
+        # Instances that already exist for this model BEFORE we place. On a forced
+        # placement (reuse_existing_instances=False) these are user-owned and must
+        # never be adopted as the harness's own -- otherwise the harness would run
+        # its "fresh placement" test against a pre-existing instance and, with
+        # retain_instances=False, tear down a model the operator was running.
+        preexisting_instance_ids = frozenset(
+            p.instance_id for p in existing if p.instance_id
+        )
         # An excluded node must not be reused: without this, a cell that asks to
         # exclude kite4 (to force a GGUF onto kite5) would silently reuse a prior
         # kite4 placement and never exercise the target node.
@@ -597,6 +605,7 @@ class HarnessRunner:
             report,
             created_by_harness=True,
             reused=False,
+            ignore_instance_ids=preexisting_instance_ids,
         )
 
     def _wait_for_model_ready(
@@ -608,6 +617,7 @@ class HarnessRunner:
         *,
         created_by_harness: bool,
         reused: bool,
+        ignore_instance_ids: frozenset[str] = frozenset(),
     ) -> PlacementResult:
         """Wait for the model to have a dispatchable instance, following re-placement.
 
@@ -630,6 +640,12 @@ class HarnessRunner:
           * record every observed placement change so a silent wait is
             diagnosable from the report alone.
 
+        ``ignore_instance_ids`` are instances that existed BEFORE a forced
+        placement; they are user-owned and never adopted, so the harness cannot
+        run its test against -- and then tear down -- a pre-existing instance it
+        did not create. They are invisible to this wait; only the harness's own
+        placement (or the cluster's re-placement of it) can satisfy readiness.
+
         The returned ``PlacementResult`` carries ``unavailable_reason`` and
         ``readiness_transitions`` when not ready; the caller owns issue reporting.
         """
@@ -640,6 +656,10 @@ class HarnessRunner:
             if excluded:
                 placements = [
                     p for p in placements if not excluded.intersection(p.node_ids)
+                ]
+            if ignore_instance_ids:
+                placements = [
+                    p for p in placements if p.instance_id not in ignore_instance_ids
                 ]
             return placements
 
