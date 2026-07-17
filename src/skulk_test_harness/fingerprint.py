@@ -153,6 +153,10 @@ def _cluster_fingerprint(client: object) -> tuple[ClusterFingerprint, list[Issue
         accel = sysprof.get("accelerator") if isinstance(sysprof, dict) else None
         vendor = _as_str(accel.get("vendor")) if isinstance(accel, dict) else None
         accel_name = _as_str(accel.get("name")) if isinstance(accel, dict) else None
+        # VRAM carve + GTT aperture: the ledger needs these to report a unified
+        # APU's true capacity (ram_total is only the post-carve OS-visible slice).
+        vram = accel.get("vramTotalBytes") if isinstance(accel, dict) else None
+        gtt = accel.get("gttTotalBytes") if isinstance(accel, dict) else None
         fp.nodes.append(
             ClusterNodeFingerprint(
                 node_id=nid,
@@ -160,6 +164,8 @@ def _cluster_fingerprint(client: object) -> tuple[ClusterFingerprint, list[Issue
                 ram_total_bytes=ram if isinstance(ram, int) else None,
                 accelerator_vendor=vendor,
                 accelerator_name=accel_name,
+                vram_total_bytes=vram if isinstance(vram, int) else None,
+                gtt_total_bytes=gtt if isinstance(gtt, int) else None,
                 skulk_version=version,
                 system_telemetry_present=isinstance(node_system, dict) and nid in node_system,
                 memory_telemetry_present=isinstance(node_memory, dict) and nid in node_memory,
