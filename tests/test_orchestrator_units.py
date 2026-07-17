@@ -3757,6 +3757,39 @@ def test_wait_for_model_ready_timeout_when_loading_forever() -> None:
     assert result.instance_id == "slow"
 
 
+def test_wait_for_model_ready_clock_starts_at_appearance_not_request() -> None:
+    # A placement that surfaces LATE (after several empty polls) must still get
+    # its full runner-readiness allowance: the appearance window must not eat
+    # into placement_ready_timeout_s. With the readiness clock counted from
+    # request time this would false-fail as never_appeared / ready_timeout with
+    # no instance; counted from appearance it is a real ready_timeout on the
+    # instance that appeared.
+    empties: list[list[PlacementResult]] = [[] for _ in range(5)]
+    client = _ScriptedPlacementClient([*empties, [_placement("late")]])
+    runner = HarnessRunner(
+        config=HarnessConfig(
+            # appearance window comfortably longer than the empty-poll stretch,
+            # readiness allowance short so the loading instance times out fast.
+            placement_appearance_timeout_s=1.0,
+            placement_ready_timeout_s=0.05,
+            poll_interval_s=0.005,
+        ),
+        model_sets={},
+        test_sets={},
+    )
+    spec = RunSpec(model_set="m", test_set="t", mode="execute")
+    result = runner._wait_for_model_ready(
+        client,  # type: ignore[arg-type]
+        "m",
+        spec,
+        _report(),
+        created_by_harness=True,
+        reused=False,
+    )
+    assert result.unavailable_reason == "ready_timeout"
+    assert result.instance_id == "late"  # clock started when it appeared
+
+
 def test_not_ready_message_names_each_cause() -> None:
     from skulk_test_harness.orchestrator import _not_ready_message
 

@@ -645,7 +645,14 @@ class HarnessRunner:
 
         start = time.monotonic()
         appearance_deadline = start + self.config.placement_appearance_timeout_s
-        ready_deadline = start + self.config.placement_ready_timeout_s
+        # The readiness clock starts only when the first viable (loading)
+        # placement actually appears, NOT at request time: a placement can take
+        # up to placement_appearance_timeout_s to surface, and that appearance
+        # window must not eat into the runner-readiness allowance -- otherwise a
+        # model that appears late in the window is falsely reported ready_timeout
+        # despite loading for well under placement_ready_timeout_s. Until a
+        # placement appears, the appearance deadline bounds the wait.
+        ready_deadline: float | None = None
         transitions: list[dict[str, object]] = []
         last_signature: tuple[tuple[str, bool, bool], ...] | None = None
         seen_any = False
@@ -672,7 +679,12 @@ class HarnessRunner:
                 readiness_transitions=transitions,
             )
 
-        while time.monotonic() < ready_deadline:
+        while True:
+            now = time.monotonic()
+            if ready_deadline is not None and now >= ready_deadline:
+                # A placement appeared but never reached a dispatchable runner
+                # within the full readiness allowance (counted from appearance).
+                return not_ready("ready_timeout")
             placements = current_placements()
             signature = tuple(
                 sorted(
@@ -683,7 +695,7 @@ class HarnessRunner:
             if signature != last_signature:
                 transitions.append(
                     {
-                        "elapsed_s": round(time.monotonic() - start, 1),
+                        "elapsed_s": round(now - start, 1),
                         "instances": [
                             {
                                 "instance_id": p.instance_id,
@@ -712,6 +724,11 @@ class HarnessRunner:
                 seen_any = True
                 no_viable_since = None
                 last_seen = loading[0]
+                if ready_deadline is None:
+                    # First viable placement observed: start the readiness clock
+                    # now, so the model gets its full runner-readiness allowance
+                    # regardless of how long the placement took to appear.
+                    ready_deadline = now + self.config.placement_ready_timeout_s
             else:
                 # Nothing viable right now: either no placement at all, or only
                 # instances that entered a terminal failure. Give the cluster a
@@ -721,12 +738,12 @@ class HarnessRunner:
                     seen_any = True
                     last_seen = placements[0]
                 if no_viable_since is None:
-                    no_viable_since = time.monotonic()
+                    no_viable_since = now
                 grace_expired = (
-                    time.monotonic() - no_viable_since
+                    now - no_viable_since
                     > self.config.placement_appearance_timeout_s
                 )
-                never_appeared = not seen_any and time.monotonic() > appearance_deadline
+                never_appeared = not seen_any and now > appearance_deadline
                 if never_appeared:
                     return not_ready("never_appeared")
                 if seen_any and grace_expired:
@@ -734,8 +751,6 @@ class HarnessRunner:
                         "load_failed" if placements else "disappeared_without_replacement"
                     )
             time.sleep(self.config.poll_interval_s)
-
-        return not_ready("ready_timeout")
 
     def _ensure_model_card(
         self, client: SkulkClient, model_id: str, report: RunReport
