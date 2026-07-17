@@ -2154,6 +2154,9 @@ class HarnessRunner:
                         secondary_model_id,
                         placement.instance_id,
                         report,
+                        protected_instance_ids=frozenset(
+                            placement.protected_instance_ids
+                        ),
                     )
                     if spec.delete_staged_models and torn_down:
                         self._evict_staged_model(client, secondary_model_id, report)
@@ -2991,6 +2994,9 @@ class HarnessRunner:
                     secondary_model_id,
                     placement.instance_id,
                     report,
+                    protected_instance_ids=frozenset(
+                        placement.protected_instance_ids
+                    ),
                 )
                 if spec.delete_staged_models and torn_down:
                     self._evict_staged_model(client, secondary_model_id, report)
@@ -3057,6 +3063,9 @@ class HarnessRunner:
                         secondary_model_id,
                         placement.instance_id,
                         report,
+                        protected_instance_ids=frozenset(
+                            placement.protected_instance_ids
+                        ),
                     )
                     if spec.delete_staged_models and torn_down:
                         self._evict_staged_model(client, secondary_model_id, report)
@@ -3869,6 +3878,9 @@ class HarnessRunner:
                     transcription_model_id,
                     stt_placement.instance_id,
                     report,
+                    protected_instance_ids=frozenset(
+                        stt_placement.protected_instance_ids
+                    ),
                 )
                 if spec.delete_staged_models and torn_down:
                     self._evict_staged_model(client, transcription_model_id, report)
@@ -4067,6 +4079,9 @@ class HarnessRunner:
                     donor_model_id,
                     donor_placement.instance_id,
                     report,
+                    protected_instance_ids=frozenset(
+                        donor_placement.protected_instance_ids
+                    ),
                 )
                 if spec.delete_staged_models and torn_down:
                     self._evict_staged_model(client, donor_model_id, report)
@@ -4084,6 +4099,9 @@ class HarnessRunner:
                     transcription_model_id,
                     stt_placement.instance_id,
                     report,
+                    protected_instance_ids=frozenset(
+                        stt_placement.protected_instance_ids
+                    ),
                 )
                 if spec.delete_staged_models and torn_down:
                     self._evict_staged_model(client, transcription_model_id, report)
