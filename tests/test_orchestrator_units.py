@@ -3058,7 +3058,10 @@ def test_ensure_model_placed_fast_fails_when_instance_never_appears() -> None:
     assert placement is not None
     assert placement.created_by_harness is True
     assert placement.ready is False
-    assert any("placement refusal" in issue.message for issue in report.issues)
+    # The model-scoped wait returns a typed cause; issue reporting is now the
+    # single responsibility of _run_model_lifecycle, so no issue is appended here.
+    assert placement.unavailable_reason == "never_appeared"
+    assert placement.instance_id is None
 
 
 def test_ensure_store_download_reports_transport_timeout() -> None:
@@ -3641,3 +3644,273 @@ def test_concurrent_test_counts_dropped_worker_slots_as_failures(
         "not issued" in i.message or "worker error" in str((i.evidence or {}).get("error", ""))
         for i in result.issues
     )
+
+
+# --- model-scoped readiness wait: follow re-placement, prefer ready, fail fast,
+# --- and record transitions (Codex's disk-full re-placement diagnosis) --------
+
+
+def _placement(
+    instance_id: str, *, ready: bool = False, terminal_failure: bool = False
+) -> PlacementResult:
+    return PlacementResult(
+        model_id="m",
+        instance_id=instance_id,
+        ready=ready,
+        terminal_failure=terminal_failure,
+    )
+
+
+class _ScriptedPlacementClient(_FakeClient):
+    """Returns a scripted placement snapshot per poll (index clamps at the last)."""
+
+    def __init__(self, snapshots: list[list[PlacementResult]]) -> None:
+        super().__init__()
+        self._snapshots = snapshots
+        self.calls = 0
+
+    def find_placements_for_model(self, model_id: str) -> list[PlacementResult]:
+        index = min(self.calls, len(self._snapshots) - 1)
+        self.calls += 1
+        return [p for p in self._snapshots[index] if p.model_id == model_id]
+
+
+def _fast_runner() -> HarnessRunner:
+    # Tiny timeouts so the readiness loop runs in milliseconds; the failure-mode
+    # assertions below prove fail-fast without measuring wall-clock.
+    return HarnessRunner(
+        config=HarnessConfig(
+            placement_ready_timeout_s=0.2,
+            placement_appearance_timeout_s=0.05,
+            poll_interval_s=0.01,
+        ),
+        model_sets={},
+        test_sets={},
+    )
+
+
+def _wait(client: _ScriptedPlacementClient, **kwargs: object) -> PlacementResult:
+    spec = RunSpec(model_set="m", test_set="t", mode="execute")
+    return _fast_runner()._wait_for_model_ready(
+        client,  # type: ignore[arg-type]
+        "m",
+        spec,
+        _report(),
+        created_by_harness=bool(kwargs.get("created_by_harness", True)),
+        reused=bool(kwargs.get("reused", False)),
+    )
+
+
+def test_wait_for_model_ready_follows_replacement_and_prefers_ready() -> None:
+    # The first instance never readies; the cluster re-places under a NEW id that
+    # comes up ready. The wait must follow the replacement, not pin the old id.
+    client = _ScriptedPlacementClient(
+        [[_placement("old")], [_placement("old"), _placement("new", ready=True)]]
+    )
+    result = _wait(client)
+    assert result.ready is True
+    assert result.instance_id == "new"
+    assert result.created_by_harness is True
+    assert result.readiness_transitions  # history recorded for diagnosability
+
+
+def test_wait_for_model_ready_returns_immediately_when_ready() -> None:
+    client = _ScriptedPlacementClient([[_placement("r", ready=True)]])
+    result = _wait(client, reused=True)
+    assert result.ready is True
+    assert result.reused_existing is True
+    assert client.calls == 1  # no polling loop
+
+
+def test_wait_for_model_ready_fails_fast_on_disappearance() -> None:
+    # Seen once, then gone forever with no replacement: give up (retryable), do
+    # NOT poll the vanished instance to the readiness timeout.
+    client = _ScriptedPlacementClient([[_placement("gone")], []])
+    result = _wait(client)
+    assert result.ready is False
+    assert result.unavailable_reason == "disappeared_without_replacement"
+    assert result.instance_id is None  # -> retryable give-up (defer)
+
+
+def test_wait_for_model_ready_never_appeared_is_retryable() -> None:
+    client = _ScriptedPlacementClient([[]])
+    result = _wait(client)
+    assert result.ready is False
+    assert result.unavailable_reason == "never_appeared"
+    assert result.instance_id is None
+
+
+def test_wait_for_model_ready_load_failure_is_non_retryable() -> None:
+    client = _ScriptedPlacementClient([[_placement("boom", terminal_failure=True)]])
+    result = _wait(client)
+    assert result.ready is False
+    assert result.unavailable_reason == "load_failed"
+    assert result.instance_id == "boom"  # kept -> hard failure, not a defer
+    assert result.terminal_failure is True
+
+
+def test_wait_for_model_ready_timeout_when_loading_forever() -> None:
+    client = _ScriptedPlacementClient([[_placement("slow")]])
+    result = _wait(client)
+    assert result.ready is False
+    assert result.unavailable_reason == "ready_timeout"
+    assert result.instance_id == "slow"
+
+
+def test_wait_for_model_ready_clock_starts_at_appearance_not_request() -> None:
+    # A placement that surfaces LATE (after several empty polls) must still get
+    # its full runner-readiness allowance: the appearance window must not eat
+    # into placement_ready_timeout_s. With the readiness clock counted from
+    # request time this would false-fail as never_appeared / ready_timeout with
+    # no instance; counted from appearance it is a real ready_timeout on the
+    # instance that appeared.
+    empties: list[list[PlacementResult]] = [[] for _ in range(5)]
+    client = _ScriptedPlacementClient([*empties, [_placement("late")]])
+    runner = HarnessRunner(
+        config=HarnessConfig(
+            # appearance window comfortably longer than the empty-poll stretch,
+            # readiness allowance short so the loading instance times out fast.
+            placement_appearance_timeout_s=1.0,
+            placement_ready_timeout_s=0.05,
+            poll_interval_s=0.005,
+        ),
+        model_sets={},
+        test_sets={},
+    )
+    spec = RunSpec(model_set="m", test_set="t", mode="execute")
+    result = runner._wait_for_model_ready(
+        client,  # type: ignore[arg-type]
+        "m",
+        spec,
+        _report(),
+        created_by_harness=True,
+        reused=False,
+    )
+    assert result.unavailable_reason == "ready_timeout"
+    assert result.instance_id == "late"  # clock started when it appeared
+
+
+def test_wait_for_model_ready_resets_deadline_for_replacement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Injected clock so the timing is deterministic. Instance A loads, disappears,
+    # then a replacement B loads and only becomes ready AFTER A's original
+    # readiness deadline would have expired. With the deadline re-anchored to B,
+    # B is returned ready; with a single request-time deadline, B would falsely
+    # time out on A's stale allowance.
+    from skulk_test_harness import orchestrator as orch
+
+    clock = {"t": 0.0}
+    monkeypatch.setattr(orch.time, "monotonic", lambda: clock["t"])
+    monkeypatch.setattr(
+        orch.time, "sleep", lambda seconds: clock.__setitem__("t", clock["t"] + seconds)
+    )
+
+    a = _placement("A")
+    b_loading = _placement("B")
+    b_ready = _placement("B", ready=True)
+    client = _ScriptedPlacementClient(
+        [[a], [a], [], [b_loading], [b_loading], [b_ready]]
+    )
+    runner = HarnessRunner(
+        config=HarnessConfig(
+            placement_ready_timeout_s=1.0,
+            placement_appearance_timeout_s=100.0,  # long grace: no disappearance failfast
+            poll_interval_s=0.5,
+        ),
+        model_sets={},
+        test_sets={},
+    )
+    spec = RunSpec(model_set="m", test_set="t", mode="execute")
+    result = runner._wait_for_model_ready(
+        client,  # type: ignore[arg-type]
+        "m",
+        spec,
+        _report(),
+        created_by_harness=True,
+        reused=False,
+    )
+    assert result.ready is True
+    assert result.instance_id == "B"
+
+
+def test_wait_for_model_ready_ignores_preexisting_instance_on_forced_placement() -> None:
+    # A forced placement (reuse=False) must never adopt a pre-existing user-owned
+    # instance that is already ready: it would run the "fresh" test against it and
+    # then tear it down. The wait must select the harness's own placement.
+    pre = _placement("preexisting", ready=True)
+    client = _ScriptedPlacementClient(
+        [[pre, _placement("mine")], [pre, _placement("mine", ready=True)]]
+    )
+    spec = RunSpec(model_set="m", test_set="t", mode="execute")
+    result = _fast_runner()._wait_for_model_ready(
+        client,  # type: ignore[arg-type]
+        "m",
+        spec,
+        _report(),
+        created_by_harness=True,
+        reused=False,
+        ignore_instance_ids=frozenset({"preexisting"}),
+    )
+    assert result.ready is True
+    assert result.instance_id == "mine"
+    # The protected boundary rides on the placement so teardown honors it too.
+    assert result.protected_instance_ids == ["preexisting"]
+
+
+def test_teardown_never_deletes_protected_preexisting_instance() -> None:
+    # The whole point of the ignore-set: teardown's sweep must skip an
+    # operator-owned instance even though it still serves the model.
+    client = _FakeClient(
+        live_placements=[_placement("mine"), _placement("preexisting")]
+    )
+    torn = _runner()._teardown_harness_instances(
+        client,  # type: ignore[arg-type]
+        "m",
+        "mine",
+        _report(),
+        protected_instance_ids=frozenset({"preexisting"}),
+    )
+    assert "mine" in client.deleted
+    assert "preexisting" not in client.deleted
+    assert torn is True
+
+
+def test_wait_for_model_ready_never_adopts_ignored_ready_instance() -> None:
+    # If the ONLY ready instance is the ignored pre-existing one and the harness's
+    # own placement never appears, do not adopt it -- report a give-up instead.
+    pre = _placement("preexisting", ready=True)
+    client = _ScriptedPlacementClient([[pre]])
+    spec = RunSpec(model_set="m", test_set="t", mode="execute")
+    result = _fast_runner()._wait_for_model_ready(
+        client,  # type: ignore[arg-type]
+        "m",
+        spec,
+        _report(),
+        created_by_harness=True,
+        reused=False,
+        ignore_instance_ids=frozenset({"preexisting"}),
+    )
+    assert result.ready is False
+    assert result.instance_id != "preexisting"
+    assert result.unavailable_reason == "never_appeared"
+
+
+def test_not_ready_message_names_each_cause() -> None:
+    from skulk_test_harness.orchestrator import _not_ready_message
+
+    def msg(reason: str, *, terminal: bool = False) -> str:
+        return _not_ready_message(
+            PlacementResult(
+                model_id="m",
+                instance_id=None,
+                ready=False,
+                terminal_failure=terminal,
+                unavailable_reason=reason,
+            )
+        )
+
+    assert "never appeared" in msg("never_appeared").lower()
+    assert "not re-placed" in msg("disappeared_without_replacement").lower()
+    assert "failed while loading" in msg("load_failed").lower()
+    assert "readiness timeout" in msg("ready_timeout").lower()
