@@ -102,11 +102,17 @@ cell mtp-served-9b    mtp-correctness  "--exclude-nodes kite4 --delete-staged-mo
 # The concurrency leg: same cells as run_concurrency_battery.sh, folded into the
 # e2e so every run traces the throughput-vs-concurrency curve per model x engine
 # x hardware, single-rank and multi-rank. A level that saturates (admission
-# refuses) fails its cell, which is the finding, not a flake.
-cell concurrency-mlx            concurrency
-cell concurrency-mlx-multinode  concurrency  "--sharding Tensor --min-nodes 2"
-cell concurrency-gguf           concurrency
-cell concurrency-gguf-pooled    concurrency  "--min-nodes 2 --instance-meta LlamaRpc"
+# refuses) fails its cell, which is the finding, not a flake. This leg is the
+# long pole; set SKULK_E2E_CONCURRENCY=0 to run the correctness/benchmark
+# battery without it (e.g. a quick post-merge regression pass).
+if [ "${SKULK_E2E_CONCURRENCY:-1}" = "1" ]; then
+  cell concurrency-mlx            concurrency
+  cell concurrency-mlx-multinode  concurrency  "--sharding Tensor --min-nodes 2"
+  cell concurrency-gguf           concurrency
+  cell concurrency-gguf-pooled    concurrency  "--min-nodes 2 --instance-meta LlamaRpc"
+else
+  say "==== CONCURRENCY LEG SKIPPED (SKULK_E2E_CONCURRENCY=0) ===="
+fi
 
 say "BATTERY COMPLETE (rc=$battery_rc)"
 

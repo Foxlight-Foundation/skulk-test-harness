@@ -526,11 +526,23 @@ def run(
     if execute and fail_on_issue:
         result_failed = any(not r.passed for r in report.results)
         run_errored = any(i.severity == "error" for i in report.issues)
+        # Coverage first: an incomplete run (some models never placed/tested) is
+        # not a clean pass even with zero test failures. Report it explicitly so
+        # "0 tests failed" can never be mistaken for "everything ran".
+        tested_models = len({r.model_id for r in report.results})
+        total_models = len(report.models)
+        if tested_models < total_models:
+            console.print(
+                f"[bold yellow]COVERAGE[/]: only {tested_models}/{total_models} "
+                "models placed and tested; the rest never became ready "
+                "(see run-level issues)"
+            )
         if result_failed or run_errored:
             failed = sum(1 for r in report.results if not r.passed)
             console.print(
                 f"[bold red]FAIL[/]: {failed} test result(s) failed"
                 + (" + run-level error issue(s)" if run_errored else "")
+                + f"  [models tested {tested_models}/{total_models}]"
             )
             raise typer.Exit(code=1)
         # An executed run that placed NOTHING is a silent skip, not a pass:
@@ -809,9 +821,18 @@ def _print_stability_summary(report: StabilityReport, run_dir: Path) -> None:
 def _print_report_summary(report, run_dir: Path) -> None:  # noqa: ANN001
     passed = sum(1 for result in report.results if result.passed)
     failed = sum(1 for result in report.results if not result.passed)
+    # Coverage is the headline signal: "0 tests failed" is misleading when only
+    # some models actually placed and ran. Count DISTINCT models that produced at
+    # least one result against the models the set asked for.
+    tested_models = len({result.model_id for result in report.results})
+    total_models = len(report.models)
+    coverage = f"{tested_models}/{total_models}"
+    if tested_models < total_models:
+        coverage = f"[yellow]{coverage}  (incomplete)[/yellow]"
     table = Table(title=f"Harness Run {report.run_id}")
     table.add_column("Field")
     table.add_column("Value")
+    table.add_row("Models tested", coverage)
     table.add_row("Models", str(len(report.models)))
     table.add_row("Placements", str(len(report.placements)))
     table.add_row("Results passed", str(passed))

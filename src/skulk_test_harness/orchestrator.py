@@ -230,12 +230,14 @@ class HarnessRunner:
                 return False
             if not placement.ready:
                 # NEVER silent: an instance that was placed but did not become
-                # ready is either a cluster-side teardown (recovery killed it;
-                # the 30-minute ready-wait then polls a vanished instance) or
-                # a genuine load failure. The first pooled-rpc runs dropped
-                # this on the floor (no issue, no placement recorded) and read
-                # as empty green runs. A retryable give-up defers with a
-                # visible warning; a final failure is an error issue.
+                # ready is reported with a precise cause resolved by the
+                # model-scoped readiness wait, plus the full history of observed
+                # placement changes so a silent wait is diagnosable from the
+                # report alone (no master-log archaeology). A retryable give-up
+                # (nothing serving the model -- never appeared or torn down
+                # without re-placement) defers with a visible warning; a hard
+                # load failure or readiness timeout on a known instance is an
+                # error.
                 retryable = _is_retryable_placement_giveup(placement)
                 report.issues.append(
                     Issue(
@@ -243,18 +245,12 @@ class HarnessRunner:
                             "warning" if retryable and not deferred_retry else "error"
                         ),
                         model_id=model.model_id,
-                        message=(
-                            "Instance runner failed while loading"
-                            if placement.terminal_failure
-                            else (
-                                "Instance was placed but never became ready (torn "
-                                "down by cluster recovery, or load failed); see "
-                                "master logs"
-                            )
-                        ),
+                        message=_not_ready_message(placement),
                         evidence={
                             "instance_id": placement.instance_id or "",
+                            "unavailable_reason": placement.unavailable_reason or "",
                             "runner_failures": placement.runner_failure_messages,
+                            "readiness_transitions": placement.readiness_transitions,
                         },
                     )
                 )
@@ -548,15 +544,18 @@ class HarnessRunner:
             excluded = set(spec.placement.excluded_nodes)
             existing = [p for p in existing if not excluded.intersection(p.node_ids)]
         if existing and spec.reuse_existing_instances:
-            placement = existing[0]
-            if placement.instance_id and not placement.ready:
-                placement = client.wait_for_instance_ready(
-                    placement.instance_id,
-                    timeout_s=self.config.placement_ready_timeout_s,
-                    poll_interval_s=self.config.poll_interval_s,
-                )
-                placement = placement.model_copy(update={"reused_existing": True})
-            return placement
+            # Resolve readiness by MODEL, not by a pinned instance id. If the
+            # cluster tears the reused instance down and re-places the model
+            # under a new id, follow the replacement instead of polling the id we
+            # first saw (which would just time out on a vanished instance).
+            return self._wait_for_model_ready(
+                client,
+                model_id,
+                spec,
+                report,
+                created_by_harness=False,
+                reused=True,
+            )
 
         preview = self.choose_preview(client, model_id, spec.placement)
         if preview is None:
@@ -591,45 +590,152 @@ class HarnessRunner:
             )
             return None
 
-        appear_deadline = time.monotonic() + min(
-            self.config.placement_appearance_timeout_s,
-            self.config.placement_ready_timeout_s,
+        return self._wait_for_model_ready(
+            client,
+            model_id,
+            spec,
+            report,
+            created_by_harness=True,
+            reused=False,
         )
-        while time.monotonic() < appear_deadline:
+
+    def _wait_for_model_ready(
+        self,
+        client: SkulkClient,
+        model_id: str,
+        spec: RunSpec,
+        report: RunReport,
+        *,
+        created_by_harness: bool,
+        reused: bool,
+    ) -> PlacementResult:
+        """Wait for the model to have a dispatchable instance, following re-placement.
+
+        Readiness is resolved by MODEL, re-reading which instances currently
+        serve ``model_id`` on every poll, rather than pinning the first instance
+        id we saw. This is the fix for the failure that motivated it: a placement
+        that hit a node fault (e.g. a full staging disk) is torn down by Skulk and
+        re-placed under a NEW id; pinning the old id polled a vanished instance
+        for the full readiness timeout and reported a false "never became ready"
+        while the replacement was up and serving.
+
+        Behavior:
+          * return as soon as ANY instance serving the model is ready, preferring
+            a ready instance over stale/loading duplicates;
+          * while only loading instances exist, keep waiting (bounded by
+            ``placement_ready_timeout_s``) -- a genuine slow load;
+          * if no viable instance exists (none placed, or only failed ones), allow
+            ``placement_appearance_timeout_s`` for the cluster to (re-)place, then
+            give up -- never poll a vanished instance to the full deadline;
+          * record every observed placement change so a silent wait is
+            diagnosable from the report alone.
+
+        The returned ``PlacementResult`` carries ``unavailable_reason`` and
+        ``readiness_transitions`` when not ready; the caller owns issue reporting.
+        """
+        excluded = set(spec.placement.excluded_nodes or ())
+
+        def current_placements() -> list[PlacementResult]:
             placements = client.find_placements_for_model(model_id)
-            if placements:
-                placement = placements[0].model_copy(
-                    update={"created_by_harness": True, "reused_existing": False}
+            if excluded:
+                placements = [
+                    p for p in placements if not excluded.intersection(p.node_ids)
+                ]
+            return placements
+
+        start = time.monotonic()
+        appearance_deadline = start + self.config.placement_appearance_timeout_s
+        ready_deadline = start + self.config.placement_ready_timeout_s
+        transitions: list[dict[str, object]] = []
+        last_signature: tuple[tuple[str, bool, bool], ...] | None = None
+        seen_any = False
+        no_viable_since: float | None = None
+        last_seen: PlacementResult | None = None
+
+        def not_ready(reason: str) -> PlacementResult:
+            # Keep the last-known instance identity for a known-but-unhealthy
+            # instance (load failure / ready timeout) -- a hard failure. Leave it
+            # None for re-placeable give-ups (never appeared / disappeared) so the
+            # caller's retry heuristic defers them.
+            known = last_seen if reason in {"load_failed", "ready_timeout"} else None
+            return PlacementResult(
+                model_id=model_id,
+                created_by_harness=created_by_harness,
+                reused_existing=reused,
+                ready=False,
+                instance_id=known.instance_id if known else None,
+                terminal_failure=known.terminal_failure if known else False,
+                runner_failure_messages=(
+                    known.runner_failure_messages if known else []
+                ),
+                unavailable_reason=reason,
+                readiness_transitions=transitions,
+            )
+
+        while time.monotonic() < ready_deadline:
+            placements = current_placements()
+            signature = tuple(
+                sorted(
+                    (p.instance_id or "", p.ready, p.terminal_failure)
+                    for p in placements
                 )
-                if placement.instance_id and not placement.ready:
-                    ready_deadline = (
-                        time.monotonic() + self.config.placement_ready_timeout_s
+            )
+            if signature != last_signature:
+                transitions.append(
+                    {
+                        "elapsed_s": round(time.monotonic() - start, 1),
+                        "instances": [
+                            {
+                                "instance_id": p.instance_id,
+                                "ready": p.ready,
+                                "terminal_failure": p.terminal_failure,
+                            }
+                            for p in placements
+                        ],
+                    }
+                )
+                last_signature = signature
+
+            ready_placements = [p for p in placements if p.ready]
+            if ready_placements:
+                return ready_placements[0].model_copy(
+                    update={
+                        "created_by_harness": created_by_harness,
+                        "reused_existing": reused,
+                        "readiness_transitions": transitions,
+                    }
+                )
+
+            loading = [p for p in placements if not p.terminal_failure]
+            if loading:
+                # A live instance is still coming up; keep waiting for it.
+                seen_any = True
+                no_viable_since = None
+                last_seen = loading[0]
+            else:
+                # Nothing viable right now: either no placement at all, or only
+                # instances that entered a terminal failure. Give the cluster a
+                # bounded window to (re-)place before giving up, so a re-placement
+                # gap is bridged but a vanished instance is never polled forever.
+                if placements:
+                    seen_any = True
+                    last_seen = placements[0]
+                if no_viable_since is None:
+                    no_viable_since = time.monotonic()
+                grace_expired = (
+                    time.monotonic() - no_viable_since
+                    > self.config.placement_appearance_timeout_s
+                )
+                never_appeared = not seen_any and time.monotonic() > appearance_deadline
+                if never_appeared:
+                    return not_ready("never_appeared")
+                if seen_any and grace_expired:
+                    return not_ready(
+                        "load_failed" if placements else "disappeared_without_replacement"
                     )
-                    placement = client.wait_for_instance_ready(
-                        placement.instance_id,
-                        timeout_s=max(0.1, ready_deadline - time.monotonic()),
-                        poll_interval_s=self.config.poll_interval_s,
-                    ).model_copy(update={"created_by_harness": True})
-                return placement
             time.sleep(self.config.poll_interval_s)
 
-        report.issues.append(
-            Issue(
-                severity="error",
-                model_id=model_id,
-                message=(
-                    "Timed out waiting for placed model to appear in cluster "
-                    "state; treating as a placement refusal/give-up"
-                ),
-                evidence={
-                    "placement_appearance_timeout_s": (
-                        self.config.placement_appearance_timeout_s
-                    ),
-                    "placement_ready_timeout_s": self.config.placement_ready_timeout_s,
-                },
-            )
-        )
-        return PlacementResult(model_id=model_id, created_by_harness=True, ready=False)
+        return not_ready("ready_timeout")
 
     def _ensure_model_card(
         self, client: SkulkClient, model_id: str, report: RunReport
@@ -4008,6 +4114,38 @@ def _served_spec_type(model: dict[str, object]) -> str:
 
 def _is_retryable_placement_giveup(placement: PlacementResult) -> bool:
     return placement.created_by_harness and placement.instance_id is None
+
+
+def _not_ready_message(placement: PlacementResult) -> str:
+    """Human-readable cause for a placement that never became ready.
+
+    Keyed off the model-scoped readiness wait's ``unavailable_reason`` so the
+    report names the actual failure mode (re-placement lost, load failure, slow
+    load, refusal) instead of a single generic string.
+    """
+    reason = placement.unavailable_reason
+    if reason == "never_appeared":
+        return (
+            "Requested placement never appeared in cluster state; treating as a "
+            "placement refusal/give-up"
+        )
+    if reason == "disappeared_without_replacement":
+        return (
+            "Instance was torn down and not re-placed within the appearance "
+            "window; stopped the readiness wait instead of polling a vanished "
+            "instance id"
+        )
+    if reason == "load_failed" or placement.terminal_failure:
+        return "Instance runner failed while loading"
+    if reason == "ready_timeout":
+        return (
+            "Instance was placed but never reached a dispatchable runner within "
+            "the readiness timeout; see master logs"
+        )
+    return (
+        "Instance was placed but never became ready (torn down by cluster "
+        "recovery, or load failed); see master logs"
+    )
 
 
 def _speech_generation_kwargs(test: PromptTest) -> _SpeechGenerationKwargs:

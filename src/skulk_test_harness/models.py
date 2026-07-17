@@ -847,6 +847,30 @@ class PlacementResult(HarnessBaseModel):
         default_factory=list,
         description="Runner failure messages observed while waiting for readiness.",
     )
+    unavailable_reason: str | None = Field(
+        default=None,
+        description=(
+            "Why the model has no ready instance, when ``ready`` is False: "
+            "``never_appeared`` (the requested placement never surfaced in "
+            "cluster state), ``disappeared_without_replacement`` (an instance was "
+            "seen and then torn down with no re-placement), or ``ready_timeout`` "
+            "(an instance was present the whole time but never reached a "
+            "dispatchable runner). ``None`` when ``ready`` is True. Lets the "
+            "caller report a precise cause instead of a generic 'never became "
+            "ready', and distinguishes a re-placeable give-up from a hard load "
+            "failure."
+        ),
+    )
+    readiness_transitions: list[dict[str, object]] = Field(
+        default_factory=list,
+        description=(
+            "Ordered record of every observed change in the model's placement "
+            "while waiting for readiness: each entry has the elapsed seconds and "
+            "the instances then serving the model (id, ready, terminal_failure). "
+            "A ready wait that silently burns its full timeout is diagnosable "
+            "from this history alone, without re-deriving it from master logs."
+        ),
+    )
 
 
 class GenerationMetrics(HarnessBaseModel):
