@@ -1097,7 +1097,11 @@ class CacheState(HarnessBaseModel):
 class ReportFingerprint(HarnessBaseModel):
     """Durable self-description of a run (results-ledger schema 2.0)."""
 
-    schema_version: str = "2.1"
+    # 2.2 adds per-node accelerator vram_total_bytes / gtt_total_bytes (the
+    # unified-APU carve, so a consumer can report true capacity). 2.1 added
+    # accelerator_name. Bump on any additive durable fingerprint field so
+    # downstream consumers can select parsing/compatibility by version.
+    schema_version: str = "2.2"
     source_context: SourceContext = Field(default_factory=SourceContext)
     runtime: RuntimeFingerprint = Field(default_factory=RuntimeFingerprint)
     cluster: ClusterFingerprint = Field(default_factory=ClusterFingerprint)
