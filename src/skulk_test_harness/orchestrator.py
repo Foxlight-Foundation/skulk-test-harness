@@ -684,7 +684,13 @@ class HarnessRunner:
         # model that appears late in the window is falsely reported ready_timeout
         # despite loading for well under placement_ready_timeout_s. Until a
         # placement appears, the appearance deadline bounds the wait.
+        # The readiness deadline is anchored to a specific loading instance. When
+        # that instance fails/disappears and a REPLACEMENT loads, the deadline is
+        # restarted for the new lineage, so a replacement observed late in the old
+        # instance's window still gets its full runner-readiness allowance rather
+        # than inheriting a near-expired deadline.
         ready_deadline: float | None = None
+        ready_anchor: str | None = None
         transitions: list[dict[str, object]] = []
         last_signature: tuple[tuple[str, bool, bool], ...] | None = None
         seen_any = False
@@ -714,10 +720,6 @@ class HarnessRunner:
 
         while True:
             now = time.monotonic()
-            if ready_deadline is not None and now >= ready_deadline:
-                # A placement appeared but never reached a dispatchable runner
-                # within the full readiness allowance (counted from appearance).
-                return not_ready("ready_timeout")
             placements = current_placements()
             signature = tuple(
                 sorted(
@@ -758,11 +760,20 @@ class HarnessRunner:
                 seen_any = True
                 no_viable_since = None
                 last_seen = loading[0]
-                if ready_deadline is None:
-                    # First viable placement observed: start the readiness clock
-                    # now, so the model gets its full runner-readiness allowance
-                    # regardless of how long the placement took to appear.
+                loading_ids = {p.instance_id for p in loading}
+                if ready_deadline is None or ready_anchor not in loading_ids:
+                    # First viable placement, OR the instance the deadline was
+                    # anchored to is gone and a (re-)placement is now loading:
+                    # start a fresh readiness allowance for this lineage. The
+                    # clock is counted from appearance, never from request, so a
+                    # late-appearing or re-placed instance gets its full budget.
                     ready_deadline = now + self.config.placement_ready_timeout_s
+                    ready_anchor = loading[0].instance_id
+                # Only time out while a loading instance is actually present and
+                # has exhausted its (re-anchored) allowance -- never during a
+                # re-placement gap, which the else branch governs.
+                if now >= ready_deadline:
+                    return not_ready("ready_timeout")
             else:
                 # Nothing viable right now: either no placement at all, or only
                 # instances that entered a terminal failure. Give the cluster a

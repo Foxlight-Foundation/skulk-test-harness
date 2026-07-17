@@ -3790,6 +3790,50 @@ def test_wait_for_model_ready_clock_starts_at_appearance_not_request() -> None:
     assert result.instance_id == "late"  # clock started when it appeared
 
 
+def test_wait_for_model_ready_resets_deadline_for_replacement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Injected clock so the timing is deterministic. Instance A loads, disappears,
+    # then a replacement B loads and only becomes ready AFTER A's original
+    # readiness deadline would have expired. With the deadline re-anchored to B,
+    # B is returned ready; with a single request-time deadline, B would falsely
+    # time out on A's stale allowance.
+    from skulk_test_harness import orchestrator as orch
+
+    clock = {"t": 0.0}
+    monkeypatch.setattr(orch.time, "monotonic", lambda: clock["t"])
+    monkeypatch.setattr(
+        orch.time, "sleep", lambda seconds: clock.__setitem__("t", clock["t"] + seconds)
+    )
+
+    a = _placement("A")
+    b_loading = _placement("B")
+    b_ready = _placement("B", ready=True)
+    client = _ScriptedPlacementClient(
+        [[a], [a], [], [b_loading], [b_loading], [b_ready]]
+    )
+    runner = HarnessRunner(
+        config=HarnessConfig(
+            placement_ready_timeout_s=1.0,
+            placement_appearance_timeout_s=100.0,  # long grace: no disappearance failfast
+            poll_interval_s=0.5,
+        ),
+        model_sets={},
+        test_sets={},
+    )
+    spec = RunSpec(model_set="m", test_set="t", mode="execute")
+    result = runner._wait_for_model_ready(
+        client,  # type: ignore[arg-type]
+        "m",
+        spec,
+        _report(),
+        created_by_harness=True,
+        reused=False,
+    )
+    assert result.ready is True
+    assert result.instance_id == "B"
+
+
 def test_wait_for_model_ready_ignores_preexisting_instance_on_forced_placement() -> None:
     # A forced placement (reuse=False) must never adopt a pre-existing user-owned
     # instance that is already ready: it would run the "fresh" test against it and
