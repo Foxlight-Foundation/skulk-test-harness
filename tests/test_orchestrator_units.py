@@ -3810,6 +3810,26 @@ def test_wait_for_model_ready_ignores_preexisting_instance_on_forced_placement()
     )
     assert result.ready is True
     assert result.instance_id == "mine"
+    # The protected boundary rides on the placement so teardown honors it too.
+    assert result.protected_instance_ids == ["preexisting"]
+
+
+def test_teardown_never_deletes_protected_preexisting_instance() -> None:
+    # The whole point of the ignore-set: teardown's sweep must skip an
+    # operator-owned instance even though it still serves the model.
+    client = _FakeClient(
+        live_placements=[_placement("mine"), _placement("preexisting")]
+    )
+    torn = _runner()._teardown_harness_instances(
+        client,  # type: ignore[arg-type]
+        "m",
+        "mine",
+        _report(),
+        protected_instance_ids=frozenset({"preexisting"}),
+    )
+    assert "mine" in client.deleted
+    assert "preexisting" not in client.deleted
+    assert torn is True
 
 
 def test_wait_for_model_ready_never_adopts_ignored_ready_instance() -> None:

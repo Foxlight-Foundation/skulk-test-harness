@@ -871,6 +871,16 @@ class PlacementResult(HarnessBaseModel):
             "from this history alone, without re-deriving it from master logs."
         ),
     )
+    protected_instance_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Instance ids that existed for the model BEFORE a forced placement "
+            "(reuse_existing_instances=False). They are operator-owned, never "
+            "adopted by the readiness wait and never deleted by teardown, so a "
+            "harness cell for a model the operator is already running cannot tear "
+            "down that live instance."
+        ),
+    )
 
 
 class GenerationMetrics(HarnessBaseModel):

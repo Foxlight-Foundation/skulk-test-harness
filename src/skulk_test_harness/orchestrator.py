@@ -306,7 +306,11 @@ class HarnessRunner:
                 and not spec.retain_instances
             ):
                 instance_torn_down = self._teardown_harness_instances(
-                    client, model.model_id, placement.instance_id, report
+                    client,
+                    model.model_id,
+                    placement.instance_id,
+                    report,
+                    protected_instance_ids=frozenset(placement.protected_instance_ids),
                 )
             # Evict staged weights ONLY after the harness actually tore down the
             # instance it created (opt-in via --delete-staged-models), so test
@@ -355,6 +359,7 @@ class HarnessRunner:
         model_id: str,
         primary_instance_id: str | None,
         report: RunReport,
+        protected_instance_ids: frozenset[str] = frozenset(),
     ) -> bool:
         """Delete every live instance the harness owns for ``model_id``.
 
@@ -365,16 +370,23 @@ class HarnessRunner:
         reads as "the harness left the old instance running". So we delete the
         original id AND sweep the current state for any instance still serving
         this model. This branch only runs when the harness *created* the
-        lineage (``created_by_harness``), so every live instance for the model
-        is ours to reap; a pre-existing/reused instance never reaches here.
+        lineage (``created_by_harness``), so every live instance for the model is
+        ours to reap -- EXCEPT ``protected_instance_ids``: instances that already
+        existed for the model before a forced placement are operator-owned and
+        excluded from both the primary target and the sweep, so a harness cell
+        can never delete a model the operator was already running.
         """
         target_ids: list[str] = []
-        if primary_instance_id:
+        if primary_instance_id and primary_instance_id not in protected_instance_ids:
             target_ids.append(primary_instance_id)
         all_deletes_succeeded = bool(target_ids)
         try:
             for live in client.find_placements_for_model(model_id):
-                if live.instance_id and live.instance_id not in target_ids:
+                if (
+                    live.instance_id
+                    and live.instance_id not in target_ids
+                    and live.instance_id not in protected_instance_ids
+                ):
                     target_ids.append(live.instance_id)
                     all_deletes_succeeded = True
         except Exception as exc:  # noqa: BLE001 - sweep is best-effort
@@ -697,6 +709,7 @@ class HarnessRunner:
                 ),
                 unavailable_reason=reason,
                 readiness_transitions=transitions,
+                protected_instance_ids=sorted(ignore_instance_ids),
             )
 
         while True:
@@ -735,6 +748,7 @@ class HarnessRunner:
                         "created_by_harness": created_by_harness,
                         "reused_existing": reused,
                         "readiness_transitions": transitions,
+                        "protected_instance_ids": sorted(ignore_instance_ids),
                     }
                 )
 
