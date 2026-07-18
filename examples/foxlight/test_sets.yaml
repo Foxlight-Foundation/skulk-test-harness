@@ -1333,5 +1333,6 @@ test_sets:
             - name: get_weather
               required_arguments:
                 - location
+                - units
               argument_substrings:
                 location: Cedar Rapids
