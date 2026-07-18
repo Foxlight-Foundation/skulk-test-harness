@@ -80,6 +80,14 @@ cell gguf-big         llama-cpp
 # run_mtp_battery.sh.
 cell mtp-served       mtp-correctness  --delete-staged-models
 
+# --- Served tool calling (kite4, llama_server): a strict agentic round-trip on
+# the served/GGUF path. Qwen3-Coder-30B (defaults to llama_server post-#607)
+# must emit a real parsed tool_call with the right arguments AND use the mocked
+# tool result in its final answer -- not merely complete coherently. Guards the
+# agentic-GGUF-on-served path that a card routing change activated; needs a
+# llama-server node present (kite4), so it fails loudly on an MLX-only cluster.
+cell tool-served      tool-served-check
+
 # --- Multi-node GGUF pooling (kite4 driver + kite5 donor, Skulk #328): the
 # pooled 120B is forced onto the RPC shape with min_nodes 2 + LlamaRpc meta
 # (smallest-cycle preference would otherwise single-node it on kite4). Needs
