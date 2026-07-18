@@ -407,3 +407,11 @@ model_sets:
       channel does not starve the final answer.
     models:
       - bartowski/openai_gpt-oss-120b-GGUF
+
+  tool-served:
+    name: tool-served
+    description: >-
+      Just the Qwen3-Coder-30B-A3B agentic coding GGUF, which defaults to the
+      llama_server engine (post-#607). For validating served tool calling e2e.
+    models:
+      - unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF

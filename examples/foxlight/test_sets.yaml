@@ -1281,3 +1281,57 @@ test_sets:
         repetitions: 1
         success:
           min_chars: 500
+
+  tool-served-check:
+    name: tool-served-check
+    description: >-
+      Validate served (llama_server) tool calling end-to-end: the model must
+      emit a real, parsed tool_call with the right arguments AND use the mocked
+      result in its final answer, not merely complete coherently.
+    tests:
+      - name: forced-weather-tool-call
+        kind: tool
+        system: Use tools whenever the requested answer depends on live or external data.
+        prompt: What is the current weather in Cedar Rapids, Iowa?
+        max_tokens: 240
+        temperature: 0
+        enable_thinking: false
+        tools:
+          - type: function
+            function:
+              name: get_weather
+              description: Get current weather for a city.
+              parameters:
+                type: object
+                properties:
+                  location:
+                    type: string
+                    description: City and region for the weather lookup.
+                  units:
+                    type: string
+                    enum:
+                      - fahrenheit
+                      - celsius
+                required:
+                  - location
+                  - units
+        tool_choice:
+          type: function
+          function:
+            name: get_weather
+        parallel_tool_calls: false
+        tool_mocks:
+          - name: get_weather
+            content: '{"location":"Cedar Rapids, Iowa","temperature_f":72,"condition":"clear","wind_mph":8}'
+        success:
+          min_chars: 20
+          min_tool_calls: 1
+          required_substrings:
+            - "72"
+            - clear
+          expected_tool_calls:
+            - name: get_weather
+              required_arguments:
+                - location
+              argument_substrings:
+                location: Cedar Rapids
