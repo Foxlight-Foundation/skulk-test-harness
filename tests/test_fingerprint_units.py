@@ -39,7 +39,13 @@ def _state() -> dict[str, object]:
         },
         "nodeSystem": {
             "nodeA": {"accelerator": {"vendor": "apple", "name": "M4"}},
-            "nodeB": {"accelerator": {"vendor": "amd"}},
+            "nodeB": {
+                "accelerator": {
+                    "vendor": "amd",
+                    "vramTotalBytes": 68719476736,
+                    "gttTotalBytes": 133143986176,
+                }
+            },
         },
     }
 
@@ -62,7 +68,7 @@ def test_gather_fingerprint_populates_cluster_and_runtime() -> None:
     fp, issues = gather_fingerprint(client, spec, run_reason="plan")  # type: ignore[arg-type]
 
     assert issues == []
-    assert fp.schema_version == "2.1"
+    assert fp.schema_version == "2.2"
     assert fp.runtime.skulk_version == "1.4.2"
     assert fp.runtime.skulk_commit == "984179e2"
     assert fp.runtime.python  # populated from the running interpreter
@@ -81,6 +87,13 @@ def test_gather_fingerprint_populates_cluster_and_runtime() -> None:
     # No name in telemetry stays None, never a guess.
     assert by_name["kite4"].accelerator_name is None
     assert by_name["kite4"].ram_total_bytes == 137438953472
+    # VRAM carve + GTT aperture captured for the AMD node so the ledger can
+    # report a unified APU's true capacity (ram_total + vram); Apple has no
+    # separate carve field, so it stays None.
+    assert by_name["kite4"].vram_total_bytes == 68719476736
+    assert by_name["kite4"].gtt_total_bytes == 133143986176
+    assert by_name["kite1"].vram_total_bytes is None
+    assert by_name["kite1"].gtt_total_bytes is None
     # Uniform version across nodes is the mixed-version detector's clean case.
     assert {n.skulk_version for n in cluster.nodes} == {"1.4.2"}
 

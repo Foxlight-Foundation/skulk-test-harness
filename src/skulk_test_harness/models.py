@@ -1054,6 +1054,16 @@ class ClusterNodeFingerprint(HarnessBaseModel):
     # 8060S", ...). Feeds chip-level hardware classes in the results ledger;
     # None when the node's telemetry has not landed or predates the field.
     accelerator_name: str | None = None
+    # Accelerator VRAM and GTT aperture from nodeSystem telemetry, in bytes.
+    # For a discrete GPU vram is separate device memory; for a unified-memory
+    # APU (e.g. AMD Strix Halo) vram is the BIOS carve-out of the SAME physical
+    # DIMMs, and gtt is the host RAM the GPU can additionally map. ram_total_bytes
+    # is only the OS-visible slice after that carve, so the node's true unified
+    # capacity is ram_total + vram_total -- the ledger needs vram to tier such a
+    # node correctly (a 128GB Strix with a 64GB carve reports ~61GiB of RAM).
+    # None on nodes whose telemetry has not landed or predates the field.
+    vram_total_bytes: int | None = None
+    gtt_total_bytes: int | None = None
     skulk_version: str | None = None
     system_telemetry_present: bool = False
     memory_telemetry_present: bool = False
@@ -1087,7 +1097,11 @@ class CacheState(HarnessBaseModel):
 class ReportFingerprint(HarnessBaseModel):
     """Durable self-description of a run (results-ledger schema 2.0)."""
 
-    schema_version: str = "2.1"
+    # 2.2 adds per-node accelerator vram_total_bytes / gtt_total_bytes (the
+    # unified-APU carve, so a consumer can report true capacity). 2.1 added
+    # accelerator_name. Bump on any additive durable fingerprint field so
+    # downstream consumers can select parsing/compatibility by version.
+    schema_version: str = "2.2"
     source_context: SourceContext = Field(default_factory=SourceContext)
     runtime: RuntimeFingerprint = Field(default_factory=RuntimeFingerprint)
     cluster: ClusterFingerprint = Field(default_factory=ClusterFingerprint)
