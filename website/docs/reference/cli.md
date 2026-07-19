@@ -99,7 +99,7 @@ it client-side, and sends it to the community benchmarks ledger. See
 | --- | --- |
 | `--dry-run` | Print the exact payload instead of sending |
 | `--github-token` | GitHub token for attribution (also read from `GH_TOKEN`, `GITHUB_TOKEN`, or the `gh` CLI) |
-| `--ingest-url` | Override the ingest API base URL |
+| `--ingest-url` | Override the ingest API base URL (also read from the `SKULK_INGEST_URL` environment variable; defaults to the public ledger) |
 
 ## Examples
 

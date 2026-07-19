@@ -940,8 +940,13 @@ def submit(
         str | None, typer.Option("--github-token", help="GitHub token for attribution.")
     ] = None,
     ingest_url: Annotated[
-        str, typer.Option("--ingest-url", help="Ingest API base URL.")
-    ] = submit_module.DEFAULT_INGEST_URL,
+        str | None,
+        typer.Option(
+            "--ingest-url",
+            help="Ingest API base URL (also read from SKULK_INGEST_URL; "
+            "defaults to the public ledger).",
+        ),
+    ] = None,
 ) -> None:
     """Submit a run to the Foxlight community benchmarks ledger.
 
@@ -952,16 +957,21 @@ def submit(
     Skulk cluster.
     """
 
+    # Resolved at call time so SKULK_INGEST_URL set after import still applies.
+    resolved_ingest_url = ingest_url or submit_module.default_ingest_url()
     try:
         report_path = submit_module.locate_report(run_path)
         raw = json.loads(report_path.read_text())
         payload = submit_module.slim_and_redact_report(raw)
         if dry_run:
             typer.echo(json.dumps(payload, indent=2))
-            typer.echo(f"[dry-run] would POST to {ingest_url}/v1/submissions", err=True)
+            typer.echo(
+                f"[dry-run] would POST to {resolved_ingest_url}/v1/submissions",
+                err=True,
+            )
             return
         token = submit_module.resolve_github_token(github_token)
-        result = submit_module.post_submission(payload, token, ingest_url)
+        result = submit_module.post_submission(payload, token, resolved_ingest_url)
         typer.echo(json.dumps(result, indent=2))
     except submit_module.SubmitError as exc:
         typer.echo(f"submit failed: {exc}", err=True)
