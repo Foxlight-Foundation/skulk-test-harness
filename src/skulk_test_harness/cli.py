@@ -13,7 +13,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from skulk_test_harness import stability
+from skulk_test_harness import __version__, stability
 from skulk_test_harness import submit as submit_module
 from skulk_test_harness.client import SkulkClient
 from skulk_test_harness.compare import compare, load_reports, select_run_dirs
@@ -43,6 +43,30 @@ app.add_typer(stability_app, name="stability")
 app.add_typer(fleet_app, name="fleet")
 
 console = Console()
+
+
+def _version_callback(value: bool) -> None:
+    """Print the installed harness version and exit (for ``--version``)."""
+
+    if value:
+        typer.echo(__version__)
+        raise typer.Exit()
+
+
+@app.callback()
+def _main(
+    version: Annotated[
+        bool,
+        typer.Option(
+            "--version",
+            callback=_version_callback,
+            is_eager=True,
+            help="Print the harness version and exit.",
+        ),
+    ] = False,
+) -> None:
+    """Agent-controlled Skulk end-to-end test and benchmark harness."""
+
 
 # A small public model that can shard across multiple nodes, used as the default
 # target for the stability suites when the operator does not pass --model.
