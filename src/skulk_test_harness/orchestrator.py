@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import concurrent.futures
-import contextlib
 import io
 import json
 import mimetypes
 import re
 import statistics
-import threading
 import time
 import wave
 from collections.abc import Mapping
@@ -30,6 +29,8 @@ from skulk_test_harness.client import (
     SkulkClient,
     StreamingAudioTranscriptionExecution,
     VisionMediaDiagnosticsSnapshot,
+    concurrent_benchmark_client,
+    stream_chat_async,
 )
 from skulk_test_harness.fingerprint import gather_fingerprint
 from skulk_test_harness.models import (
@@ -60,12 +61,9 @@ from skulk_test_harness.utils import (
     unwrap_tagged,
 )
 
-# Deadlock guard for the concurrent benchmark's start barrier: if one worker
-# never reaches the barrier (a client that hangs on construction), the others
-# release after this timeout and run without perfect simultaneity rather than
-# blocking the whole run forever. Generous because it only bounds the setup
-# window before any request is sent, not the requests themselves.
-_CONCURRENT_START_BARRIER_TIMEOUT_S = 120.0
+# One concurrent-benchmark request record: (execution or None, error text or
+# None, started-at monotonic seconds, ended-at monotonic seconds).
+_ConcurrentRecord = tuple[ChatExecution | None, str | None, float, float]
 
 
 class _SpeechGenerationKwargs(TypedDict):
@@ -649,6 +647,12 @@ class HarnessRunner:
           * if no viable instance exists (none placed, or only failed ones), allow
             ``placement_appearance_timeout_s`` for the cluster to (re-)place, then
             give up -- never poll a vanished instance to the full deadline;
+          * bound the TOTAL wait across every re-anchored replacement with a hard
+            wall-clock ceiling (``placement_ready_total_timeout_s``, defaulting to
+            two readiness allowances plus one appearance window): each replacement
+            gets a fresh per-lineage allowance, but placement churn cannot extend
+            the wait without bound. Hitting the ceiling fails loudly with
+            ``unavailable_reason: churn``;
           * record every observed placement change so a silent wait is
             diagnosable from the report alone.
 
@@ -691,6 +695,23 @@ class HarnessRunner:
         # than inheriting a near-expired deadline.
         ready_deadline: float | None = None
         ready_anchor: str | None = None
+        # Re-anchoring is correct for ONE replacement but unbounded under
+        # placement churn: every new placement grants a fresh readiness
+        # allowance, so a cluster stuck in a re-place loop (e.g. an OOM race)
+        # kept a run silently waiting for over an hour. The churn ceiling is a
+        # hard wall-clock bound across ALL re-anchors, counted from the first
+        # viable appearance; hitting it fails loudly with the observed
+        # placement transitions so the churn itself becomes the finding.
+        total_ready_allowance = (
+            self.config.placement_ready_total_timeout_s
+            if self.config.placement_ready_total_timeout_s is not None
+            else (
+                2.0 * self.config.placement_ready_timeout_s
+                + self.config.placement_appearance_timeout_s
+            )
+        )
+        churn_deadline: float | None = None
+        re_anchor_count = 0
         transitions: list[dict[str, object]] = []
         last_signature: tuple[tuple[str, bool, bool], ...] | None = None
         seen_any = False
@@ -699,10 +720,14 @@ class HarnessRunner:
 
         def not_ready(reason: str) -> PlacementResult:
             # Keep the last-known instance identity for a known-but-unhealthy
-            # instance (load failure / ready timeout) -- a hard failure. Leave it
-            # None for re-placeable give-ups (never appeared / disappeared) so the
-            # caller's retry heuristic defers them.
-            known = last_seen if reason in {"load_failed", "ready_timeout"} else None
+            # instance (load failure / ready timeout / churn) -- a hard failure.
+            # Leave it None for re-placeable give-ups (never appeared /
+            # disappeared) so the caller's retry heuristic defers them.
+            known = (
+                last_seen
+                if reason in {"load_failed", "ready_timeout", "churn"}
+                else None
+            )
             return PlacementResult(
                 model_id=model_id,
                 created_by_harness=created_by_harness,
@@ -754,6 +779,20 @@ class HarnessRunner:
                     }
                 )
 
+            # The churn ceiling outranks every per-lineage allowance: once the
+            # first viable placement appeared, the TOTAL wait across all
+            # re-anchors is bounded, however many fresh allowances re-placement
+            # keeps granting.
+            if churn_deadline is not None and now >= churn_deadline:
+                transitions.append(
+                    {
+                        "elapsed_s": round(now - start, 1),
+                        "churn_ceiling_s": total_ready_allowance,
+                        "re_anchor_count": re_anchor_count,
+                    }
+                )
+                return not_ready("churn")
+
             loading = [p for p in placements if not p.terminal_failure]
             if loading:
                 # A live instance is still coming up; keep waiting for it.
@@ -767,8 +806,15 @@ class HarnessRunner:
                     # start a fresh readiness allowance for this lineage. The
                     # clock is counted from appearance, never from request, so a
                     # late-appearing or re-placed instance gets its full budget.
+                    if ready_anchor is not None:
+                        re_anchor_count += 1
                     ready_deadline = now + self.config.placement_ready_timeout_s
                     ready_anchor = loading[0].instance_id
+                    if churn_deadline is None:
+                        # Total ceiling starts at the FIRST appearance, mirroring
+                        # the per-lineage clock: the appearance window must not
+                        # eat into any readiness allowance.
+                        churn_deadline = now + total_ready_allowance
                 # Only time out while a loading instance is actually present and
                 # has exhausted its (re-anchored) allowance -- never during a
                 # re-placement gap, which the else branch governs.
@@ -1362,25 +1408,35 @@ class HarnessRunner:
     ) -> TestResult:
         """Drive ``concurrency`` simultaneous chat completions and measure load.
 
-        Fires ``test.concurrency`` worker threads, each with its own isolated
-        client and connection pool (a shared pool would serialize requests and
-        hide real parallelism), and each issuing ``concurrent_requests_per_worker``
-        streamed completions in sequence. Two things are measured at once:
+        Runs ``test.concurrency`` asyncio worker tasks on ONE single-threaded
+        event loop, each issuing ``concurrent_requests_per_worker`` streamed
+        completions in sequence. The driver is deliberately asyncio rather than
+        worker threads: N GIL-contended Python threads parsing SSE understate
+        high-rate aggregates 25-35% at N=64 (measured against the same server
+        class), so a threaded wall-clock aggregate reflects the measurement
+        client, not the server. All workers share one async client whose pool
+        holds ``concurrency`` connections but keeps NONE alive between requests
+        (see ``concurrent_benchmark_client``): stream-closing servers otherwise
+        turn every second pooled request into a transport error or a
+        clean-looking empty stream. Two things are measured at once:
 
         * **Aggregate throughput** (``aggregate_generation_tps``): total generated
-          tokens across every request divided by the wall span from the first
-          request starting to the last finishing (measured from per-request
-          timestamps, not the submit/collect wall). Workers are released from a
-          start barrier once every thread has built its client, so the window
-          reflects genuinely simultaneous in-flight load rather than
-          thread/connection-pool ramp-up. This is the number a batching engine on
-          a large GPU grows as concurrency rises, while a single-stream decode
-          rate cannot. It is also copied into ``skulk_generation_tps`` so existing
-          single-number readers (including the ledger) surface it.
+          tokens across every request that returned tokens -- regardless of
+          scoring outcome -- divided by the wall span from the first request
+          starting to the last finishing (measured from per-request timestamps,
+          not the submit/collect wall). Tokens count whenever the request's time
+          is in the span; excluding a scoring-failed request's tokens while its
+          elapsed time widens the denominator would deflate the aggregate. This
+          is the number a batching engine on a large GPU grows as concurrency
+          rises, while a single-stream decode rate cannot. It is also copied
+          into ``skulk_generation_tps`` so existing single-number readers
+          (including the ledger) surface it.
         * **Correctness under load**: every request must succeed and satisfy the
           same success criteria as a chat test. Any error or failed scoring fails
           the whole test, so this doubles as the concurrent-load smoke that the
-          harness previously never exercised.
+          harness previously never exercised. Scoring pass/fail stays a separate
+          axis (``concurrent_succeeded`` / ``concurrent_failed``) from the
+          throughput accounting above.
 
         Per-request decode rate and TTFT are reported as mean/p50/p90 so the
         expected per-stream slowdown (each stream shares the batch) is visible
@@ -1429,77 +1485,15 @@ class HarnessRunner:
                     )
                 ],
             )
-        # Release every worker's first request together once all threads have
-        # built their client, so the timed window reflects genuinely
-        # simultaneous in-flight load rather than thread and connection-pool
-        # ramp-up (fast or short-output cells could otherwise let early workers
-        # finish before later ones even start, understating the real
-        # concurrency the run is labeled with).
-        start_barrier = threading.Barrier(test.concurrency)
-
-        def worker(
-            _worker_index: int,
-        ) -> list[tuple[ChatExecution | None, str | None, float, float]]:
-            samples: list[tuple[ChatExecution | None, str | None, float, float]] = []
-            try:
-                with self._client_for_url(base_url) as worker_client:
-                    # Best-effort barrier: a broken barrier (a worker died before
-                    # arriving, or the wait timed out) still proceeds so one
-                    # failed thread cannot wedge the whole benchmark.
-                    with contextlib.suppress(threading.BrokenBarrierError):
-                        start_barrier.wait(
-                            timeout=_CONCURRENT_START_BARRIER_TIMEOUT_S
-                        )
-                    for _ in range(test.concurrent_requests_per_worker):
-                        started = time.monotonic()
-                        try:
-                            execution = worker_client.stream_chat(
-                                model_id=model_id,
-                                messages=messages,
-                                max_tokens=test.max_tokens,
-                                temperature=test.temperature,
-                                top_p=test.top_p,
-                                enable_thinking=enable_thinking,
-                                reasoning_effort=test.reasoning_effort,
-                                # Mirror the chat request options so a concurrent
-                                # test that exercises tools or logprobs asks the
-                                # backend for them (dropping them would falsely
-                                # fail tool/logprob criteria under load).
-                                tools=test.tools,
-                                tool_choice=test.tool_choice,
-                                parallel_tool_calls=test.parallel_tool_calls,
-                                top_logprobs=test.top_logprobs,
-                            )
-                            samples.append(
-                                (execution, None, started, time.monotonic())
-                            )
-                        except (SkulkApiError, httpx.HTTPError) as exc:
-                            samples.append((None, str(exc), started, time.monotonic()))
-            except Exception as exc:  # noqa: BLE001
-                # A benchmark must record a failure and keep running, never abort
-                # the whole run: client construction or any unexpected worker
-                # fault becomes a failed request. Abort the barrier so peers
-                # still waiting on this thread release immediately instead of
-                # stalling for the full timeout.
-                start_barrier.abort()
-                now = time.monotonic()
-                samples.append((None, f"worker error: {exc}", now, now))
-            return samples
-
-        records: list[tuple[ChatExecution | None, str | None, float, float]] = []
-        with concurrent.futures.ThreadPoolExecutor(
-            max_workers=test.concurrency
-        ) as pool:
-            futures = [pool.submit(worker, i) for i in range(test.concurrency)]
-            for future in concurrent.futures.as_completed(futures):
-                # The worker already converts its own faults to failed samples;
-                # this guard covers anything that still escapes (executor-level
-                # errors) so one thread cannot take down the run.
-                try:
-                    records.extend(future.result())
-                except Exception as exc:  # noqa: BLE001
-                    now = time.monotonic()
-                    records.append((None, f"worker crashed: {exc}", now, now))
+        records = asyncio.run(
+            self._drive_concurrent_requests(
+                base_url=base_url,
+                model_id=model_id,
+                test=test,
+                messages=messages,
+                enable_thinking=enable_thinking,
+            )
+        )
         # Span = first request start to last request finish (the real in-flight
         # window), not the submit/collect wall, so thread scheduling overhead
         # does not inflate the denominator of aggregate throughput. Each record
@@ -1528,6 +1522,36 @@ class HarnessRunner:
                     )
                 )
                 continue
+            metrics = execution.metrics
+            # Throughput accounting happens BEFORE scoring: every request that
+            # returned tokens already contributed its elapsed time to the
+            # wall-span denominator, so its tokens must contribute to the
+            # numerator regardless of scoring outcome. Excluding scoring-failed
+            # requests (the old behavior) deflated aggregate_generation_tps --
+            # e.g. min_chars failures that still generated hundreds of chars
+            # each counted as pure dead time. Scoring pass/fail is recorded
+            # separately below via concurrent_succeeded/concurrent_failed.
+            if metrics.skulk_generation_tokens is not None:
+                total_generation_tokens += metrics.skulk_generation_tokens
+            elif metrics.approx_output_tokens is not None:
+                total_generation_tokens += metrics.approx_output_tokens
+            # TTFT is a load-latency observation, valid for every request that
+            # streamed output; scoring cannot retroactively change when the
+            # first token arrived.
+            if metrics.ttft_s is not None:
+                ttfts.append(metrics.ttft_s)
+            # Prefer Skulk's engine-reported decode rate, but fall back to the
+            # client-computed wall_tps when a stream carries no generation_stats
+            # (older runs or engines that only provide wall timing). Mirrors the
+            # aggregate path's token fallback and compare._decode_tps, so the
+            # per-request distribution is not blank in those environments. The
+            # per-request distribution keeps its documented "successful
+            # requests" definition, so it is appended only after scoring below.
+            per_request_rate = (
+                metrics.skulk_generation_tps
+                if metrics.skulk_generation_tps is not None
+                else metrics.wall_tps
+            )
             response_issues = _score_output(
                 model_id,
                 test.name,
@@ -1543,25 +1567,8 @@ class HarnessRunner:
                 issues.extend(response_issues)
                 continue
             succeeded += 1
-            metrics = execution.metrics
-            # Prefer Skulk's engine-reported decode rate, but fall back to the
-            # client-computed wall_tps when a stream carries no generation_stats
-            # (older runs or engines that only provide wall timing). Mirrors the
-            # aggregate path's token fallback and compare._decode_tps, so the
-            # per-request distribution is not blank in those environments.
-            per_request_rate = (
-                metrics.skulk_generation_tps
-                if metrics.skulk_generation_tps is not None
-                else metrics.wall_tps
-            )
             if per_request_rate is not None:
                 per_request_tps.append(per_request_rate)
-            if metrics.ttft_s is not None:
-                ttfts.append(metrics.ttft_s)
-            if metrics.skulk_generation_tokens is not None:
-                total_generation_tokens += metrics.skulk_generation_tokens
-            elif metrics.approx_output_tokens is not None:
-                total_generation_tokens += metrics.approx_output_tokens
             if not sample_text:
                 sample_text = execution.text
 
@@ -1617,6 +1624,120 @@ class HarnessRunner:
             metrics=aggregated_metrics,
             issues=issues,
         )
+
+    def _concurrent_async_client(
+        self, base_url: str, *, concurrency: int
+    ) -> httpx.AsyncClient:
+        """Build the shared force-close async client for one concurrent test.
+
+        Separated out as the seam unit tests replace; production behavior lives
+        in ``concurrent_benchmark_client``.
+        """
+
+        return concurrent_benchmark_client(base_url, concurrency=concurrency)
+
+    async def _concurrent_stream_chat(
+        self,
+        async_client: httpx.AsyncClient,
+        *,
+        model_id: str,
+        messages: list[dict[str, object]],
+        test: PromptTest,
+        enable_thinking: bool | None,
+    ) -> ChatExecution:
+        """Issue one streamed completion for the concurrent benchmark."""
+
+        return await stream_chat_async(
+            async_client,
+            model_id=model_id,
+            messages=messages,
+            max_tokens=test.max_tokens,
+            temperature=test.temperature,
+            top_p=test.top_p,
+            enable_thinking=enable_thinking,
+            reasoning_effort=test.reasoning_effort,
+            # Mirror the chat request options so a concurrent test that
+            # exercises tools or logprobs asks the backend for them (dropping
+            # them would falsely fail tool/logprob criteria under load).
+            tools=test.tools,
+            tool_choice=test.tool_choice,
+            parallel_tool_calls=test.parallel_tool_calls,
+            top_logprobs=test.top_logprobs,
+            request_timeout_s=self.config.request_timeout_s,
+            stream_read_timeout_s=self.config.stream_read_timeout_s,
+        )
+
+    async def _drive_concurrent_requests(
+        self,
+        *,
+        base_url: str,
+        model_id: str,
+        test: PromptTest,
+        messages: list[dict[str, object]],
+        enable_thinking: bool | None,
+    ) -> list[_ConcurrentRecord]:
+        """Run every planned concurrent request on one asyncio event loop.
+
+        Single-threaded on purpose: worker THREADS parsing N simultaneous SSE
+        streams contend on the GIL and understate high-rate aggregates, so the
+        measured number would be the client's ceiling rather than the server's.
+        All workers start together via ``asyncio.gather`` (no start barrier is
+        needed -- task startup on one loop is effectively simultaneous), and
+        every request uses a fresh connection from the shared force-close
+        client so stream-closing servers cannot poison a keep-alive pool.
+        """
+
+        records: list[_ConcurrentRecord] = []
+        async with self._concurrent_async_client(
+            base_url, concurrency=test.concurrency
+        ) as async_client:
+
+            async def worker(_worker_index: int) -> list[_ConcurrentRecord]:
+                samples: list[_ConcurrentRecord] = []
+                for _ in range(test.concurrent_requests_per_worker):
+                    started = time.monotonic()
+                    try:
+                        execution = await self._concurrent_stream_chat(
+                            async_client,
+                            model_id=model_id,
+                            messages=messages,
+                            test=test,
+                            enable_thinking=enable_thinking,
+                        )
+                        samples.append((execution, None, started, time.monotonic()))
+                    except (SkulkApiError, httpx.HTTPError) as exc:
+                        samples.append((None, str(exc), started, time.monotonic()))
+                    except Exception as exc:  # noqa: BLE001
+                        # A benchmark must record a failure and keep running,
+                        # never abort the whole run. An unexpected fault ends
+                        # THIS worker's remaining planned requests (the caller
+                        # counts those dropped slots as failures) but leaves
+                        # every other worker running.
+                        samples.append(
+                            (
+                                None,
+                                f"worker error: {exc}",
+                                started,
+                                time.monotonic(),
+                            )
+                        )
+                        break
+                return samples
+
+            worker_results = await asyncio.gather(
+                *(worker(index) for index in range(test.concurrency)),
+                return_exceptions=True,
+            )
+        for worker_result in worker_results:
+            if isinstance(worker_result, BaseException):
+                # The worker already converts its own faults to failed samples;
+                # this guard covers anything that still escapes (task-level
+                # errors) so one worker cannot take down the run.
+                now = time.monotonic()
+                records.append((None, f"worker crashed: {worker_result}", now, now))
+            else:
+                records.extend(worker_result)
+        return records
 
     def _run_cancel_test(
         self,
@@ -4219,6 +4340,13 @@ def _not_ready_message(placement: PlacementResult) -> str:
         return (
             "Instance was placed but never reached a dispatchable runner within "
             "the readiness timeout; see master logs"
+        )
+    if reason == "churn":
+        return (
+            "Placement churned: the cluster kept replacing the loading instance "
+            "and no lineage became ready before the total readiness ceiling; "
+            "the churn itself is the failure (readiness_transitions lists every "
+            "observed placement)"
         )
     return (
         "Instance was placed but never became ready (torn down by cluster "

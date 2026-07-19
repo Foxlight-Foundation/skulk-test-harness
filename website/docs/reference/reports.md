@@ -77,7 +77,7 @@ headline field still sees the concurrency number.
 | `concurrency` | Simultaneous in-flight requests driven |
 | `concurrent_total_requests` | Total requests issued across all workers |
 | `concurrent_succeeded` / `concurrent_failed` | Requests that passed or failed scoring under load |
-| `aggregate_generation_tps` | Total generated tokens divided by the wall span from first request start to last request end |
+| `aggregate_generation_tps` | Total generated tokens across every request that returned tokens (regardless of scoring outcome) divided by the wall span from first request start to last request end |
 | `per_request_generation_tps_mean` / `_p50` / `_p90` | Per-request decode-rate distribution under load |
 | `ttft_p50_s` / `ttft_p90_s` | Time-to-first-token distribution under load |
 | `wall_span_s` | Wall-clock span used as the aggregate-throughput denominator |

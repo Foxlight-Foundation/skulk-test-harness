@@ -72,7 +72,7 @@ Each map key must match the test set's `name`.
 | `parallel_tool_calls` | Whether parallel tool calls are allowed |
 | `tool_mocks` | Static tool results |
 | `cancel_after_chunks` | Stream chunks before cancellation |
-| `concurrency` | Simultaneous in-flight requests for `kind: concurrent` (worker threads, each with its own client) |
+| `concurrency` | Simultaneous in-flight requests for `kind: concurrent` (asyncio workers on one event loop, sharing a client that opens a fresh connection per request) |
 | `concurrent_requests_per_worker` | Sequential requests each concurrent worker issues; total load is `concurrency * concurrent_requests_per_worker` |
 | `followup_prompt` | Health check after cancel or expected error |
 | `expected_error_statuses` | Acceptable statuses for `kind: error` |

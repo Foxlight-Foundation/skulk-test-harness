@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import json
 
@@ -6,12 +7,15 @@ import pytest
 
 from skulk_test_harness import client as client_module
 from skulk_test_harness.client import (
+    ChatExecution,
     ClusterApiOwner,
     DataPlaneDiagnosticsSnapshot,
     ProviderCapabilityDiagnosticsSnapshot,
     SkulkApiError,
     SkulkClient,
     VisionMediaDiagnosticsSnapshot,
+    concurrent_benchmark_client,
+    stream_chat_async,
 )
 
 
@@ -1325,3 +1329,92 @@ def test_streaming_chat_parses_generation_stats_comment(
     assert result.metrics.skulk_prompt_tps == 187.4
     assert result.metrics.skulk_prompt_tokens == 17
     assert result.metrics.skulk_generation_tokens == 120
+
+
+# --- concurrent-benchmark async client: stream-closing servers (#69) ---------
+
+
+def test_concurrent_benchmark_client_survives_stream_closing_server() -> None:
+    """Every request must ride a FRESH connection against a stream-closing server.
+
+    Newer llama.cpp closes the TCP connection after each SSE stream without
+    sending ``Connection: close``. A keep-alive pool then hands the next
+    request a dead socket, which httpx can surface as an immediately-ended
+    stream: a clean 200 with zero chunks (the exactly-half failure pattern).
+    The fake server below mimics that behavior -- keep-alive-looking response,
+    socket closed right after -- and counts connections, so the assertion that
+    every request opened its own connection proves the force-close client
+    never reuses one.
+    """
+
+    connection_count = 0
+
+    async def scenario() -> list[ChatExecution]:
+        async def handle_connection(
+            reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+        ) -> None:
+            nonlocal connection_count
+            connection_count += 1
+            head = await reader.readuntil(b"\r\n\r\n")
+            content_length = 0
+            for header_line in head.decode("latin-1").lower().split("\r\n"):
+                if header_line.startswith("content-length:"):
+                    content_length = int(header_line.split(":", 1)[1].strip())
+            if content_length:
+                await reader.readexactly(content_length)
+            body = (
+                b'data: {"choices": [{"delta": {"content": "hello world"}}]}\n\n'
+                b': generation_stats {"generation_tps": 10.0,'
+                b' "generation_tokens": 3}\n'
+                b"data: [DONE]\n\n"
+            )
+            # No `Connection: close` header: the response LOOKS reusable to a
+            # keep-alive pool, then the socket is closed anyway (the llama.cpp
+            # behavior under test).
+            writer.write(
+                b"HTTP/1.1 200 OK\r\n"
+                b"Content-Type: text/event-stream\r\n"
+                b"Content-Length: " + str(len(body)).encode("ascii") + b"\r\n"
+                b"\r\n" + body
+            )
+            await writer.drain()
+            writer.close()
+            await writer.wait_closed()
+
+        server = await asyncio.start_server(handle_connection, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        executions: list[ChatExecution] = []
+        async with server, concurrent_benchmark_client(
+            f"http://127.0.0.1:{port}", concurrency=2
+        ) as async_client:
+
+            async def worker() -> None:
+                # Two sequential requests per worker: the SECOND is the one
+                # a pooled client would send down the dead socket.
+                for _ in range(2):
+                    executions.append(
+                        await stream_chat_async(
+                            async_client,
+                            model_id="m/x",
+                            messages=[{"role": "user", "content": "hi"}],
+                            max_tokens=8,
+                            temperature=None,
+                            top_p=None,
+                            request_timeout_s=5.0,
+                            stream_read_timeout_s=5.0,
+                        )
+                    )
+
+            await asyncio.gather(worker(), worker())
+        return executions
+
+    executions = asyncio.run(scenario())
+
+    assert len(executions) == 4
+    # No empty streams: every request parsed real content and engine stats.
+    assert all(execution.text == "hello world" for execution in executions)
+    assert all(
+        execution.metrics.skulk_generation_tokens == 3 for execution in executions
+    )
+    # The per-request force-close proof: four requests, four connections.
+    assert connection_count == 4

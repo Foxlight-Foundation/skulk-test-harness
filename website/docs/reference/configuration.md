@@ -42,6 +42,7 @@ cluster_nodes: {}
 | `generation_timeout_s` | `1800` | Overall timeout for long generations |
 | `stream_read_timeout_s` | `120` | Max wait for the next streaming byte |
 | `placement_ready_timeout_s` | `1800` | Max wait for a placed instance to become ready |
+| `placement_ready_total_timeout_s` | unset | Hard ceiling on one model's entire readiness wait across every replacement instance; unset derives `2 * placement_ready_timeout_s + placement_appearance_timeout_s`. Hitting it fails loudly with `unavailable_reason: churn` |
 | `placement_appearance_timeout_s` | `300` | Max wait for a requested placement to appear in state |
 | `store_download_timeout_s` | `14400` | Max wait for `models download --wait` |
 | `store_delete_timeout_s` | `30` | Max wait for best-effort staged model eviction |
