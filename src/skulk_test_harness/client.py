@@ -455,6 +455,281 @@ def _realtime_error_message(event: dict[str, object]) -> str:
     return f"Realtime transcription failed with event {event.get('type')!r}"
 
 
+def _chat_completion_payload(
+    *,
+    model_id: str,
+    messages: list[dict[str, object]],
+    max_tokens: int,
+    temperature: float | None,
+    top_p: float | None,
+    enable_thinking: bool | None,
+    reasoning_effort: str | None,
+    tools: list[dict[str, object]] | None,
+    tool_choice: str | dict[str, object] | None,
+    parallel_tool_calls: bool | None,
+    top_logprobs: int | None,
+) -> dict[str, object]:
+    """Build one streaming `/v1/chat/completions` request body.
+
+    Shared by the synchronous client and the async concurrent-benchmark driver
+    so both request exactly the same generation options.
+    """
+
+    payload: dict[str, object] = {
+        "model": model_id,
+        "messages": messages,
+        "stream": True,
+        "max_tokens": max_tokens,
+    }
+    if temperature is not None:
+        payload["temperature"] = temperature
+    if top_p is not None:
+        payload["top_p"] = top_p
+    if enable_thinking is not None:
+        payload["enable_thinking"] = enable_thinking
+    if reasoning_effort is not None:
+        payload["reasoning_effort"] = reasoning_effort
+    if tools:
+        payload["tools"] = tools
+    if tool_choice is not None:
+        payload["tool_choice"] = tool_choice
+    if parallel_tool_calls is not None:
+        payload["parallel_tool_calls"] = parallel_tool_calls
+    if top_logprobs is not None:
+        # OpenAI semantics: logprobs must be on for top_logprobs to apply.
+        payload["logprobs"] = True
+        payload["top_logprobs"] = top_logprobs
+    return payload
+
+
+class _ChatStreamParser:
+    """Incremental parser for one streamed `/v1/chat/completions` response.
+
+    The synchronous client and the async concurrent-benchmark driver feed the
+    same parser one SSE line at a time, so both paths measure TTFT, chunk
+    counts, deltas, and engine-reported generation statistics identically.
+    Construct it immediately before initiating the request: the wall clock for
+    ``elapsed_s``/``ttft_s`` starts at construction.
+    """
+
+    def __init__(self, *, cancel_after_chunks: int | None = None) -> None:
+        self._cancel_after_chunks = cancel_after_chunks
+        self._start = time.monotonic()
+        self._first_token_at: float | None = None
+        self._output_parts: list[str] = []
+        self._reasoning_parts: list[str] = []
+        self._tool_calls: list[ToolCallRecord] = []
+        self._raw_events: list[dict[str, object]] = []
+        self._command_id: str | None = None
+        self._stream_stats: dict[str, object] | None = None
+        self._chunks = 0
+        self._logprob_tokens = 0
+        self._top_logprob_tokens = 0
+        self._canceled = False
+
+    def feed_line(self, line: str) -> bool:
+        """Consume one SSE line; return ``True`` when the stream is finished."""
+
+        if not line:
+            return False
+        if line.startswith(": command_id"):
+            self._command_id = line.rsplit(" ", 1)[-1].strip()
+            return False
+        if line.startswith(": generation_stats"):
+            # Engine-reported statistics ride the final chunk as an SSE comment
+            # (Skulk's non-standard extension); without parsing it, streamed
+            # tests report null skulk_* metrics on every engine and the ledger
+            # loses engine-exact token rates.
+            self._stream_stats = _safe_json_object(
+                line.removeprefix(": generation_stats").strip()
+            )
+            return False
+        if not line.startswith("data:"):
+            return False
+        data = line.removeprefix("data:").strip()
+        if data == "[DONE]":
+            return True
+        event = _safe_json_object(data)
+        if event is None:
+            return False
+        self._raw_events.append(event)
+        event_logprobs, event_top_logprobs = _extract_stream_logprobs(event)
+        self._logprob_tokens += event_logprobs
+        self._top_logprob_tokens += event_top_logprobs
+        content, reasoning, event_tool_calls = _extract_stream_delta(event)
+        text_for_timing = content or reasoning
+        if text_for_timing:
+            if self._first_token_at is None:
+                self._first_token_at = time.monotonic()
+            self._chunks += 1
+        if event_tool_calls and self._first_token_at is None:
+            self._first_token_at = time.monotonic()
+        if content:
+            self._output_parts.append(content)
+        if reasoning:
+            self._reasoning_parts.append(reasoning)
+        self._tool_calls.extend(event_tool_calls)
+        if self._cancel_after_chunks and self._chunks >= self._cancel_after_chunks:
+            self._canceled = True
+            return True
+        return False
+
+    def finish(self) -> ChatExecution:
+        """Summarize the consumed stream into a ``ChatExecution``."""
+
+        elapsed = time.monotonic() - self._start
+        text = "".join(self._output_parts)
+        reasoning_text = "".join(self._reasoning_parts)
+        generated_chars = len(text) + len(reasoning_text)
+        approx_tokens = max(1, round(generated_chars / 4)) if generated_chars else 0
+        active_decode_s = (
+            elapsed - (self._first_token_at - self._start)
+            if self._first_token_at is not None
+            else elapsed
+        )
+        wall_tps = approx_tokens / active_decode_s if active_decode_s > 0 else None
+        metrics = GenerationMetrics(
+            elapsed_s=elapsed,
+            ttft_s=(
+                (self._first_token_at - self._start)
+                if self._first_token_at is not None
+                else None
+            ),
+            output_chars=len(text),
+            generated_chars=generated_chars,
+            chunks=self._chunks,
+            approx_output_tokens=approx_tokens,
+            wall_tps=wall_tps,
+        )
+        if isinstance(self._stream_stats, dict):
+            metrics = metrics.model_copy(
+                update={
+                    "skulk_prompt_tps": _float_or_none(
+                        self._stream_stats.get("prompt_tps")
+                    ),
+                    "skulk_generation_tps": _float_or_none(
+                        self._stream_stats.get("generation_tps")
+                    ),
+                    "skulk_prompt_tokens": _int_or_none(
+                        self._stream_stats.get("prompt_tokens")
+                    ),
+                    "skulk_generation_tokens": _int_or_none(
+                        self._stream_stats.get("generation_tokens")
+                    ),
+                }
+            )
+        return ChatExecution(
+            text=text,
+            reasoning_text=reasoning_text,
+            tool_calls=self._tool_calls,
+            metrics=metrics,
+            command_id=self._command_id,
+            raw_events=self._raw_events,
+            logprob_tokens=self._logprob_tokens,
+            top_logprob_tokens=self._top_logprob_tokens,
+            canceled=self._canceled,
+        )
+
+
+def concurrent_benchmark_client(
+    base_url: str, *, concurrency: int
+) -> httpx.AsyncClient:
+    """Build the async HTTP client used by the ``concurrent`` benchmark kind.
+
+    Two deliberate properties:
+
+    * ``max_keepalive_connections=0`` closes every connection after its request
+      instead of returning it to the keep-alive pool. Newer llama.cpp servers
+      close the connection after each SSE stream; a pooled client's next
+      request rides the dead socket and surfaces as a transport error or -- in
+      httpx -- an immediately-ended stream that looks like a clean EMPTY
+      completion (the exactly-half failure pattern). A fresh connection per
+      request removes that class entirely.
+    * ``max_connections`` matches the benchmark's concurrency so every planned
+      in-flight request can hold its own connection and none queues on the
+      pool.
+    """
+
+    return httpx.AsyncClient(
+        base_url=base_url.rstrip("/"),
+        limits=httpx.Limits(
+            max_connections=max(1, concurrency),
+            max_keepalive_connections=0,
+        ),
+    )
+
+
+async def stream_chat_async(
+    async_client: httpx.AsyncClient,
+    *,
+    model_id: str,
+    messages: list[dict[str, object]],
+    max_tokens: int,
+    temperature: float | None,
+    top_p: float | None,
+    enable_thinking: bool | None = None,
+    reasoning_effort: str | None = None,
+    tools: list[dict[str, object]] | None = None,
+    tool_choice: str | dict[str, object] | None = None,
+    parallel_tool_calls: bool | None = None,
+    top_logprobs: int | None = None,
+    request_timeout_s: float,
+    stream_read_timeout_s: float,
+) -> ChatExecution:
+    """Run one streaming chat completion on a shared ``httpx.AsyncClient``.
+
+    Async twin of ``SkulkClient.stream_chat`` used by the concurrent benchmark:
+    N GIL-contended worker threads parsing SSE understate high-rate aggregates,
+    so concurrent load is driven from one event loop instead. Request payload
+    construction and stream parsing are shared with the synchronous path, so
+    both report identical metrics for identical streams.
+    """
+
+    payload = _chat_completion_payload(
+        model_id=model_id,
+        messages=messages,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        top_p=top_p,
+        enable_thinking=enable_thinking,
+        reasoning_effort=reasoning_effort,
+        tools=tools,
+        tool_choice=tool_choice,
+        parallel_tool_calls=parallel_tool_calls,
+        top_logprobs=top_logprobs,
+    )
+    parser = _ChatStreamParser()
+    try:
+        async with async_client.stream(
+            "POST",
+            "/v1/chat/completions",
+            json=payload,
+            timeout=httpx.Timeout(
+                timeout=None,
+                connect=request_timeout_s,
+                read=stream_read_timeout_s,
+                write=request_timeout_s,
+                pool=request_timeout_s,
+            ),
+        ) as response:
+            if response.status_code >= 400:
+                body = (await response.aread()).decode("utf-8", errors="replace")
+                raise SkulkApiError(
+                    "POST", "/v1/chat/completions", response.status_code, body
+                )
+            async for line in response.aiter_lines():
+                if parser.feed_line(line):
+                    break
+    except (httpx.TimeoutException, httpx.TransportError) as exc:
+        raise SkulkApiError(
+            "POST",
+            "/v1/chat/completions",
+            0,
+            f"{type(exc).__name__}: {exc}",
+        ) from exc
+    return parser.finish()
+
+
 class SkulkClient:
     """Small synchronous Skulk API client."""
 
@@ -1014,44 +1289,20 @@ class SkulkClient:
     ) -> ChatExecution:
         """Run one streaming chat completion and measure wall-clock metrics."""
 
-        payload: dict[str, object] = {
-            "model": model_id,
-            "messages": messages,
-            "stream": True,
-            "max_tokens": max_tokens,
-        }
-        if temperature is not None:
-            payload["temperature"] = temperature
-        if top_p is not None:
-            payload["top_p"] = top_p
-        if enable_thinking is not None:
-            payload["enable_thinking"] = enable_thinking
-        if reasoning_effort is not None:
-            payload["reasoning_effort"] = reasoning_effort
-        if tools:
-            payload["tools"] = tools
-        if tool_choice is not None:
-            payload["tool_choice"] = tool_choice
-        if parallel_tool_calls is not None:
-            payload["parallel_tool_calls"] = parallel_tool_calls
-        if top_logprobs is not None:
-            # OpenAI semantics: logprobs must be on for top_logprobs to apply.
-            payload["logprobs"] = True
-            payload["top_logprobs"] = top_logprobs
-
-        start = time.monotonic()
-        first_token_at: float | None = None
-        output_parts: list[str] = []
-        reasoning_parts: list[str] = []
-        tool_calls: list[ToolCallRecord] = []
-        raw_events: list[dict[str, object]] = []
-        command_id: str | None = None
-        stream_stats: dict[str, object] | None = None
-        chunks = 0
-        logprob_tokens = 0
-        top_logprob_tokens = 0
-        canceled = False
-
+        payload = _chat_completion_payload(
+            model_id=model_id,
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            enable_thinking=enable_thinking,
+            reasoning_effort=reasoning_effort,
+            tools=tools,
+            tool_choice=tool_choice,
+            parallel_tool_calls=parallel_tool_calls,
+            top_logprobs=top_logprobs,
+        )
+        parser = _ChatStreamParser(cancel_after_chunks=cancel_after_chunks)
         try:
             with self._client.stream(
                 "POST",
@@ -1071,48 +1322,7 @@ class SkulkClient:
                         "POST", "/v1/chat/completions", response.status_code, body
                     )
                 for line in response.iter_lines():
-                    if not line:
-                        continue
-                    if line.startswith(": command_id"):
-                        command_id = line.rsplit(" ", 1)[-1].strip()
-                        continue
-                    if line.startswith(": generation_stats"):
-                        # Engine-reported statistics ride the final chunk as an
-                        # SSE comment (Skulk's non-standard extension); without
-                        # parsing it, streamed tests report null skulk_* metrics
-                        # on every engine and the ledger loses engine-exact
-                        # token rates.
-                        stream_stats = _safe_json_object(
-                            line.removeprefix(": generation_stats").strip()
-                        )
-                        continue
-                    if not line.startswith("data:"):
-                        continue
-                    data = line.removeprefix("data:").strip()
-                    if data == "[DONE]":
-                        break
-                    event = _safe_json_object(data)
-                    if event is None:
-                        continue
-                    raw_events.append(event)
-                    event_logprobs, event_top_logprobs = _extract_stream_logprobs(event)
-                    logprob_tokens += event_logprobs
-                    top_logprob_tokens += event_top_logprobs
-                    content, reasoning, event_tool_calls = _extract_stream_delta(event)
-                    text_for_timing = content or reasoning
-                    if text_for_timing:
-                        if first_token_at is None:
-                            first_token_at = time.monotonic()
-                        chunks += 1
-                    if event_tool_calls and first_token_at is None:
-                        first_token_at = time.monotonic()
-                    if content:
-                        output_parts.append(content)
-                    if reasoning:
-                        reasoning_parts.append(reasoning)
-                    tool_calls.extend(event_tool_calls)
-                    if cancel_after_chunks and chunks >= cancel_after_chunks:
-                        canceled = True
+                    if parser.feed_line(line):
                         break
         except (httpx.TimeoutException, httpx.TransportError) as exc:
             raise SkulkApiError(
@@ -1121,53 +1331,7 @@ class SkulkClient:
                 0,
                 f"{type(exc).__name__}: {exc}",
             ) from exc
-
-        elapsed = time.monotonic() - start
-        text = "".join(output_parts)
-        reasoning_text = "".join(reasoning_parts)
-        generated_chars = len(text) + len(reasoning_text)
-        approx_tokens = max(1, round(generated_chars / 4)) if generated_chars else 0
-        active_decode_s = (
-            elapsed - (first_token_at - start)
-            if first_token_at is not None
-            else elapsed
-        )
-        wall_tps = approx_tokens / active_decode_s if active_decode_s > 0 else None
-        metrics = GenerationMetrics(
-            elapsed_s=elapsed,
-            ttft_s=(first_token_at - start) if first_token_at is not None else None,
-            output_chars=len(text),
-            generated_chars=generated_chars,
-            chunks=chunks,
-            approx_output_tokens=approx_tokens,
-            wall_tps=wall_tps,
-        )
-        if isinstance(stream_stats, dict):
-            metrics = metrics.model_copy(
-                update={
-                    "skulk_prompt_tps": _float_or_none(stream_stats.get("prompt_tps")),
-                    "skulk_generation_tps": _float_or_none(
-                        stream_stats.get("generation_tps")
-                    ),
-                    "skulk_prompt_tokens": _int_or_none(
-                        stream_stats.get("prompt_tokens")
-                    ),
-                    "skulk_generation_tokens": _int_or_none(
-                        stream_stats.get("generation_tokens")
-                    ),
-                }
-            )
-        return ChatExecution(
-            text=text,
-            reasoning_text=reasoning_text,
-            tool_calls=tool_calls,
-            metrics=metrics,
-            command_id=command_id,
-            raw_events=raw_events,
-            logprob_tokens=logprob_tokens,
-            top_logprob_tokens=top_logprob_tokens,
-            canceled=canceled,
-        )
+        return parser.finish()
 
     def embeddings(
         self,

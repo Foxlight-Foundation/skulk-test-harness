@@ -150,6 +150,23 @@ class HarnessConfig(HarnessBaseModel):
         ),
     )
     placement_ready_timeout_s: float = 1800.0
+    placement_ready_total_timeout_s: float | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Hard wall-clock ceiling on one model's ENTIRE readiness wait, "
+            "counted from the first placement appearing and spanning every "
+            "re-anchored replacement instance. Each replacement still gets a "
+            "fresh placement_ready_timeout_s allowance, but placement churn "
+            "(the cluster re-placing over and over) would otherwise extend the "
+            "wait without bound. Unset (the default) derives the ceiling as "
+            "2 * placement_ready_timeout_s + placement_appearance_timeout_s: "
+            "a full allowance for the original placement, a full allowance for "
+            "one replacement, and one appearance window for the gap between "
+            "them. Hitting the ceiling fails the wait loudly with "
+            "unavailable_reason 'churn'."
+        ),
+    )
     placement_appearance_timeout_s: float = Field(
         default=300.0,
         gt=0,
