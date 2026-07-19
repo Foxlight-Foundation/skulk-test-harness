@@ -85,7 +85,7 @@ headline field still sees the concurrency number.
 ## The Fingerprint
 
 Every `report.json` from a plan or run carries a top-level `fingerprint`
-block (current `schema_version`: `2.1`). It exists for one reason: **a number
+block (current `schema_version`: `2.2`). It exists for one reason: **a number
 should never be separated from what produced it**. A "45 tok/s" without the
 Skulk version, the nodes, and the cache conditions behind it is not a
 measurement; the fingerprint makes each report self-describing, so it stays
