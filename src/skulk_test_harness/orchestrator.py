@@ -647,6 +647,12 @@ class HarnessRunner:
           * if no viable instance exists (none placed, or only failed ones), allow
             ``placement_appearance_timeout_s`` for the cluster to (re-)place, then
             give up -- never poll a vanished instance to the full deadline;
+          * bound the TOTAL wait across every re-anchored replacement with a hard
+            wall-clock ceiling (``placement_ready_total_timeout_s``, defaulting to
+            two readiness allowances plus one appearance window): each replacement
+            gets a fresh per-lineage allowance, but placement churn cannot extend
+            the wait without bound. Hitting the ceiling fails loudly with
+            ``unavailable_reason: churn``;
           * record every observed placement change so a silent wait is
             diagnosable from the report alone.
 
@@ -689,6 +695,23 @@ class HarnessRunner:
         # than inheriting a near-expired deadline.
         ready_deadline: float | None = None
         ready_anchor: str | None = None
+        # Re-anchoring is correct for ONE replacement but unbounded under
+        # placement churn: every new placement grants a fresh readiness
+        # allowance, so a cluster stuck in a re-place loop (e.g. an OOM race)
+        # kept a run silently waiting for over an hour. The churn ceiling is a
+        # hard wall-clock bound across ALL re-anchors, counted from the first
+        # viable appearance; hitting it fails loudly with the observed
+        # placement transitions so the churn itself becomes the finding.
+        total_ready_allowance = (
+            self.config.placement_ready_total_timeout_s
+            if self.config.placement_ready_total_timeout_s is not None
+            else (
+                2.0 * self.config.placement_ready_timeout_s
+                + self.config.placement_appearance_timeout_s
+            )
+        )
+        churn_deadline: float | None = None
+        re_anchor_count = 0
         transitions: list[dict[str, object]] = []
         last_signature: tuple[tuple[str, bool, bool], ...] | None = None
         seen_any = False
@@ -697,10 +720,14 @@ class HarnessRunner:
 
         def not_ready(reason: str) -> PlacementResult:
             # Keep the last-known instance identity for a known-but-unhealthy
-            # instance (load failure / ready timeout) -- a hard failure. Leave it
-            # None for re-placeable give-ups (never appeared / disappeared) so the
-            # caller's retry heuristic defers them.
-            known = last_seen if reason in {"load_failed", "ready_timeout"} else None
+            # instance (load failure / ready timeout / churn) -- a hard failure.
+            # Leave it None for re-placeable give-ups (never appeared /
+            # disappeared) so the caller's retry heuristic defers them.
+            known = (
+                last_seen
+                if reason in {"load_failed", "ready_timeout", "churn"}
+                else None
+            )
             return PlacementResult(
                 model_id=model_id,
                 created_by_harness=created_by_harness,
@@ -752,6 +779,20 @@ class HarnessRunner:
                     }
                 )
 
+            # The churn ceiling outranks every per-lineage allowance: once the
+            # first viable placement appeared, the TOTAL wait across all
+            # re-anchors is bounded, however many fresh allowances re-placement
+            # keeps granting.
+            if churn_deadline is not None and now >= churn_deadline:
+                transitions.append(
+                    {
+                        "elapsed_s": round(now - start, 1),
+                        "churn_ceiling_s": total_ready_allowance,
+                        "re_anchor_count": re_anchor_count,
+                    }
+                )
+                return not_ready("churn")
+
             loading = [p for p in placements if not p.terminal_failure]
             if loading:
                 # A live instance is still coming up; keep waiting for it.
@@ -765,8 +806,15 @@ class HarnessRunner:
                     # start a fresh readiness allowance for this lineage. The
                     # clock is counted from appearance, never from request, so a
                     # late-appearing or re-placed instance gets its full budget.
+                    if ready_anchor is not None:
+                        re_anchor_count += 1
                     ready_deadline = now + self.config.placement_ready_timeout_s
                     ready_anchor = loading[0].instance_id
+                    if churn_deadline is None:
+                        # Total ceiling starts at the FIRST appearance, mirroring
+                        # the per-lineage clock: the appearance window must not
+                        # eat into any readiness allowance.
+                        churn_deadline = now + total_ready_allowance
                 # Only time out while a loading instance is actually present and
                 # has exhausted its (re-anchored) allowance -- never during a
                 # re-placement gap, which the else branch governs.
@@ -4292,6 +4340,13 @@ def _not_ready_message(placement: PlacementResult) -> str:
         return (
             "Instance was placed but never reached a dispatchable runner within "
             "the readiness timeout; see master logs"
+        )
+    if reason == "churn":
+        return (
+            "Placement churned: the cluster kept replacing the loading instance "
+            "and no lineage became ready before the total readiness ceiling; "
+            "the churn itself is the failure (readiness_transitions lists every "
+            "observed placement)"
         )
     return (
         "Instance was placed but never became ready (torn down by cluster "

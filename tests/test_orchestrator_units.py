@@ -3849,6 +3849,101 @@ def test_wait_for_model_ready_resets_deadline_for_replacement(
     assert result.instance_id == "B"
 
 
+def test_wait_for_model_ready_bounds_total_wait_under_placement_churn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Issue #71: every poll surfaces a NEW replacement instance, so per-lineage
+    # re-anchoring alone grants a fresh allowance forever (observed live as ~80
+    # minutes of silent waiting under an OOM-race re-place loop). The total
+    # ceiling must end the wait loudly, naming the churn.
+    from skulk_test_harness import orchestrator as orch
+
+    clock = {"t": 0.0}
+    monkeypatch.setattr(orch.time, "monotonic", lambda: clock["t"])
+    monkeypatch.setattr(
+        orch.time, "sleep", lambda seconds: clock.__setitem__("t", clock["t"] + seconds)
+    )
+
+    client = _ScriptedPlacementClient(
+        [[_placement(f"generation-{index}")] for index in range(64)]
+    )
+    runner = HarnessRunner(
+        config=HarnessConfig(
+            placement_ready_timeout_s=1.0,
+            placement_appearance_timeout_s=100.0,
+            placement_ready_total_timeout_s=2.0,
+            poll_interval_s=0.5,
+        ),
+        model_sets={},
+        test_sets={},
+    )
+    spec = RunSpec(model_set="m", test_set="t", mode="execute")
+    result = runner._wait_for_model_ready(
+        client,  # type: ignore[arg-type]
+        "m",
+        spec,
+        _report(),
+        created_by_harness=True,
+        reused=False,
+    )
+    assert result.ready is False
+    assert result.unavailable_reason == "churn"
+    assert result.instance_id is not None  # hard failure, not a silent defer
+    # The transitions carry the churn evidence: every observed placement plus a
+    # final entry naming the ceiling and re-anchor count.
+    assert any("churn_ceiling_s" in entry for entry in result.readiness_transitions)
+    ceiling_entry = next(
+        entry
+        for entry in result.readiness_transitions
+        if "churn_ceiling_s" in entry
+    )
+    assert ceiling_entry["churn_ceiling_s"] == 2.0
+    assert isinstance(ceiling_entry["re_anchor_count"], int)
+    assert ceiling_entry["re_anchor_count"] >= 2
+
+
+def test_wait_for_model_ready_default_churn_ceiling_derivation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # With placement_ready_total_timeout_s unset, the ceiling derives as
+    # 2 * placement_ready_timeout_s + placement_appearance_timeout_s -- one full
+    # allowance for the original placement, one for a single replacement, and
+    # one appearance window for the gap -- so the #65 single-replacement fix is
+    # preserved by construction while sustained churn still terminates.
+    from skulk_test_harness import orchestrator as orch
+
+    clock = {"t": 0.0}
+    monkeypatch.setattr(orch.time, "monotonic", lambda: clock["t"])
+    monkeypatch.setattr(
+        orch.time, "sleep", lambda seconds: clock.__setitem__("t", clock["t"] + seconds)
+    )
+
+    client = _ScriptedPlacementClient(
+        [[_placement(f"generation-{index}")] for index in range(64)]
+    )
+    runner = HarnessRunner(
+        config=HarnessConfig(
+            placement_ready_timeout_s=1.0,
+            placement_appearance_timeout_s=0.5,
+            poll_interval_s=0.5,
+        ),
+        model_sets={},
+        test_sets={},
+    )
+    spec = RunSpec(model_set="m", test_set="t", mode="execute")
+    result = runner._wait_for_model_ready(
+        client,  # type: ignore[arg-type]
+        "m",
+        spec,
+        _report(),
+        created_by_harness=True,
+        reused=False,
+    )
+    assert result.unavailable_reason == "churn"
+    # Ceiling = 2 * 1.0 + 0.5 = 2.5 from the first appearance at t = 0.
+    assert clock["t"] == pytest.approx(2.5)
+
+
 def test_wait_for_model_ready_ignores_preexisting_instance_on_forced_placement() -> None:
     # A forced placement (reuse=False) must never adopt a pre-existing user-owned
     # instance that is already ready: it would run the "fresh" test against it and
@@ -3929,3 +4024,4 @@ def test_not_ready_message_names_each_cause() -> None:
     assert "not re-placed" in msg("disappeared_without_replacement").lower()
     assert "failed while loading" in msg("load_failed").lower()
     assert "readiness timeout" in msg("ready_timeout").lower()
+    assert "churn" in msg("churn").lower()
