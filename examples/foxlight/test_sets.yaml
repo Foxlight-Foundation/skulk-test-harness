@@ -1047,10 +1047,11 @@ test_sets:
   concurrency:
     name: concurrency
     description: >
-      Throughput-vs-concurrency sweep at fixed levels 1, 4, 8, 32, 64. Records
-      aggregate tok/s, per-request decode p50/p90, and TTFT p50/p90 per level,
-      keyed by model x engine x hardware, so the curve composes with the online
-      performance envelope.
+      Throughput-vs-concurrency sweep at fixed levels 1, 4, 8, 16, 32, 64.
+      Records aggregate tok/s, per-request decode p50/p90, and TTFT p50/p90 per
+      level, keyed by model x engine x hardware, so the curve composes with the
+      online performance envelope. Output health counts visible plus separated
+      reasoning text so a reasoning model is not marked failed while generating.
     tests:
       - name: concurrent-1
         kind: concurrent
@@ -1067,7 +1068,8 @@ test_sets:
         enable_thinking: false
         repetitions: 1
         success:
-          min_chars: 500
+          min_chars: 1
+          min_generated_chars: 500
       - name: concurrent-4
         kind: concurrent
         concurrency: 4
@@ -1079,7 +1081,8 @@ test_sets:
         enable_thinking: false
         repetitions: 1
         success:
-          min_chars: 500
+          min_chars: 1
+          min_generated_chars: 500
       - name: concurrent-8
         kind: concurrent
         concurrency: 8
@@ -1091,7 +1094,8 @@ test_sets:
         enable_thinking: false
         repetitions: 1
         success:
-          min_chars: 500
+          min_chars: 1
+          min_generated_chars: 500
       - name: concurrent-16
         kind: concurrent
         concurrency: 16
@@ -1103,7 +1107,8 @@ test_sets:
         enable_thinking: false
         repetitions: 1
         success:
-          min_chars: 500
+          min_chars: 1
+          min_generated_chars: 500
       - name: concurrent-32
         kind: concurrent
         concurrency: 32
@@ -1115,7 +1120,8 @@ test_sets:
         enable_thinking: false
         repetitions: 1
         success:
-          min_chars: 500
+          min_chars: 1
+          min_generated_chars: 500
       - name: concurrent-64
         kind: concurrent
         concurrency: 64
@@ -1127,7 +1133,8 @@ test_sets:
         enable_thinking: false
         repetitions: 1
         success:
-          min_chars: 500
+          min_chars: 1
+          min_generated_chars: 500
 
   # --- Concurrency sweep for REASONING models (e.g. gpt-oss-120b). Identical to
   # `concurrency` but with a reasoning-sized token budget: a harmony/reasoning
@@ -1227,7 +1234,8 @@ test_sets:
     name: concurrency-16
     description: >
       Throughput-vs-concurrency sweep capped at 1/4/8/16, for the MLX batch
-      path whose admission cap is 16. Same prompt/token budget as `concurrency`.
+      path whose admission cap is 16. Same prompt/token budget as `concurrency`;
+      output health counts visible plus separated reasoning text.
     tests:
       - name: concurrent-1
         kind: concurrent
@@ -1244,7 +1252,8 @@ test_sets:
         enable_thinking: false
         repetitions: 1
         success:
-          min_chars: 500
+          min_chars: 1
+          min_generated_chars: 500
       - name: concurrent-4
         kind: concurrent
         concurrency: 4
@@ -1256,7 +1265,8 @@ test_sets:
         enable_thinking: false
         repetitions: 1
         success:
-          min_chars: 500
+          min_chars: 1
+          min_generated_chars: 500
       - name: concurrent-8
         kind: concurrent
         concurrency: 8
@@ -1268,7 +1278,8 @@ test_sets:
         enable_thinking: false
         repetitions: 1
         success:
-          min_chars: 500
+          min_chars: 1
+          min_generated_chars: 500
       - name: concurrent-16
         kind: concurrent
         concurrency: 16
@@ -1280,7 +1291,8 @@ test_sets:
         enable_thinking: false
         repetitions: 1
         success:
-          min_chars: 500
+          min_chars: 1
+          min_generated_chars: 500
 
   tool-served-check:
     name: tool-served-check

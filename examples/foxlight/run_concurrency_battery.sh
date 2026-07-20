@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Throughput-vs-concurrency battery: non-MTP text generators across a range of
 # model sizes (small -> large), on both engine families, single-rank and
-# multi-rank, swept through concurrency 1, 4, 8, 32, 64. Each cell places from
-# the store, runs the `concurrency` test set (aggregate tok/s + per-request
-# decode p50/p90 + TTFT p50/p90 per level, keyed by model x engine x hardware),
-# then tears the instance down. A failing cell fails the whole battery
-# (battery_rc) so a regression cannot look green. Results publish to the ledger.
+# multi-rank. MLX is swept through 1, 4, 8, 16 because 16 is its runtime
+# admission cap; llama.cpp retains 1, 4, 8, 16, 32, 64 for continuous-batching
+# coverage. Each cell reports aggregate tok/s + per-request decode p50/p90 +
+# TTFT p50/p90 per level, keyed by model x engine x hardware, then tears the
+# instance down. A failing cell fails the whole battery (battery_rc) so a
+# regression cannot look green. Results publish to the ledger.
 #
 # Run standalone:  ./run_concurrency_battery.sh
 # It is also invoked as the concurrency leg of run_e2e_battery.sh.
@@ -48,13 +49,13 @@ cell() {
   say "==== CELL  model-set=$mset  test-set=$tset  END (rc=$rc) ===="
 }
 
-say "CONCURRENCY BATTERY START (levels 1/4/8/32/64)"
+say "CONCURRENCY BATTERY START (MLX 1/4/8/16; GGUF 1/4/8/16/32/64)"
 
 # --- MLX, single rank (rank 0), small -> large ------------------------------
-cell concurrency-mlx            concurrency
+cell concurrency-mlx            concurrency-16
 
 # --- MLX, multiple ranks (large dense forced across Apple nodes) -------------
-cell concurrency-mlx-multinode  concurrency  "--sharding Tensor --min-nodes 2"
+cell concurrency-mlx-multinode  concurrency-16  "--sharding Tensor --min-nodes 2"
 
 # --- llama.cpp / AMD GPU node, single rank, small -> large ------------------
 cell concurrency-gguf           concurrency

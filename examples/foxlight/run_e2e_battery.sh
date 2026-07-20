@@ -106,16 +106,17 @@ cell pooled-rpc       llama-cpp        "--min-nodes 2 --instance-meta LlamaRpc"
 cell gguf-llama-cpp   llama-cpp        "--exclude-nodes kite4"
 cell mtp-served-9b    mtp-correctness  "--exclude-nodes kite4 --delete-staged-models"
 
-# --- Throughput-vs-concurrency sweep (non-MTP text, levels 1/4/8/32/64) ------
+# --- Throughput-vs-concurrency sweep (non-MTP text) --------------------------
 # The concurrency leg: same cells as run_concurrency_battery.sh, folded into the
 # e2e so every run traces the throughput-vs-concurrency curve per model x engine
-# x hardware, single-rank and multi-rank. A level that saturates (admission
-# refuses) fails its cell, which is the finding, not a flake. This leg is the
-# long pole; set SKULK_E2E_CONCURRENCY=0 to run the correctness/benchmark
-# battery without it (e.g. a quick post-merge regression pass).
+# x hardware, single-rank and multi-rank. MLX stops at 16, its runtime admission
+# cap; 32/64 only measure queue latency on that path. The continuously batching
+# GGUF path retains 32/64. A level that saturates (admission refuses) fails its
+# cell, which is the finding, not a flake. Set SKULK_E2E_CONCURRENCY=0 to run the
+# correctness/benchmark battery without this long leg.
 if [ "${SKULK_E2E_CONCURRENCY:-1}" = "1" ]; then
-  cell concurrency-mlx            concurrency
-  cell concurrency-mlx-multinode  concurrency  "--sharding Tensor --min-nodes 2"
+  cell concurrency-mlx            concurrency-16
+  cell concurrency-mlx-multinode  concurrency-16  "--sharding Tensor --min-nodes 2"
   cell concurrency-gguf           concurrency
   cell concurrency-gguf-pooled    concurrency  "--min-nodes 2 --instance-meta LlamaRpc"
 else
