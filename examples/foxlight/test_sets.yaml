@@ -1068,7 +1068,7 @@ test_sets:
         enable_thinking: false
         repetitions: 1
         success:
-          min_chars: 0
+          min_chars: 1
           min_generated_chars: 500
       - name: concurrent-4
         kind: concurrent
@@ -1081,7 +1081,7 @@ test_sets:
         enable_thinking: false
         repetitions: 1
         success:
-          min_chars: 0
+          min_chars: 1
           min_generated_chars: 500
       - name: concurrent-8
         kind: concurrent
@@ -1094,7 +1094,7 @@ test_sets:
         enable_thinking: false
         repetitions: 1
         success:
-          min_chars: 0
+          min_chars: 1
           min_generated_chars: 500
       - name: concurrent-16
         kind: concurrent
@@ -1107,7 +1107,7 @@ test_sets:
         enable_thinking: false
         repetitions: 1
         success:
-          min_chars: 0
+          min_chars: 1
           min_generated_chars: 500
       - name: concurrent-32
         kind: concurrent
@@ -1120,7 +1120,7 @@ test_sets:
         enable_thinking: false
         repetitions: 1
         success:
-          min_chars: 0
+          min_chars: 1
           min_generated_chars: 500
       - name: concurrent-64
         kind: concurrent
@@ -1133,7 +1133,7 @@ test_sets:
         enable_thinking: false
         repetitions: 1
         success:
-          min_chars: 0
+          min_chars: 1
           min_generated_chars: 500
 
   # --- Concurrency sweep for REASONING models (e.g. gpt-oss-120b). Identical to
@@ -1252,7 +1252,7 @@ test_sets:
         enable_thinking: false
         repetitions: 1
         success:
-          min_chars: 0
+          min_chars: 1
           min_generated_chars: 500
       - name: concurrent-4
         kind: concurrent
@@ -1265,7 +1265,7 @@ test_sets:
         enable_thinking: false
         repetitions: 1
         success:
-          min_chars: 0
+          min_chars: 1
           min_generated_chars: 500
       - name: concurrent-8
         kind: concurrent
@@ -1278,7 +1278,7 @@ test_sets:
         enable_thinking: false
         repetitions: 1
         success:
-          min_chars: 0
+          min_chars: 1
           min_generated_chars: 500
       - name: concurrent-16
         kind: concurrent
@@ -1291,7 +1291,7 @@ test_sets:
         enable_thinking: false
         repetitions: 1
         success:
-          min_chars: 0
+          min_chars: 1
           min_generated_chars: 500
 
   tool-served-check:

@@ -93,7 +93,7 @@ def test_mlx_concurrency_cells_stop_at_runtime_cap(script_name: str) -> None:
     assert mlx_levels == [1, 4, 8, 16]
     assert gguf_levels == [1, 4, 8, 16, 32, 64]
     assert all(
-        test.success.min_chars == 0 and test.success.min_generated_chars == 500
+        test.success.min_chars == 1 and test.success.min_generated_chars == 500
         for suite_name in ("concurrency-16", "concurrency")
         for test in test_sets.test_sets[suite_name].tests
     )
