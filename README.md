@@ -170,18 +170,20 @@ fleet_lock:
 Bracket a fleet session with the lease:
 
 ```bash
-uv run skulk-test-harness fleet acquire --branch feature/my-work
+uv run skulk-harness fleet acquire --branch feature/my-work
 # ... deploy your branch to the fleet and run batteries ...
-uv run skulk-test-harness fleet extend    # push the TTL forward on a long run
-uv run skulk-test-harness fleet release
-uv run skulk-test-harness fleet status    # see who holds it
+uv run skulk-harness fleet extend    # push the TTL forward on a long run
+uv run skulk-harness fleet release
+uv run skulk-harness fleet status    # see who holds it
 ```
 
 The mutex is git itself: acquiring commits your claim and pushes, and a rejected
 non-fast-forward push means the other side got it first (no race). The TTL is a
 safety valve so a crashed run cannot wedge the fleet forever. As a backstop,
 `run`/`goal`/stability commands refuse (in `--execute` mode) when another holder
-holds the lease; pass `--force` to override.
+holds the lease; pass `--force` to override. The
+[fleet coordination guide](https://foxlight-foundation.github.io/skulk-test-harness/guides/fleet-coordination)
+walks through the whole acquire/deploy/run/release bracket.
 
 ## Learn more
 
@@ -190,6 +192,7 @@ holds the lease; pass `--force` to override.
 | [Quickstart](https://foxlight-foundation.github.io/skulk-test-harness/quickstart) | The five-minute start, with more hand-holding |
 | [Concepts](https://foxlight-foundation.github.io/skulk-test-harness/concepts/harness-model) | How runs, sets, placements, and reports fit together |
 | [Guides](https://foxlight-foundation.github.io/skulk-test-harness/guides/first-local-run) | First local run, custom sets, stability suites, submitting to the ledger |
+| [Fleet coordination](https://foxlight-foundation.github.io/skulk-test-harness/guides/fleet-coordination) | Sharing one test fleet across operators with the git-backed lease |
 | [CLI reference](https://foxlight-foundation.github.io/skulk-test-harness/reference/cli) | Every command and flag |
 | [Troubleshooting](https://foxlight-foundation.github.io/skulk-test-harness/troubleshooting) | When something looks wrong |
 

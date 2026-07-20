@@ -28,6 +28,19 @@ from skulk_test_harness.utils import slugify
 
 DEFAULT_INGEST_URL = "https://skulk-ledger-ingest.thomastupper92618.workers.dev"
 
+
+def default_ingest_url() -> str:
+    """Resolve the ingest API base URL at call time.
+
+    Precedence: the ``SKULK_INGEST_URL`` environment variable, then the
+    built-in public ledger endpoint. The env var exists so a self-hosted or
+    staging ledger can be targeted without a per-command ``--ingest-url``
+    flag; reading it at call time (not import time) keeps test overrides and
+    late environment changes effective.
+    """
+
+    return os.environ.get("SKULK_INGEST_URL") or DEFAULT_INGEST_URL
+
 #: Per-result fields that never leave the machine (generated text, local paths,
 #: and the free-form per-test ``description``, which on a custom suite can carry
 #: lab/customer context). The enum ``kind`` is safe harness vocabulary and stays.

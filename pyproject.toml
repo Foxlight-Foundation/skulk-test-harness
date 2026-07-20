@@ -1,6 +1,6 @@
 [project]
 name = "skulk-test-harness"
-version = "0.1.0"
+version = "0.2.0"
 description = "Agent-controlled end-to-end test and benchmark harness for Skulk clusters"
 readme = "README.md"
 requires-python = ">=3.13"

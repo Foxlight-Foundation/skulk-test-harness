@@ -187,3 +187,14 @@ def test_post_submission_success_and_gate_rejection(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(submit.httpx, "post", fake_reject)
     with pytest.raises(submit.SubmitError, match="422.*bad"):
         submit.post_submission({"run_id": "x"}, "tok", "https://ingest.example")
+
+
+def test_default_ingest_url_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("SKULK_INGEST_URL", raising=False)
+    assert submit.default_ingest_url() == submit.DEFAULT_INGEST_URL
+    # Read at call time, not import time, so a late env change takes effect.
+    monkeypatch.setenv("SKULK_INGEST_URL", "https://ingest.example")
+    assert submit.default_ingest_url() == "https://ingest.example"
+    # An empty value falls back rather than producing an unusable URL.
+    monkeypatch.setenv("SKULK_INGEST_URL", "")
+    assert submit.default_ingest_url() == submit.DEFAULT_INGEST_URL

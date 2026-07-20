@@ -32,7 +32,10 @@ The harness finds a token in this order:
 If you already use `gh`, there is nothing to set up.
 
 `submit` never contacts your Skulk cluster. It reads a local report file and
-talks only to the ledger's ingest API.
+talks only to the ledger's ingest API. By default that is the public
+Foxlight ledger; a self-hosted or staging ingest can be targeted with
+`--ingest-url` or the `SKULK_INGEST_URL` environment variable (the flag
+wins when both are set).
 
 ## Step 1: inspect what would be sent
 
@@ -59,7 +62,7 @@ your machine:
 | Local artifact paths | They describe your filesystem |
 | Issue evidence (run-level and result-level) | Evidence blobs can embed generated content; the ledger only renders an issue's severity and message |
 | Operator notes | Free-form text you wrote for yourself |
-| Run names, including custom labels inside the run id | A `--run-name` can carry a host, lab, or customer name; a labeled run id is replaced with a deterministic hash of the original (so resubmitting the same run still deduplicates), while default-shaped run ids like `20260709-141530-store-smoke-chat-tests` are kept as-is |
+| Run names, including custom labels inside the run id | A `--run-name` can carry a host, lab, or customer name; a labeled run id is replaced with a deterministic hash of the original (so resubmitting the same run still deduplicates), while default-shaped run ids like `20260709-141530-store-smoke-chat-tests` are kept as-is. Concretely: a run named `lab7-perf-check` submits as `20260709-141530-submitted-3f9c2a81d0`, while a default spec-derived name is left untouched |
 | Repository paths and branch names | Paths describe your machine; branch names can carry labels. The commit hash stays, because it is the precise code provenance |
 | The cluster API URL | It is your network address |
 | Node friendly names and the topology label | Names you gave your machines are identity, not hardware |
