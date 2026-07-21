@@ -99,8 +99,10 @@ Compare any two runs later:
 uv run skulk-harness compare -b runs/<baseline> -n runs/<candidate>
 ```
 
-`compare` shows per-model throughput deltas and refuses to pretend: if the
-runs used different node sets, cache states, or too few samples, it says so.
+`compare` shows only matching per-test execution-series deltas. Protocol,
+hardware, backend, placement, and metric source are part of the identity;
+mismatches are reported as not comparable instead of becoming a model-wide
+median.
 
 ## Share your results
 

@@ -40,6 +40,7 @@ TestKind = Literal[
     "speech_reference_roundtrip",
     "vision_data_plane",
 ]
+MetricSource = Literal["client_exact", "engine_reported", "client_approx"]
 RunMode = Literal["plan", "execute"]
 IssueSeverity = Literal["info", "warning", "error"]
 
@@ -849,7 +850,28 @@ class PlacementResult(HarnessBaseModel):
     instance_id: str | None = None
     node_ids: list[str] = Field(default_factory=list)
     runner_ids: list[str] = Field(default_factory=list)
-    sharding: str | None = None
+    resolved_backends: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Sorted placement-resolved backend tags recorded on the instance's "
+            "runner shards. Empty means the replicated state did not record a "
+            "backend; consumers must not infer one."
+        ),
+    )
+    shard_types: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Sorted tagged shard metadata types observed in runnerToShard. Empty "
+            "means the shard metadata was unavailable or malformed."
+        ),
+    )
+    sharding: str | None = Field(
+        default=None,
+        description=(
+            "Observed placement sharding family derived from the recorded shard "
+            "metadata tags. None means the state did not establish it."
+        ),
+    )
     instance_meta: str | None = None
     reused_existing: bool = False
     created_by_harness: bool = False
@@ -909,7 +931,30 @@ class GenerationMetrics(HarnessBaseModel):
     generated_chars: int = 0
     chunks: int = 0
     approx_output_tokens: int | None = None
-    wall_tps: float | None = None
+    decode_elapsed_s: float | None = Field(
+        default=None,
+        description=(
+            "Client wall-clock seconds from the first generated text chunk to "
+            "stream termination. Null when the streamed decode interval was not "
+            "measurable."
+        ),
+    )
+    observed_decode_tps: float | None = Field(
+        default=None,
+        description=(
+            "Exact client-observed decode rate: skulk_generation_tokens divided "
+            "by decode_elapsed_s. Null unless exact tokens and at least two "
+            "generated stream chunks were observed."
+        ),
+    )
+    wall_tps: float | None = Field(
+        default=None,
+        description=(
+            "Legacy approximate client decode rate: the character-derived token "
+            "estimate divided by the wall-clock interval after TTFT. It is not "
+            "interchangeable with exact observed or engine-reported TPS."
+        ),
+    )
     skulk_prompt_tps: float | None = None
     skulk_generation_tps: float | None = None
     skulk_prompt_tokens: int | None = None
@@ -1009,6 +1054,20 @@ class TestResult(HarnessBaseModel):
         description=(
             "Human explanation of what this test checks, copied from its "
             "PromptTest. Empty when the test declares none."
+        ),
+    )
+    protocol_id: str | None = Field(
+        default=None,
+        description=(
+            "SHA-256 of the effective request configuration, including the "
+            "concurrency level. The preimage is never written to the report."
+        ),
+    )
+    protocol_family_id: str | None = Field(
+        default=None,
+        description=(
+            "SHA-256 of the same effective request configuration with only the "
+            "concurrency level omitted, so one sweep's levels can be grouped."
         ),
     )
     repetition: int
@@ -1128,6 +1187,7 @@ class ReportFingerprint(HarnessBaseModel):
 class RunReport(HarnessBaseModel):
     """Complete machine-readable report for one harness run."""
 
+    report_schema_version: Literal["1.0"] = "1.0"
     run_id: str
     started_at: datetime
     finished_at: datetime | None = None
@@ -1173,7 +1233,36 @@ ComparisonGuardKind = Literal[
     "decode_tps_unavailable",
     "missing_fingerprint",
     "model_only_one_side",
+    "series_identity_incomplete",
+    "series_only_one_side",
 ]
+
+
+class ComparisonHardwareNode(HarnessBaseModel):
+    """Hardware facts for one node participating in a compared placement."""
+
+    accelerator_vendor: str | None = None
+    accelerator_name: str | None = None
+    ram_total_bytes: int | None = None
+    vram_total_bytes: int | None = None
+    gtt_total_bytes: int | None = None
+
+
+class ComparisonSeriesIdentity(HarnessBaseModel):
+    """Exact execution-series boundary used by ``skulk-harness compare``."""
+
+    series_id: str
+    model_id: str
+    test_set: str
+    test_name: str
+    protocol_id: str | None = None
+    metric_source: MetricSource
+    hardware: list[ComparisonHardwareNode] = Field(default_factory=list)
+    resolved_backends: list[str] = Field(default_factory=list)
+    instance_meta: str | None = None
+    sharding: str | None = None
+    shard_types: list[str] = Field(default_factory=list)
+    complete: bool = False
 
 
 class MetricAggregate(HarnessBaseModel):
@@ -1196,10 +1285,12 @@ class MetricAggregate(HarnessBaseModel):
 
 
 class ModelMetricSummary(HarnessBaseModel):
-    """All headline metrics for one model within one run set."""
+    """Metrics for one exact test execution series within one run set."""
 
     model_id: str
+    series: ComparisonSeriesIdentity | None = None
     run_ids: list[str] = Field(default_factory=list)
+    repetition_count: int = 0
     pass_count: int = 0
     fail_count: int = 0
     issue_count: int = 0
@@ -1221,9 +1312,10 @@ class MetricDelta(HarnessBaseModel):
 
 
 class ModelComparison(HarnessBaseModel):
-    """Like-for-like comparison of one model across two run sets."""
+    """Like-for-like comparison of one exact series across two run sets."""
 
     model_id: str
+    series: ComparisonSeriesIdentity | None = None
     deltas: list[MetricDelta] = Field(default_factory=list)
     guards: list[ComparisonGuardKind] = Field(default_factory=list)
     baseline_summary: ModelMetricSummary | None = None

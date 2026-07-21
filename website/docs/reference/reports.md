@@ -5,6 +5,9 @@ title: Reports
 Every normal harness plan or run writes a report directory under `output_dir`.
 The default output directory is `runs/`.
 
+Normal run reports carry `report_schema_version: "1.0"`. This is independent
+of `fingerprint.schema_version`, which versions only the environment block.
+
 ## Directory Shape
 
 ```text
@@ -59,13 +62,35 @@ time instead of being reduced to a pass/fail threshold.
 | Metric | Meaning |
 | --- | --- |
 | `ttft_s` | Time to first token in seconds |
-| `wall_tps` | Approximate decode tokens per second from wall-clock timing |
+| `decode_elapsed_s` | Client wall time from the first generated text chunk through stream termination |
+| `observed_decode_tps` | Exact `skulk_generation_tokens / decode_elapsed_s`; null without exact tokens or at least two generated chunks |
+| `wall_tps` | Legacy approximate decode rate: character-derived tokens divided by the client interval after TTFT |
 | `skulk_prompt_tps` | Prompt throughput reported by Skulk when available |
-| `skulk_generation_tps` | Generation throughput reported by Skulk when available |
+| `skulk_generation_tps` | Engine-reported generation throughput when available |
 | `output_chars` | Visible output character count |
 | `generated_chars` | Visible plus separated reasoning character count |
 | `chunks` | Number of streamed chunks observed |
 | `word_error_rate` | STT transcript edit distance divided by source-prompt word count for a speech roundtrip |
+
+These are distinct sources. `observed_decode_tps` combines the engine's exact
+token count with the client's streamed interval. `skulk_generation_tps` is an
+engine diagnostic. `wall_tps` estimates one token per four generated
+characters. Consumers must label the source and never silently substitute one
+for another.
+
+## Protocol Identity
+
+Every new result records two privacy-preserving SHA-256 identifiers:
+
+| Field | Meaning |
+| --- | --- |
+| `protocol_id` | Hash of the effective request configuration, including concurrency |
+| `protocol_family_id` | The same contract with only concurrency omitted, so one sweep can group its levels |
+
+The hash includes request-affecting inputs and resolved harness defaults. Test
+names, descriptions, scoring thresholds, repetition count, and concurrency
+level (family id only) are excluded. Reports contain only the hashes and safe
+labels, never the prompt-bearing preimage.
 
 For a `kind: concurrent` test the same block also carries the load aggregates
 below (all `null` for single-request tests). The aggregate throughput is also
@@ -149,6 +174,11 @@ result to the machines that produced it; this is how the
 [community ledger](../guides/submit-to-the-ledger.md) labels a submitted run
 with its real hardware.
 
+Placements also carry `resolved_backends`, `shard_types`, `sharding`, and
+`instance_meta` from replicated placement state. Empty or null means the state
+did not establish that fact; the harness does not guess it from a host or model
+name.
+
 ### `cache_state`
 
 The store and instance cache conditions, recorded from the run's own flags.
@@ -163,8 +193,8 @@ The store and instance cache conditions, recorded from the run's own flags.
 
 The classification is deliberately conservative: it distinguishes what the
 run REQUESTED from any claim of controlled conditions, and it never asserts
-`cold` from flags alone. `compare` uses it
-to flag [cache-mismatched comparisons](../guides/compare-runs.md#cache_mismatch).
+`cold` from flags alone. `compare` uses it to flag
+[cache-mismatched comparisons](../guides/compare-runs.md).
 
 ## A Small Result Example
 
@@ -172,16 +202,20 @@ to flag [cache-mismatched comparisons](../guides/compare-runs.md#cache_mismatch)
 {
   "model_id": "mlx-community/Qwen3.5-9B-4bit",
   "test_name": "concise-factual-answer",
+  "protocol_id": "d0b3...",
+  "protocol_family_id": "d0b3...",
   "repetition": 1,
   "passed": true,
   "output_text": "Paris",
   "metrics": {
     "elapsed_s": 1.42,
     "ttft_s": 0.81,
+    "decode_elapsed_s": 0.61,
+    "observed_decode_tps": 47.5,
     "output_chars": 5,
     "generated_chars": 5,
     "chunks": 2,
-    "wall_tps": 18.0
+    "wall_tps": 44.3
   },
   "issues": [],
   "artifact_path": null
