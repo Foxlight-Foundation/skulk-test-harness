@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from skulk_test_harness.specs import load_test_sets
+from skulk_test_harness.specs import load_model_sets, load_test_sets
 
 
 def test_e2e_battery_stops_when_a_cell_is_interrupted(tmp_path: Path) -> None:
@@ -63,7 +63,7 @@ def test_e2e_battery_stops_when_a_cell_is_interrupted(tmp_path: Path) -> None:
     ["run_e2e_battery.sh", "run_concurrency_battery.sh"],
 )
 def test_mlx_concurrency_cells_stop_at_runtime_cap(script_name: str) -> None:
-    """MLX must use the 16-capped sweep while GGUF retains higher load."""
+    """Route each model to its engine cap and required output budget."""
     root = Path(__file__).resolve().parents[1]
     script = root / "examples" / "foxlight" / script_name
     cells = [
@@ -73,27 +73,51 @@ def test_mlx_concurrency_cells_stop_at_runtime_cap(script_name: str) -> None:
     ]
 
     assert ["cell", "concurrency-mlx", "concurrency-16"] in cells
+    assert [
+        "cell",
+        "concurrency-mlx-reasoning",
+        "concurrency-reasoning-16",
+    ] in cells
     assert any(
         cell[:3] == ["cell", "concurrency-mlx-multinode", "concurrency-16"]
         for cell in cells
     )
     assert ["cell", "concurrency-gguf", "concurrency"] in cells
+    assert ["cell", "concurrency-120b", "concurrency-reasoning"] in cells
     assert any(
-        cell[:3] == ["cell", "concurrency-gguf-pooled", "concurrency"]
+        cell[:3]
+        == ["cell", "concurrency-gguf-pooled", "concurrency-reasoning"]
         for cell in cells
     )
 
     test_sets = load_test_sets(root / "examples" / "foxlight" / "test_sets.yaml")
-    mlx_levels = [
-        test.concurrency for test in test_sets.test_sets["concurrency-16"].tests
-    ]
-    gguf_levels = [
-        test.concurrency for test in test_sets.test_sets["concurrency"].tests
-    ]
-    assert mlx_levels == [1, 4, 8, 16]
-    assert gguf_levels == [1, 4, 8, 16, 32, 64]
+    for suite_name in ("concurrency-16", "concurrency-reasoning-16"):
+        levels = [
+            test.concurrency for test in test_sets.test_sets[suite_name].tests
+        ]
+        assert levels == [1, 4, 8, 16]
+    for suite_name in ("concurrency", "concurrency-reasoning"):
+        levels = [
+            test.concurrency for test in test_sets.test_sets[suite_name].tests
+        ]
+        assert levels == [1, 4, 8, 16, 32, 64]
     assert all(
         test.success.min_chars == 1 and test.success.min_generated_chars == 500
         for suite_name in ("concurrency-16", "concurrency")
         for test in test_sets.test_sets[suite_name].tests
     )
+    assert all(
+        test.max_tokens == 1536 and test.success.min_chars == 500
+        for suite_name in ("concurrency-reasoning-16", "concurrency-reasoning")
+        for test in test_sets.test_sets[suite_name].tests
+    )
+
+    model_sets = load_model_sets(
+        root / "examples" / "foxlight" / "model_sets.yaml"
+    ).model_sets
+    mlx_reasoning_model = "mlx-community/gpt-oss-20b-MXFP4-Q8"
+    gguf_reasoning_model = "bartowski/openai_gpt-oss-120b-GGUF"
+    assert mlx_reasoning_model not in model_sets["concurrency-mlx"].models
+    assert model_sets["concurrency-mlx-reasoning"].models == [mlx_reasoning_model]
+    assert gguf_reasoning_model not in model_sets["concurrency-gguf"].models
+    assert model_sets["concurrency-120b"].models == [gguf_reasoning_model]

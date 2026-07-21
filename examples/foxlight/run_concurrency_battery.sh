@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Throughput-vs-concurrency battery: non-MTP text generators across a range of
 # model sizes (small -> large), on both engine families, single-rank and
-# multi-rank. MLX is swept through 1, 4, 8, 16 because 16 is its runtime
-# admission cap; llama.cpp retains 1, 4, 8, 16, 32, 64 for continuous-batching
+# multi-rank. MLX is swept through 1, 4, 8, 16 because fleet policy sets
+# SKULK_MAX_CONCURRENT_REQUESTS=16 (the Skulk code default is 8); llama.cpp
+# retains 1, 4, 8, 16, 32, 64 for continuous-batching
 # coverage. Each cell reports aggregate tok/s + per-request decode p50/p90 +
 # TTFT p50/p90 per level, keyed by model x engine x hardware, then tears the
 # instance down. A failing cell fails the whole battery (battery_rc) so a
@@ -49,10 +50,13 @@ cell() {
   say "==== CELL  model-set=$mset  test-set=$tset  END (rc=$rc) ===="
 }
 
-say "CONCURRENCY BATTERY START (MLX 1/4/8/16; GGUF 1/4/8/16/32/64)"
+say "CONCURRENCY BATTERY START (MLX 1/4/8/16; GGUF 1/4/8/16/32/64; reasoning-sized output budgets)"
 
 # --- MLX, single rank (rank 0), small -> large ------------------------------
 cell concurrency-mlx            concurrency-16
+
+# --- MLX reasoning, single rank (larger budget, still capped at 16) ---------
+cell concurrency-mlx-reasoning  concurrency-reasoning-16
 
 # --- MLX, multiple ranks (large dense forced across Apple nodes) -------------
 cell concurrency-mlx-multinode  concurrency-16  "--sharding Tensor --min-nodes 2"
@@ -60,8 +64,11 @@ cell concurrency-mlx-multinode  concurrency-16  "--sharding Tensor --min-nodes 2
 # --- llama.cpp / AMD GPU node, single rank, small -> large ------------------
 cell concurrency-gguf           concurrency
 
+# --- llama.cpp / AMD reasoning model, single rank (larger output budget) ----
+cell concurrency-120b           concurrency-reasoning
+
 # --- llama.cpp / AMD, multiple ranks (RPC memory pooling, driver + donor) ---
-cell concurrency-gguf-pooled    concurrency  "--min-nodes 2 --instance-meta LlamaRpc"
+cell concurrency-gguf-pooled    concurrency-reasoning  "--min-nodes 2 --instance-meta LlamaRpc"
 
 say "CONCURRENCY BATTERY COMPLETE (rc=$battery_rc)"
 
