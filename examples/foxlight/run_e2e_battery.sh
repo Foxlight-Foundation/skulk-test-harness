@@ -111,14 +111,18 @@ cell mtp-served-9b    mtp-correctness  "--exclude-nodes kite4 --delete-staged-mo
 # e2e so every run traces the throughput-vs-concurrency curve per model x engine
 # x hardware, single-rank and multi-rank. MLX stops at 16, its runtime admission
 # cap; 32/64 only measure queue latency on that path. The continuously batching
-# GGUF path retains 32/64. A level that saturates (admission refuses) fails its
-# cell, which is the finding, not a flake. Set SKULK_E2E_CONCURRENCY=0 to run the
-# correctness/benchmark battery without this long leg.
+# GGUF path retains 32/64. Non-toggleable reasoning cards use a larger output
+# budget so the sweep measures completed visible output instead of truncated
+# analysis. A level that saturates (admission refuses) fails its cell, which is
+# the finding, not a flake. Set SKULK_E2E_CONCURRENCY=0 to run the correctness/
+# benchmark battery without this long leg.
 if [ "${SKULK_E2E_CONCURRENCY:-1}" = "1" ]; then
   cell concurrency-mlx            concurrency-16
+  cell concurrency-mlx-reasoning  concurrency-reasoning-16
   cell concurrency-mlx-multinode  concurrency-16  "--sharding Tensor --min-nodes 2"
   cell concurrency-gguf           concurrency
-  cell concurrency-gguf-pooled    concurrency  "--min-nodes 2 --instance-meta LlamaRpc"
+  cell concurrency-120b           concurrency-reasoning
+  cell concurrency-gguf-pooled    concurrency-reasoning  "--min-nodes 2 --instance-meta LlamaRpc"
 else
   say "==== CONCURRENCY LEG SKIPPED (SKULK_E2E_CONCURRENCY=0) ===="
 fi
