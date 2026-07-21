@@ -516,6 +516,7 @@ class _ChatStreamParser:
         self._cancel_after_chunks = cancel_after_chunks
         self._start = time.monotonic()
         self._first_token_at: float | None = None
+        self._last_token_at: float | None = None
         self._output_parts: list[str] = []
         self._reasoning_parts: list[str] = []
         self._tool_calls: list[ToolCallRecord] = []
@@ -559,8 +560,10 @@ class _ChatStreamParser:
         content, reasoning, event_tool_calls = _extract_stream_delta(event)
         text_for_timing = content or reasoning
         if text_for_timing:
+            observed_at = time.monotonic()
             if self._first_token_at is None:
-                self._first_token_at = time.monotonic()
+                self._first_token_at = observed_at
+            self._last_token_at = observed_at
             self._chunks += 1
         if event_tool_calls and self._first_token_at is None:
             self._first_token_at = time.monotonic()
@@ -599,6 +602,13 @@ class _ChatStreamParser:
             generated_chars=generated_chars,
             chunks=self._chunks,
             approx_output_tokens=approx_tokens,
+            decode_elapsed_s=(
+                self._last_token_at - self._first_token_at
+                if self._chunks >= 2
+                and self._last_token_at is not None
+                and self._first_token_at is not None
+                else None
+            ),
             wall_tps=wall_tps,
         )
         if isinstance(self._stream_stats, dict):
@@ -618,6 +628,7 @@ class _ChatStreamParser:
                     ),
                 }
             )
+        metrics = _with_observed_decode_rate(metrics)
         return ChatExecution(
             text=text,
             reasoning_text=reasoning_text,
@@ -1191,6 +1202,9 @@ class SkulkClient:
                 continue
             node_to_runner = assignments.get("nodeToRunner")
             runner_to_shard = assignments.get("runnerToShard")
+            resolved_backends, shard_types, sharding = _placement_profile(
+                runner_to_shard
+            )
             ready, runner_failure_messages = _instance_runner_summary(state, body)
             placements.append(
                 PlacementResult(
@@ -1202,6 +1216,9 @@ class SkulkClient:
                     runner_ids=list(runner_to_shard)
                     if isinstance(runner_to_shard, dict)
                     else [],
+                    resolved_backends=resolved_backends,
+                    shard_types=shard_types,
+                    sharding=sharding,
                     instance_meta=tag,
                     reused_existing=True,
                     ready=ready,
@@ -1255,6 +1272,7 @@ class SkulkClient:
             return None
         node_to_runner = assignments.get("nodeToRunner")
         runner_to_shard = assignments.get("runnerToShard")
+        resolved_backends, shard_types, sharding = _placement_profile(runner_to_shard)
         model_id = str(assignments.get("modelId") or "")
         tag = _get_instance_tag(state, instance_id)
         ready, runner_failure_messages = _instance_runner_summary(state, body)
@@ -1265,6 +1283,9 @@ class SkulkClient:
             runner_ids=list(runner_to_shard)
             if isinstance(runner_to_shard, dict)
             else [],
+            resolved_backends=resolved_backends,
+            shard_types=shard_types,
+            sharding=sharding,
             instance_meta=tag,
             ready=ready,
             terminal_failure=bool(runner_failure_messages),
@@ -2552,6 +2573,71 @@ def _instance_runner_summary(
         elif tag not in {"RunnerReady", "RunnerRunning"}:
             ready = False
     return ready, failure_messages
+
+
+def _placement_profile(
+    runner_to_shard: object,
+) -> tuple[list[str], list[str], str | None]:
+    """Extract only placement facts explicitly recorded in runner shard state."""
+
+    if not isinstance(runner_to_shard, dict) or not runner_to_shard:
+        return [], [], None
+
+    shard_types: set[str] = set()
+    resolved_backends: set[str] = set()
+    complete_shards = True
+    complete_backends = True
+    for raw_shard in runner_to_shard.values():
+        parsed = unwrap_tagged(raw_shard)
+        if parsed is None:
+            complete_shards = False
+            complete_backends = False
+            continue
+        shard_type, shard = parsed
+        shard_types.add(shard_type)
+        backend = shard.get("resolvedBackend")
+        if isinstance(backend, str) and backend:
+            resolved_backends.add(backend)
+        else:
+            complete_backends = False
+
+    sharding: str | None = None
+    if complete_shards and shard_types:
+        if shard_types == {"TensorShardMetadata"}:
+            sharding = "Tensor"
+        elif shard_types <= {
+            "PipelineShardMetadata",
+            "CfgShardMetadata",
+            "RpcDonorShardMetadata",
+        }:
+            sharding = "Pipeline"
+
+    return (
+        sorted(resolved_backends) if complete_backends else [],
+        sorted(shard_types),
+        sharding,
+    )
+
+
+def _with_observed_decode_rate(metrics: GenerationMetrics) -> GenerationMetrics:
+    """Attach exact client-observed decode timing when the stream proves it."""
+
+    tokens = metrics.skulk_generation_tokens
+    decode_elapsed_s = metrics.decode_elapsed_s
+    if (
+        metrics.ttft_s is None
+        or metrics.chunks < 2
+        or tokens is None
+        or tokens <= 0
+        or decode_elapsed_s is None
+        or decode_elapsed_s <= 0
+    ):
+        return metrics
+    return metrics.model_copy(
+        update={
+            "observed_decode_tps": tokens / decode_elapsed_s,
+        }
+    )
 
 
 def _float_or_none(value: object) -> float | None:
