@@ -1229,7 +1229,8 @@ test_sets:
   # --- Reasoning-sized sweep capped at 16 for MLX. GPT-OSS cannot disable its
   # analysis channel, so the ordinary 384-token budget can end before visible
   # final output. The 1536-token budget measures completed output; levels above
-  # the MLX admission cap would only measure queue latency.
+  # the fleet policy SKULK_MAX_CONCURRENT_REQUESTS=16 (Skulk code default: 8)
+  # would only measure queue latency.
   concurrency-reasoning-16:
     name: concurrency-reasoning-16
     description: >
@@ -1285,16 +1286,18 @@ test_sets:
         success:
           min_chars: 500
 
-  # --- Concurrency capped at 16 (for MLX, whose runtime batches up to
-  # SKULK_MAX_CONCURRENT_REQUESTS=16). Beyond the batch cap the MLX path just
-  # queues, so testing past 16 measures queue latency, not the engine. AMD uses
-  # the full `concurrency` set (up to 64), where continuous batching scales.
+  # --- Concurrency capped at 16 for the fleet policy
+  # SKULK_MAX_CONCURRENT_REQUESTS=16 (Skulk code default: 8). Beyond the fleet
+  # cap the MLX path just queues, so testing past 16 measures queue latency, not
+  # the engine. AMD uses the full `concurrency` set (up to 64), where continuous
+  # batching scales.
   concurrency-16:
     name: concurrency-16
     description: >
-      Throughput-vs-concurrency sweep capped at 1/4/8/16, for the MLX batch
-      path whose admission cap is 16. Same prompt/token budget as `concurrency`;
-      output health counts visible plus separated reasoning text.
+      Throughput-vs-concurrency sweep capped at 1/4/8/16 for the MLX fleet
+      policy SKULK_MAX_CONCURRENT_REQUESTS=16 (Skulk code default: 8). Same
+      prompt/token budget as `concurrency`; output health counts visible plus
+      separated reasoning text.
     tests:
       - name: concurrent-1
         kind: concurrent

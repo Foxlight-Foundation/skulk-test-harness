@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Throughput-vs-concurrency battery: non-MTP text generators across a range of
 # model sizes (small -> large), on both engine families, single-rank and
-# multi-rank. MLX is swept through 1, 4, 8, 16 because 16 is its runtime
-# admission cap; llama.cpp retains 1, 4, 8, 16, 32, 64 for continuous-batching
+# multi-rank. MLX is swept through 1, 4, 8, 16 because fleet policy sets
+# SKULK_MAX_CONCURRENT_REQUESTS=16 (the Skulk code default is 8); llama.cpp
+# retains 1, 4, 8, 16, 32, 64 for continuous-batching
 # coverage. Each cell reports aggregate tok/s + per-request decode p50/p90 +
 # TTFT p50/p90 per level, keyed by model x engine x hardware, then tears the
 # instance down. A failing cell fails the whole battery (battery_rc) so a

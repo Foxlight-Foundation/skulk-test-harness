@@ -362,7 +362,8 @@ model_sets:
     description: >-
       Single-node MLX reasoning model. Pair with concurrency-reasoning-16 so
       GPT-OSS has enough output budget to finish its non-disableable analysis
-      while the MLX sweep remains capped at the runtime admission limit.
+      while the MLX sweep remains capped at the fleet policy
+      SKULK_MAX_CONCURRENT_REQUESTS=16 (Skulk code default: 8).
     models:
       - mlx-community/gpt-oss-20b-MXFP4-Q8
 
