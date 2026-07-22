@@ -121,20 +121,11 @@ model_sets:
 
   vision:
     name: vision
-    description: Vision-capable models from distinct architecture families.
+    description: Every model whose resolved catalog metadata declares vision input.
     selectors:
       - source: both
-        id_regex: "Qwen3-VL-4B-Instruct-4bit"
-        max_models: 1
-      - source: both
-        id_regex: "Qwen3\\.5-2B-4bit"
-        max_models: 1
-      - source: both
-        id_regex: "gemma-3n-E2B-it-4bit"
-        max_models: 1
-      - source: both
-        id_regex: "Kimi-K2\\.5$"
-        max_models: 1
+        capabilities_any:
+          - vision
 
   served-spec-draft-simple:
     name: served-spec-draft-simple

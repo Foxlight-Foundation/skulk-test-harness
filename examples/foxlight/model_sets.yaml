@@ -176,6 +176,16 @@ model_sets:
       - mlx-community/gemma-3n-E2B-it-4bit
       - mlx-community/Kimi-K2.5
 
+  vision-inventory:
+    name: vision-inventory
+    description: >-
+      Every catalog/store model declaring resolved vision capability. Use this
+      for the exhaustive placeability and API/dashboard qualification pass.
+    selectors:
+      - source: both
+        capabilities_any:
+          - vision
+
   served-spec-draft-simple:
     name: served-spec-draft-simple
     description: Models whose cards declare llama_server draft_simple speculation.
