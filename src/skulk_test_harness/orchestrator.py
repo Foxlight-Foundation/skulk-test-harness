@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import concurrent.futures
 import io
 import json
@@ -44,6 +45,7 @@ from skulk_test_harness.models import (
     OwnerTopology,
     PlacementPolicy,
     PlacementResult,
+    PromptImage,
     PromptTest,
     RunReport,
     RunSpec,
@@ -4390,12 +4392,29 @@ def _messages_for_test(test: PromptTest) -> list[dict[str, object]]:
         return messages
     content: list[dict[str, object]] = [{"type": "text", "text": prompt}]
     for image in test.images:
-        image_url: dict[str, object] = {"url": image.url}
+        image_url: dict[str, object] = {"url": _prompt_image_url(image)}
         if image.detail is not None:
             image_url["detail"] = image.detail
         content.append({"type": "image_url", "image_url": image_url})
     messages.append({"role": "user", "content": content})
     return messages
+
+
+def _prompt_image_url(image: PromptImage) -> str:
+    """Return a request-ready URL, encoding a local fixture when configured."""
+    if image.url is not None:
+        return image.url
+    assert image.input_path is not None
+    image_path = (
+        image.input_path
+        if image.input_path.is_absolute()
+        else Path.cwd() / image.input_path
+    )
+    media_type = image.media_type or mimetypes.guess_type(image_path)[0]
+    if media_type is None or not media_type.startswith("image/"):
+        raise ValueError(f"Unable to determine image media type for {image_path}")
+    encoded = base64.b64encode(image_path.read_bytes()).decode("ascii")
+    return f"data:{media_type};base64,{encoded}"
 
 
 def _resolve_audio_input_path(path: Path) -> Path:

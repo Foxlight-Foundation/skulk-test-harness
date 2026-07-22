@@ -1,4 +1,6 @@
 import asyncio
+import base64
+import hashlib
 import io
 import json
 import math
@@ -958,16 +960,73 @@ def test_chat_and_llama_concise_tests_have_reasoning_budget() -> None:
         assert concise.max_tokens >= 256
 
 
-def test_vision_smoke_fixture_expects_blue_square() -> None:
+def test_vision_suite_uses_real_portrait_and_strict_semantic_checks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     root = Path(__file__).parents[1]
-    test_sets = load_test_sets(root / "configs/test_sets.yaml").test_sets
-    vision = test_sets["vision"].tests[0]
-    data_plane = test_sets["vision-data-plane"].tests[0]
+    monkeypatch.chdir(root)
+    expected_hash = "90636c8a7c9032fdef45f65fa3c2f84887ed1d111742d7e6ecf2c33f3f34d113"
 
-    assert vision.success.required_substrings == ["blue"]
-    assert "ABAAAAAQ" in vision.images[0].url
-    assert data_plane.kind == "vision_data_plane"
-    assert data_plane.success.required_substrings == ["blue"]
+    for test_sets_path in (
+        root / "configs/test_sets.yaml",
+        root / "examples/foxlight/test_sets.yaml",
+    ):
+        test_sets = load_test_sets(test_sets_path).test_sets
+        vision = test_sets["vision"].tests[0]
+        data_plane = test_sets["vision-data-plane"].tests[0]
+
+        assert vision.name == "real-portrait-identification"
+        assert vision.images[0].input_path == Path(
+            "fixtures/vision/elon-musk-portrait.png"
+        )
+        assert len(vision.success.required_regexes) == 4
+        assert data_plane.kind == "vision_data_plane"
+        assert data_plane.success.required_regexes == vision.success.required_regexes
+
+        correct_response = (
+            "The image shows Elon Musk wearing a dark suit jacket and a white "
+            "collared shirt against a black background."
+        )
+        assert (
+            _score_output(
+                "vision-model",
+                vision.name,
+                correct_response,
+                vision.success,
+            )
+            == []
+        )
+        hallucinated_response = (
+            "Elon Musk is standing in a bedroom with furniture and a potted plant."
+        )
+        assert _score_output(
+            "vision-model",
+            vision.name,
+            hallucinated_response,
+            vision.success,
+        )
+
+        messages = _messages_for_test(vision)
+        content = messages[-1]["content"]
+        assert isinstance(content, list)
+        image_part = content[1]
+        image_url = image_part["image_url"]["url"]
+        assert isinstance(image_url, str)
+        prefix, encoded = image_url.split(",", maxsplit=1)
+        assert prefix == "data:image/png;base64"
+        assert hashlib.sha256(base64.b64decode(encoded)).hexdigest() == expected_hash
+
+
+def test_foxlight_vision_model_set_spans_three_families() -> None:
+    root = Path(__file__).parents[1]
+    model_sets = load_model_sets(root / "examples/foxlight/model_sets.yaml").model_sets
+
+    assert model_sets["vision"].models == [
+        "mlx-community/Qwen3-VL-4B-Instruct-4bit",
+        "mlx-community/Qwen3.5-2B-4bit",
+        "mlx-community/gemma-3n-E2B-it-4bit",
+        "mlx-community/Kimi-K2.5",
+    ]
 
 
 def test_default_placement_appearance_timeout_handles_large_cached_models() -> None:

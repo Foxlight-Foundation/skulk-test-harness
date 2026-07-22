@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 PlacementStrategy = Literal["minimum", "single", "exact"]
 ShardingMode = Literal["Pipeline", "Tensor"]
@@ -443,12 +443,35 @@ class ToolMock(HarnessBaseModel):
 class PromptImage(HarnessBaseModel):
     """OpenAI-style image input attached to a chat prompt."""
 
-    url: str = Field(
+    url: str | None = Field(
+        default=None,
         description=(
             "Image URL or data URL sent as an OpenAI `image_url` content part."
         )
     )
+    input_path: Path | None = Field(
+        default=None,
+        description=(
+            "Local image fixture encoded as a data URL before the request. "
+            "Relative paths resolve from the harness working directory."
+        ),
+    )
+    media_type: str | None = Field(
+        default=None,
+        description=(
+            "Optional MIME type for `input_path`; inferred from its extension "
+            "when omitted."
+        ),
+    )
     detail: Literal["auto", "low", "high"] | None = None
+
+    @model_validator(mode="after")
+    def _exactly_one_image_source(self) -> "PromptImage":
+        if (self.url is None) == (self.input_path is None):
+            raise ValueError("PromptImage requires exactly one of url or input_path")
+        if self.media_type is not None and self.input_path is None:
+            raise ValueError("PromptImage.media_type requires input_path")
+        return self
 
 
 class PromptTest(HarnessBaseModel):

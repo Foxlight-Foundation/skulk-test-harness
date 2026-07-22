@@ -943,22 +943,32 @@ test_sets:
   vision:
     name: vision
     description: >
-      Multimodal chat coverage. Sends an OpenAI-style image_url content part and
-      asserts the model answers coherently.
+      Semantic multimodal coverage using a real portrait fixture with identity,
+      clothing, and background assertions that a text-only guess cannot satisfy.
     tests:
-      - name: image-caption-smoke
+      - name: real-portrait-identification
         kind: chat
-        system: You are a careful vision assistant.
-        prompt: What is the dominant color in this image? Answer in one word.
-        max_tokens: 64
+        system: Describe only evidence visible in the supplied image.
+        prompt: >-
+          Identify the well-known person. Give the first and last name, then
+          describe the visible jacket, shirt, and background in one sentence.
+        max_tokens: 128
         temperature: 0
         enable_thinking: false
         images:
-          - url: data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFUlEQVR42mNgYPhPIhrVMKph2GoAAJLb/wHQPqPSAAAAAElFTkSuQmCC
+          - input_path: fixtures/vision/elon-musk-portrait.png
+            media_type: image/png
         success:
-          min_chars: 3
-          required_substrings:
-            - blue
+          min_chars: 40
+          required_regexes:
+            - "(?i)\\belon\\s+musk\\b"
+            - "(?i)(\\b(dark|black|navy)\\b.{0,40}\\b(suit|jacket|blazer)\\b|\\b(suit|jacket|blazer)\\b.{0,40}\\b(dark|black|navy)\\b)"
+            - "(?i)(\\b(white|light[- ]colored)\\b.{0,30}\\b(shirt|collar)\\b|\\b(shirt|collar)\\b.{0,30}\\b(white|light[- ]colored)\\b)"
+            - "(?i)(\\b(black|dark)\\b.{0,30}\\b(background|backdrop)\\b|\\b(background|backdrop)\\b.{0,30}\\b(black|dark)\\b)"
+          forbidden_substrings:
+            - bedroom
+            - furniture
+            - potted plant
 
   vision-data-plane:
     name: vision-data-plane
@@ -969,16 +979,26 @@ test_sets:
       - name: image-local-remote-routing
         kind: vision_data_plane
         system: You are a careful vision assistant.
-        prompt: What is the dominant color in this image? Answer in one word.
-        max_tokens: 64
+        prompt: >-
+          Identify the well-known person. Give the first and last name, then
+          describe the visible jacket, shirt, and background in one sentence.
+        max_tokens: 128
         temperature: 0
         enable_thinking: false
         images:
-          - url: data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFUlEQVR42mNgYPhPIhrVMKph2GoAAJLb/wHQPqPSAAAAAElFTkSuQmCC
+          - input_path: fixtures/vision/elon-musk-portrait.png
+            media_type: image/png
         success:
-          min_chars: 3
-          required_substrings:
-            - blue
+          min_chars: 40
+          required_regexes:
+            - "(?i)\\belon\\s+musk\\b"
+            - "(?i)(\\b(dark|black|navy)\\b.{0,40}\\b(suit|jacket|blazer)\\b|\\b(suit|jacket|blazer)\\b.{0,40}\\b(dark|black|navy)\\b)"
+            - "(?i)(\\b(white|light[- ]colored)\\b.{0,30}\\b(shirt|collar)\\b|\\b(shirt|collar)\\b.{0,30}\\b(white|light[- ]colored)\\b)"
+            - "(?i)(\\b(black|dark)\\b.{0,30}\\b(background|backdrop)\\b|\\b(background|backdrop)\\b.{0,30}\\b(black|dark)\\b)"
+          forbidden_substrings:
+            - bedroom
+            - furniture
+            - potted plant
 
   served-speculation:
     name: served-speculation
