@@ -1025,7 +1025,7 @@ def test_foxlight_vision_model_set_spans_three_families() -> None:
         "mlx-community/Qwen3-VL-4B-Instruct-4bit",
         "mlx-community/Qwen3.5-2B-4bit",
         "mlx-community/gemma-3n-E2B-it-4bit",
-        "mlx-community/Kimi-K2.5",
+        "mlx-community/gemma-4-e2b-it-8bit",
     ]
     inventory_selector = model_sets["vision-inventory"].selectors[0]
     assert inventory_selector.capabilities_any == ["vision"]
