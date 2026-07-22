@@ -1027,6 +1027,14 @@ def test_foxlight_vision_model_set_spans_three_families() -> None:
         "mlx-community/gemma-3n-E2B-it-4bit",
         "mlx-community/Kimi-K2.5",
     ]
+    inventory_selector = model_sets["vision-inventory"].selectors[0]
+    assert inventory_selector.capabilities_any == ["vision"]
+    assert inventory_selector.max_models is None
+
+    public_model_sets = load_model_sets(root / "configs/model_sets.yaml").model_sets
+    public_selector = public_model_sets["vision"].selectors[0]
+    assert public_selector.capabilities_any == ["vision"]
+    assert public_selector.max_models is None
 
 
 def test_default_placement_appearance_timeout_handles_large_cached_models() -> None:
