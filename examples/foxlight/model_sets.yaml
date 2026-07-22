@@ -168,13 +168,14 @@ model_sets:
     name: vision
     description: >-
       Vision models spanning Qwen3-VL, Qwen3.5 native multimodal, Gemma 3n,
-      and Kimi families. The planner records models the current fleet cannot
-      place rather than silently dropping a family.
+      and Gemma 4 families. These explicit smoke targets are all preview-placeable
+      on the Foxlight fleet; the separate vision-inventory set records every
+      larger or platform-incompatible vision card that cannot be placed.
     models:
       - mlx-community/Qwen3-VL-4B-Instruct-4bit
       - mlx-community/Qwen3.5-2B-4bit
       - mlx-community/gemma-3n-E2B-it-4bit
-      - mlx-community/Kimi-K2.5
+      - mlx-community/gemma-4-e2b-it-8bit
 
   vision-inventory:
     name: vision-inventory
