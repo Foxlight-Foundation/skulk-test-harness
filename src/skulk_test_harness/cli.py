@@ -870,20 +870,16 @@ def _print_report_summary(report, run_dir: Path) -> None:  # noqa: ANN001
 
 
 def _print_comparison(record: ComparisonRecord) -> None:
-    """Render exact-series decode deltas plus comparability guards."""
+    """Render a ComparisonRecord: decode-tps deltas per model plus guards."""
     title = f"{record.candidate_label}  vs  {record.baseline_label}  (decode tok/s)"
     table = Table(title=title)
     table.add_column("Model")
-    table.add_column("Test")
-    table.add_column("Source")
     table.add_column("Baseline", justify="right")
     table.add_column("Candidate", justify="right")
     table.add_column("Δ", justify="right")
     table.add_column("Guards")
 
     for model in record.models:
-        test_name = model.series.test_name if model.series is not None else "-"
-        source = model.series.metric_source if model.series is not None else "-"
         decode = next((d for d in model.deltas if d.metric == "decode_tps"), None)
         base = f"{decode.baseline:.1f}" if decode and decode.baseline is not None else "-"
         cand = (
@@ -900,15 +896,7 @@ def _print_comparison(record: ComparisonRecord) -> None:
             delta = "-"
         guards = ", ".join(g.replace("_", " ") for g in model.guards) or ""
         guard_text = f"[yellow]{guards}[/yellow]" if guards else ""
-        table.add_row(
-            model.model_id.split("/")[-1],
-            test_name,
-            source.replace("_", " "),
-            base,
-            cand,
-            delta,
-            guard_text,
-        )
+        table.add_row(model.model_id.split("/")[-1], base, cand, delta, guard_text)
 
     console.print(table)
     if record.guards:

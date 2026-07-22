@@ -53,7 +53,6 @@ from skulk_test_harness.models import (
     ToolCallRecord,
     ToolMock,
 )
-from skulk_test_harness.protocol import protocol_ids
 from skulk_test_harness.reporting import ReportWriter
 from skulk_test_harness.utils import (
     extract_first_code_block,
@@ -261,9 +260,6 @@ class HarnessRunner:
             # answers instead of emitting an all-reasoning, length-capped reply.
             thinking_default = False if thinking_toggles.get(model.model_id) else None
             for test in test_set.tests:
-                protocol_id, protocol_family_id = protocol_ids(
-                    test, thinking_default=thinking_default
-                )
                 for repetition in range(1, test.repetitions + 1):
                     result = self._run_test(
                         client,
@@ -284,8 +280,6 @@ class HarnessRunner:
                             update={
                                 "kind": test.kind,
                                 "description": test.description,
-                                "protocol_id": protocol_id,
-                                "protocol_family_id": protocol_family_id,
                             }
                         )
                     )

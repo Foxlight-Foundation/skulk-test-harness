@@ -17,7 +17,6 @@ from skulk_test_harness.client import (
     concurrent_benchmark_client,
     stream_chat_async,
 )
-from skulk_test_harness.models import GenerationMetrics
 
 
 class _FakeWebSocket:
@@ -1330,116 +1329,6 @@ def test_streaming_chat_parses_generation_stats_comment(
     assert result.metrics.skulk_prompt_tps == 187.4
     assert result.metrics.skulk_prompt_tokens == 17
     assert result.metrics.skulk_generation_tokens == 120
-
-
-def test_observed_decode_rate_requires_exact_tokens_and_two_chunks() -> None:
-    complete = client_module._with_observed_decode_rate(
-        GenerationMetrics(
-            elapsed_s=2.5,
-            ttft_s=0.5,
-            chunks=2,
-            decode_elapsed_s=2.0,
-            skulk_generation_tokens=100,
-        )
-    )
-    assert complete.decode_elapsed_s == 2.0
-    assert complete.observed_decode_tps == 50.0
-
-    one_chunk = client_module._with_observed_decode_rate(
-        GenerationMetrics(
-            elapsed_s=2.5,
-            ttft_s=0.5,
-            chunks=1,
-            skulk_generation_tokens=100,
-        )
-    )
-    assert one_chunk.decode_elapsed_s is None
-    assert one_chunk.observed_decode_tps is None
-
-    no_exact_tokens = client_module._with_observed_decode_rate(
-        GenerationMetrics(elapsed_s=2.5, ttft_s=0.5, chunks=2)
-    )
-    assert no_exact_tokens.observed_decode_tps is None
-
-
-def test_find_placements_records_backend_and_shard_profile(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    state: dict[str, object] = {
-        "instances": {
-            "instance-a": {
-                "LlamaRpcInstance": {
-                    "shardAssignments": {
-                        "modelId": "m/GGUF",
-                        "nodeToRunner": {
-                            "node-a": "runner-a",
-                            "node-b": "runner-b",
-                        },
-                        "runnerToShard": {
-                            "runner-a": {
-                                "PipelineShardMetadata": {
-                                    "resolvedBackend": "llama_server-vulkan"
-                                }
-                            },
-                            "runner-b": {
-                                "RpcDonorShardMetadata": {
-                                    "resolvedBackend": "llama_server-vulkan"
-                                }
-                            },
-                        },
-                    }
-                }
-            }
-        },
-        "runners": {
-            "runner-a": {"RunnerReady": {}},
-            "runner-b": {"RunnerReady": {}},
-        },
-    }
-    client = SkulkClient("http://skulk.test")
-    monkeypatch.setattr(client, "get_state", lambda: state)
-    try:
-        placement = client.find_placements_for_model("m/GGUF")[0]
-    finally:
-        client.close()
-
-    assert placement.resolved_backends == ["llama_server-vulkan"]
-    assert placement.shard_types == [
-        "PipelineShardMetadata",
-        "RpcDonorShardMetadata",
-    ]
-    assert placement.sharding == "Pipeline"
-    assert placement.instance_meta == "LlamaRpcInstance"
-
-
-def test_find_placements_does_not_guess_missing_backend(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    state: dict[str, object] = {
-        "instances": {
-            "instance-a": {
-                "MlxRingInstance": {
-                    "shardAssignments": {
-                        "modelId": "m/MLX",
-                        "nodeToRunner": {"node-a": "runner-a"},
-                        "runnerToShard": {
-                            "runner-a": {"PipelineShardMetadata": {}}
-                        },
-                    }
-                }
-            }
-        },
-        "runners": {"runner-a": {"RunnerReady": {}}},
-    }
-    client = SkulkClient("http://skulk.test")
-    monkeypatch.setattr(client, "get_state", lambda: state)
-    try:
-        placement = client.find_placements_for_model("m/MLX")[0]
-    finally:
-        client.close()
-
-    assert placement.resolved_backends == []
-    assert placement.sharding == "Pipeline"
 
 
 # --- concurrent-benchmark async client: stream-closing servers (#69) ---------

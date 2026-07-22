@@ -90,18 +90,14 @@ def _markdown(report: RunReport) -> str:
 
     lines.extend(["", "## Placements", ""])
     if report.placements:
-        lines.append(
-            "| Model | Instance | Nodes | Backend | Sharding | Ready | Reused |"
-        )
-        lines.append("|---|---:|---:|---|---|---:|---:|")
+        lines.append("| Model | Instance | Nodes | Ready | Reused |")
+        lines.append("|---|---:|---:|---:|---:|")
         for placement in report.placements:
             lines.append(
                 "| "
                 f"`{placement.model_id}` | "
                 f"`{placement.instance_id or ''}` | "
                 f"{len(placement.node_ids)} | "
-                f"{', '.join(placement.resolved_backends) or 'unknown'} | "
-                f"{placement.sharding or 'unknown'} | "
                 f"{'yes' if placement.ready else 'no'} | "
                 f"{'yes' if placement.reused_existing else 'no'} |"
             )
@@ -111,17 +107,12 @@ def _markdown(report: RunReport) -> str:
     lines.extend(["", "## Results", ""])
     if report.results:
         lines.append(
-            "| Model | Test | Rep | Pass | TTFT s | Exact TPS | Engine TPS | Approx TPS | Protocol | WER | Content Chars | Generated Chars | Artifact |"
+            "| Model | Test | Rep | Pass | TTFT s | Wall TPS | WER | Content Chars | Generated Chars | Artifact |"
         )
-        lines.append(
-            "|---|---|---:|---:|---:|---:|---:|---:|---|---:|---:|---:|---|"
-        )
+        lines.append("|---|---|---:|---:|---:|---:|---:|---:|---:|---|")
         for result in report.results:
             metrics = result.metrics
             artifact = f"`{result.artifact_path}`" if result.artifact_path else ""
-            protocol = (
-                f"`{result.protocol_id[:12]}`" if result.protocol_id else "`legacy`"
-            )
             lines.append(
                 "| "
                 f"`{result.model_id}` | "
@@ -129,10 +120,7 @@ def _markdown(report: RunReport) -> str:
                 f"{result.repetition} | "
                 f"{'yes' if result.passed else 'no'} | "
                 f"{_fmt(metrics.ttft_s)} | "
-                f"{_fmt(metrics.observed_decode_tps)} | "
-                f"{_fmt(metrics.skulk_generation_tps)} | "
                 f"{_fmt(metrics.wall_tps)} | "
-                f"{protocol} | "
                 f"{_fmt(metrics.word_error_rate)} | "
                 f"{metrics.output_chars} | "
                 f"{metrics.generated_chars} | "
