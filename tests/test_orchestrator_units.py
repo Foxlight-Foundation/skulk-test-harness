@@ -1000,6 +1000,9 @@ def test_vision_suite_uses_real_portrait_and_strict_semantic_checks(
     hallucinated_response = (
         "Elon Musk is standing in a bedroom with furniture and a potted plant."
     )
+    leaked_visible_details_response = (
+        f"<|im_start|> image\n{correct_visible_details_response}"
+    )
 
     public_sets = load_test_sets(root / "configs/test_sets.yaml").test_sets
     public_vision = public_sets["vision"].tests[0]
@@ -1047,6 +1050,17 @@ def test_vision_suite_uses_real_portrait_and_strict_semantic_checks(
             hallucinated_response,
             vision.success,
         )
+        leaked_response = (
+            leaked_visible_details_response
+            if vision.name == "gemma4-real-portrait-visible-details"
+            else f"<|im_start|> image\n{correct_identity_response}"
+        )
+        assert _score_output(
+            "vision-model",
+            vision.name,
+            leaked_response,
+            vision.success,
+        )
 
     inventory_vision = foxlight_sets["vision-visible-details"].tests[0]
     assert inventory_vision.model_ids == []
@@ -1066,6 +1080,12 @@ def test_vision_suite_uses_real_portrait_and_strict_semantic_checks(
         hallucinated_response,
         inventory_vision.success,
     )
+    assert _score_output(
+        "vision-model",
+        inventory_vision.name,
+        leaked_visible_details_response,
+        inventory_vision.success,
+    )
 
     structured_identity = foxlight_sets["vision-structured-identity"].tests[0]
     assert structured_identity.model_ids == []
@@ -1083,6 +1103,12 @@ def test_vision_suite_uses_real_portrait_and_strict_semantic_checks(
         "vision-model",
         structured_identity.name,
         hallucinated_response,
+        structured_identity.success,
+    )
+    assert _score_output(
+        "vision-model",
+        structured_identity.name,
+        f"<|im_start|> image\n{correct_identity_response}",
         structured_identity.success,
     )
 
