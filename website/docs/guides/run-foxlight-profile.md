@@ -62,6 +62,20 @@ uv run skulk-harness run \
 
 Replace the model set and test set with the names printed by the list commands.
 
+## Shipping Transport Gate
+
+The Foxlight profile sets:
+
+```yaml
+required_data_transport: zenoh
+```
+
+That makes the production batteries qualify the same DATA transport a fresh
+Skulk installation uses by default. Before a named run, natural-language goal,
+or stability suite can mutate the cluster, the harness checks every live node
+reported by `/state`. It refuses to proceed when transport telemetry is
+missing, partially populated, mixed, or not Zenoh.
+
 ## Production Safety Checklist
 
 Before running a production battery:
@@ -70,6 +84,7 @@ Before running a production battery:
 | --- | --- |
 | Confirm the target API | Avoid running against the wrong cluster |
 | Check current cluster work | Avoid interrupting active benchmarks |
+| Confirm every live node advertises Zenoh in `/state` | The profile intentionally refuses to certify a fleet that differs from the fresh-install transport |
 | Use the wrapper scripts for standard batteries | Keep automation behavior consistent |
 | Read the final report directory | Capture failures before rerunning |
 | Avoid destructive stability suites unless scheduled | They can kill or relaunch Skulk processes |
