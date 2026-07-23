@@ -8,6 +8,9 @@ store_download_timeout_s: 14400
 store_delete_timeout_s: 30
 poll_interval_s: 2
 preview_settle_attempts: 8
+# Optional release-qualification invariant. Executed runs refuse unless every
+# live node advertises this resolved DATA transport in /state.
+# required_data_transport: zenoh
 output_dir: runs
 model_sets_path: configs/model_sets.yaml
 test_sets_path: configs/test_sets.yaml

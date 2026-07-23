@@ -7,6 +7,11 @@ model sets, test sets, config, and battery scripts that drive the 5-node
 as a worked example of a serious multi-node configuration, not as a starting
 template.
 
+Executed Foxlight runs require every live node to advertise Zenoh as its
+resolved DATA transport. This is an intentional release-qualification gate:
+the battery refuses to certify a fleet running a different transport from the
+one a fresh Skulk installation uses by default.
+
 The scripts assume that specific fleet (its node names, model store contents,
 and hardware mix) and will not run elsewhere unmodified. For your own setup,
 start from the

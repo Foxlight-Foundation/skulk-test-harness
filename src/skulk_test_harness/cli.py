@@ -132,6 +132,54 @@ def _require_fleet_or_refuse(cfg: HarnessConfig, *, force: bool) -> None:
         raise typer.Exit(code=1)
 
 
+def _require_shipping_data_transport(
+    cfg: HarnessConfig, state: dict[str, object]
+) -> None:
+    """Refuse an E2E run whose live fleet is not on the required DATA transport.
+
+    The Foxlight battery is release qualification, so testing a hand-configured
+    transport that differs from a fresh Skulk installation gives false
+    confidence. ``nodeResources`` carries each node's startup-resolved transport;
+    require a complete, uniform match before any placement or model-store
+    mutation. Generic harness profiles leave the requirement unset.
+    """
+    required = cfg.required_data_transport
+    if required is None:
+        return
+    resources = _dict_field(state, "nodeResources")
+    identities = _dict_field(state, "nodeIdentities")
+    if not resources:
+        raise ValueError(
+            f"required_data_transport={required!r}, but /state has no "
+            "nodeResources transport advertisements"
+        )
+
+    mismatches: list[str] = []
+    for node_id, raw_resource in resources.items():
+        identity = identities.get(node_id)
+        friendly_name = (
+            identity.get("friendlyName")
+            if isinstance(identity, dict)
+            and isinstance(identity.get("friendlyName"), str)
+            else node_id
+        )
+        observed = (
+            raw_resource.get("dataTransport")
+            if isinstance(raw_resource, dict)
+            else None
+        )
+        if observed != required:
+            rendered = observed if isinstance(observed, str) else "missing"
+            mismatches.append(f"{friendly_name}={rendered}")
+
+    if mismatches:
+        raise ValueError(
+            f"E2E shipping-profile violation: required DATA transport "
+            f"{required!r}, observed {', '.join(sorted(mismatches))}. Refusing "
+            "to qualify a runtime path different from the one we ship."
+        )
+
+
 def _print_lease(store: FleetLockStore) -> None:
     lease = store.read()
     now = datetime.now(UTC)
@@ -515,6 +563,15 @@ def run(
     # lease. A dry-run only reads/plans, so it never needs the fleet.
     if execute:
         _require_fleet_or_refuse(cfg, force=force)
+        if cfg.required_data_transport is not None:
+            with SkulkClient(
+                cfg.api_base_url, request_timeout_s=cfg.request_timeout_s
+            ) as client:
+                try:
+                    _require_shipping_data_transport(cfg, client.get_state())
+                except ValueError as exception:
+                    console.print(f"[bold red]REFUSED[/]: {exception}")
+                    raise typer.Exit(code=1) from exception
     # Resolve friendly names to live libp2p node IDs before building the
     # spec: placement exclusion is by node ID, but node IDs are ephemeral so a
     # battery cell can only name a node by its stable friendly name.

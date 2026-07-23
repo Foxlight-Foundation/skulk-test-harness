@@ -78,6 +78,53 @@ def test_dry_run_does_not_gate(monkeypatch, tmp_path) -> None:
     assert result.exit_code == 0
 
 
+def test_shipping_transport_requirement_accepts_uniform_fleet() -> None:
+    cfg = HarnessConfig(required_data_transport="zenoh")
+    state: dict[str, object] = {
+        "nodeResources": {
+            "peer-a": {"dataTransport": "zenoh"},
+            "peer-b": {"dataTransport": "zenoh"},
+        },
+        "nodeIdentities": {
+            "peer-a": {"friendlyName": "alpha"},
+            "peer-b": {"friendlyName": "beta"},
+        },
+    }
+
+    cli._require_shipping_data_transport(cfg, state)
+
+
+def test_shipping_transport_requirement_rejects_mixed_fleet() -> None:
+    cfg = HarnessConfig(required_data_transport="zenoh")
+    state: dict[str, object] = {
+        "nodeResources": {
+            "peer-a": {"dataTransport": "zenoh"},
+            "peer-b": {"dataTransport": "gossipsub"},
+        },
+        "nodeIdentities": {
+            "peer-a": {"friendlyName": "alpha"},
+            "peer-b": {"friendlyName": "beta"},
+        },
+    }
+
+    with pytest.raises(
+        ValueError,
+        match="shipping-profile violation.*beta=gossipsub",
+    ):
+        cli._require_shipping_data_transport(cfg, state)
+
+
+def test_shipping_transport_requirement_rejects_missing_advertisements() -> None:
+    cfg = HarnessConfig(required_data_transport="zenoh")
+
+    with pytest.raises(ValueError, match="no nodeResources transport advertisements"):
+        cli._require_shipping_data_transport(cfg, {})
+
+
+def test_generic_profile_has_no_shipping_transport_requirement() -> None:
+    cli._require_shipping_data_transport(HarnessConfig(), {})
+
+
 @pytest.mark.parametrize(
     "args",
     [
