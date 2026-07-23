@@ -1025,6 +1025,7 @@ def test_vision_suite_uses_real_portrait_and_strict_semantic_checks(
         "gemma4-real-portrait-visible-details",
     }
     for vision in foxlight_vision_tests:
+        assert vision.repetitions == 2
         correct_response = (
             correct_visible_details_response
             if vision.name == "gemma4-real-portrait-visible-details"
@@ -1047,8 +1048,51 @@ def test_vision_suite_uses_real_portrait_and_strict_semantic_checks(
             vision.success,
         )
 
+    inventory_vision = foxlight_sets["vision-visible-details"].tests[0]
+    assert inventory_vision.model_ids == []
+    assert inventory_vision.repetitions == 2
+    assert (
+        _score_output(
+            "vision-model",
+            inventory_vision.name,
+            correct_visible_details_response,
+            inventory_vision.success,
+        )
+        == []
+    )
+    assert _score_output(
+        "vision-model",
+        inventory_vision.name,
+        hallucinated_response,
+        inventory_vision.success,
+    )
+
+    structured_identity = foxlight_sets["vision-structured-identity"].tests[0]
+    assert structured_identity.model_ids == []
+    assert structured_identity.repetitions == 2
+    assert (
+        _score_output(
+            "vision-model",
+            structured_identity.name,
+            correct_identity_response,
+            structured_identity.success,
+        )
+        == []
+    )
+    assert _score_output(
+        "vision-model",
+        structured_identity.name,
+        hallucinated_response,
+        structured_identity.success,
+    )
+
     for test_sets in (public_sets, foxlight_sets):
-        for vision in test_sets["vision"].tests:
+        vision_tests = list(test_sets["vision"].tests)
+        if "vision-visible-details" in test_sets:
+            vision_tests.extend(test_sets["vision-visible-details"].tests)
+        if "vision-structured-identity" in test_sets:
+            vision_tests.extend(test_sets["vision-structured-identity"].tests)
+        for vision in vision_tests:
             assert vision.images[0].input_path == Path(
                 "fixtures/vision/elon-musk-portrait.png"
             )

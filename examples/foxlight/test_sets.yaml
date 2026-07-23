@@ -960,6 +960,7 @@ test_sets:
         max_tokens: 320
         temperature: 0
         enable_thinking: false
+        repetitions: 2
         images:
           - input_path: fixtures/vision/elon-musk-portrait.png
             media_type: image/png
@@ -985,6 +986,7 @@ test_sets:
         max_tokens: 192
         temperature: 0
         enable_thinking: false
+        repetitions: 2
         images:
           - input_path: fixtures/vision/elon-musk-portrait.png
             media_type: image/png
@@ -1012,6 +1014,7 @@ test_sets:
         max_tokens: 320
         temperature: 0
         enable_thinking: false
+        repetitions: 2
         images:
           - input_path: fixtures/vision/elon-musk-portrait.png
             media_type: image/png
@@ -1020,6 +1023,68 @@ test_sets:
           required_regexes:
             - "(?i)(\\b(one|1|single)\\b.{0,30}\\b(person|man)\\b|\\b(person|man)\\b.{0,30}\\b(one|1|single)\\b)"
             - "(?i)(\\b(dark|black|navy|blue)\\b.{0,40}\\b(suit|jacket|blazer)\\b|\\b(suit|jacket|blazer)\\b.{0,40}\\b(dark|black|navy|blue)\\b)"
+            - "(?i)(\\b(white|light[- ]colored)\\b.{0,30}\\b(shirt|collar)\\b|\\b(shirt|collar)\\b.{0,30}\\b(white|light[- ]colored)\\b)"
+            - "(?i)(\\b(black|dark)\\b.{0,30}\\b(background|backdrop)\\b|\\b(background|backdrop)\\b.{0,30}\\b(black|dark)\\b)"
+          forbidden_substrings:
+            - bedroom
+            - furniture
+            - potted plant
+
+  vision-visible-details:
+    name: vision-visible-details
+    description: >
+      Inventory-wide vision-path qualification using four facts grounded in
+      the portrait pixels. This intentionally avoids using celebrity
+      recognition as a proxy for whether image bytes reached the model.
+    tests:
+      - name: real-portrait-visible-details
+        kind: chat
+        prompt: >-
+          How many people are visible? Describe the jacket color, the shirt or
+          collar color, and the background color. Do not identify the person.
+        max_tokens: 320
+        temperature: 0
+        enable_thinking: false
+        repetitions: 2
+        images:
+          - input_path: fixtures/vision/elon-musk-portrait.png
+            media_type: image/png
+        success:
+          min_chars: 30
+          required_regexes:
+            - "(?i)(\\b(one|1|single)\\b.{0,30}\\b(person|man)\\b|\\b(person|man)\\b.{0,30}\\b(one|1|single)\\b)"
+            - "(?i)(\\b(dark|black|navy|blue)\\b.{0,40}\\b(suit|jacket|blazer)\\b|\\b(suit|jacket|blazer)\\b.{0,40}\\b(dark|black|navy|blue)\\b)"
+            - "(?i)(\\b(white|light[- ]colored)\\b.{0,30}\\b(shirt|collar)\\b|\\b(shirt|collar)\\b.{0,30}\\b(white|light[- ]colored)\\b)"
+            - "(?i)(\\b(black|dark)\\b.{0,30}\\b(background|backdrop)\\b|\\b(background|backdrop)\\b.{0,30}\\b(black|dark)\\b)"
+          forbidden_substrings:
+            - bedroom
+            - furniture
+            - potted plant
+
+  vision-structured-identity:
+    name: vision-structured-identity
+    description: >
+      Structured portrait semantics for Gemma 3n checkpoints whose small
+      instruction model answers this form reliably. Identity and three visible
+      colors are all required, so a text-only response cannot pass.
+    tests:
+      - name: real-portrait-structured-identity
+        kind: chat
+        prompt: >-
+          Who is this person? What colors are the jacket, shirt, and background?
+          Answer exactly: NAME; JACKET; SHIRT; BACKGROUND.
+        max_tokens: 192
+        temperature: 0
+        enable_thinking: false
+        repetitions: 2
+        images:
+          - input_path: fixtures/vision/elon-musk-portrait.png
+            media_type: image/png
+        success:
+          min_chars: 30
+          required_regexes:
+            - "(?i)\\belon\\s+musk\\b"
+            - "(?i)(\\b(dark|black|navy)\\b.{0,40}\\b(suit|jacket|blazer)\\b|\\b(suit|jacket|blazer)\\b.{0,40}\\b(dark|black|navy)\\b)"
             - "(?i)(\\b(white|light[- ]colored)\\b.{0,30}\\b(shirt|collar)\\b|\\b(shirt|collar)\\b.{0,30}\\b(white|light[- ]colored)\\b)"
             - "(?i)(\\b(black|dark)\\b.{0,30}\\b(background|backdrop)\\b|\\b(background|backdrop)\\b.{0,30}\\b(black|dark)\\b)"
           forbidden_substrings:
