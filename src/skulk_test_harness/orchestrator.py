@@ -4390,12 +4390,16 @@ def _messages_for_test(test: PromptTest) -> list[dict[str, object]]:
     if not test.images:
         messages.append({"role": "user", "content": prompt})
         return messages
-    content: list[dict[str, object]] = [{"type": "text", "text": prompt}]
+    # Match the built-in dashboard and MLX-VLM's reference message formatter:
+    # image parts precede the question so order-sensitive families such as
+    # Gemma receive the same prompt shape in qualification and production UI.
+    content: list[dict[str, object]] = []
     for image in test.images:
         image_url: dict[str, object] = {"url": _prompt_image_url(image)}
         if image.detail is not None:
             image_url["detail"] = image.detail
         content.append({"type": "image_url", "image_url": image_url})
+    content.append({"type": "text", "text": prompt})
     messages.append({"role": "user", "content": content})
     return messages
 

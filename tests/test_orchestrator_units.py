@@ -510,11 +510,11 @@ def test_messages_for_test_builds_multimodal_content() -> None:
         {
             "role": "user",
             "content": [
-                {"type": "text", "text": "what color?"},
                 {
                     "type": "image_url",
                     "image_url": {"url": "data:image/png;base64,AAAA"},
                 },
+                {"type": "text", "text": "what color?"},
             ],
         }
     ]
@@ -1009,7 +1009,7 @@ def test_vision_suite_uses_real_portrait_and_strict_semantic_checks(
         messages = _messages_for_test(vision)
         content = messages[-1]["content"]
         assert isinstance(content, list)
-        image_part = content[1]
+        image_part = content[0]
         image_url = image_part["image_url"]["url"]
         assert isinstance(image_url, str)
         prefix, encoded = image_url.split(",", maxsplit=1)
