@@ -15,7 +15,10 @@ Skulk cluster and checking the result.
 | End-to-end | The real product path | Place a model and send chat requests | Yes |
 | Stability | Operational behavior during stress or failure | Kill a node and verify recovery | Yes |
 
-The harness mainly exists for end-to-end and stability testing.
+The harness has two E2E environments. An attached run proves behavior on the
+configuration already present on a fleet. A fresh-install run proves the
+installer, generated configuration, served dashboard, and model journey a new
+user actually receives. Attached coverage cannot satisfy the release gate.
 
 ## Why LLM E2E Tests Are Different
 
@@ -55,6 +58,7 @@ success:
 | Read local YAML | `models sets`, `tests sets` | No cluster calls |
 | Plan | `plan` or `run` without `--execute` | Reads cluster state and writes a plan |
 | Execute | `run --execute` | Can place models and send live requests |
+| Fresh install | `fresh-install qualify` | Installs into an empty HOME, tests, then restores or deletes the target |
 
 Destructive stability commands have an extra safety level. `failover`, `churn`,
 and `refusal` require `--execute-destructive` before any SSH or destructive API
@@ -73,3 +77,9 @@ A good first e2e test should be:
 | Safe | It does not require destructive cluster actions |
 
 The built-in `chat-tests` set is designed for that kind of first pass.
+
+Vision release qualification is intentionally exact rather than subjective.
+Each API and dashboard request gets a different generated PNG containing a
+random hidden code plus a random colored shape. The response must contain the
+exact code and visual attributes. The dashboard request body is captured and
+its image data URL must decode to the uploaded fixture's digest.

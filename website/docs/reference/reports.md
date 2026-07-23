@@ -23,6 +23,21 @@ runs/<run-id>/
   summary.md
 ```
 
+Fresh-install legs write private operational artifacts:
+
+```text
+runs/<qualification-id>/
+  fresh-install-report.json
+  fresh-install-summary.md
+  installer.log
+  skulk.log
+  generated-skulk.yaml
+  api-fixtures/
+  playwright/
+    *.trace.zip
+    *.final.png
+```
+
 ## Files
 
 | File | Audience | Purpose |
@@ -85,7 +100,7 @@ headline field still sees the concurrency number.
 ## The Fingerprint
 
 Every `report.json` from a plan or run carries a top-level `fingerprint`
-block (current `schema_version`: `2.2`). It exists for one reason: **a number
+block (current `schema_version`: `2.3`). It exists for one reason: **a number
 should never be separated from what produced it**. A "45 tok/s" without the
 Skulk version, the nodes, and the cache conditions behind it is not a
 measurement; the fingerprint makes each report self-describing, so it stays
@@ -94,7 +109,7 @@ meaningful in a comparison next month or on the public ledger next year.
 Every fingerprint probe is best-effort: a probe that fails records `null` or
 `"unknown"` (plus a warning issue) rather than failing the report write.
 
-The four sections:
+The five sections:
 
 ### `source_context`
 
@@ -165,6 +180,22 @@ The classification is deliberately conservative: it distinguishes what the
 run REQUESTED from any claim of controlled conditions, and it never asserts
 `cold` from flags alone. `compare` uses it
 to flag [cache-mismatched comparisons](../guides/compare-runs.md#cache_mismatch).
+
+### `install`
+
+Attached runs default to `mode: attached` and
+`environment: configured_fleet`. Fresh reports use `fresh_install` and add the
+profile, public hardware class, installer/config digests, requested and
+resolved commits, environment override **names**, detected backends, DATA
+transport, node count, and dashboard-build presence. This publishable
+provenance contains no secret values, private paths, node names, or image
+bytes.
+
+`fresh-install-report.json` additionally keeps the private lifecycle journal,
+verified lease expiries, recovery archive checksums, browser/API outcomes, and
+restoration/teardown status. Its `artifact_directory` is intentionally local;
+fresh operational reports are not accepted by the public benchmark submission
+command.
 
 ## A Small Result Example
 

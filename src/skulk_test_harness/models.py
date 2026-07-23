@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 PlacementStrategy = Literal["minimum", "single", "exact"]
 ShardingMode = Literal["Pipeline", "Tensor"]
@@ -42,6 +42,12 @@ TestKind = Literal[
 ]
 RunMode = Literal["plan", "execute"]
 IssueSeverity = Literal["info", "warning", "error"]
+FreshInstallProfile = Literal["candidate", "shipping"]
+FreshInstallPlatform = Literal["apple", "amd", "nvidia"]
+FreshInstallTargetKind = Literal["physical", "runpod"]
+ServiceManager = Literal["launchd", "systemd", "command"]
+FreshInstallStageStatus = Literal["pending", "running", "passed", "failed", "skipped"]
+DataTransport = Literal["zenoh", "gossipsub"]
 
 
 class HarnessBaseModel(BaseModel):
@@ -132,6 +138,262 @@ class FleetLock(HarnessBaseModel):
             "~/.cache/skulk-test-harness/fleet-lock when unset."
         ),
     )
+
+
+class FreshInstallTarget(HarnessBaseModel):
+    """One explicitly eligible target for destructive fresh-install qualification.
+
+    Inventory is opt-in: only entries with ``eligible=true`` can be selected.
+    This keeps incidental nodes that appear in the Skulk fabric out of the
+    qualification lifecycle.
+    """
+
+    kind: FreshInstallTargetKind
+    platform: FreshInstallPlatform
+    hardware_class: str = Field(
+        min_length=1,
+        description="Stable public hardware class, not a private node name.",
+    )
+    eligible: bool = Field(
+        default=False,
+        description="Explicit opt-in required before this target can be selected.",
+    )
+    exclusion_reason: str | None = Field(
+        default=None,
+        description="Operator-facing reason an ineligible target is excluded.",
+    )
+    ssh_host: str | None = Field(
+        default=None,
+        description="SSH alias used only by the local controller for physical targets.",
+    )
+    ssh_user: str | None = Field(
+        default=None,
+        description="Optional SSH username for a physical target.",
+    )
+    ssh_port: int = Field(
+        default=22,
+        ge=1,
+        le=65535,
+        description="SSH port for a physical target.",
+    )
+    ssh_identity_file: Path | None = Field(
+        default=None,
+        description="Optional private-key path. Never copied into reports.",
+    )
+    service_manager: ServiceManager = Field(
+        default="command",
+        description="How the pre-existing Skulk service is controlled.",
+    )
+    service_stop_command: str | None = Field(
+        default=None,
+        description="Command that stops only the selected target's existing Skulk.",
+    )
+    service_start_command: str | None = Field(
+        default=None,
+        description="Command that restores only the selected target's existing Skulk.",
+    )
+    service_status_command: str | None = Field(
+        default=None,
+        description="Optional command used to capture and verify service status.",
+    )
+    isolation_enter_command: str | None = Field(
+        default=None,
+        description=(
+            "Target-local command that blocks only Skulk discovery/fabric traffic "
+            "while preserving SSH, forcing the temporary install to remain one node."
+        ),
+    )
+    isolation_exit_command: str | None = Field(
+        default=None,
+        description=(
+            "Command that reverses isolation before restoring the original service."
+        ),
+    )
+    original_checkout: str | None = Field(
+        default=None,
+        description="Existing Skulk checkout inspected during snapshot and restoration.",
+    )
+    original_config_paths: list[str] = Field(
+        default_factory=list,
+        description="Existing configuration paths whose hashes must survive unchanged.",
+    )
+    expected_backends: list[str] = Field(
+        min_length=1,
+        description="Backends that the clean install must detect.",
+    )
+    expected_data_transport: DataTransport = Field(
+        default="zenoh",
+        description="DATA transport shipped for this platform.",
+    )
+    vision_contract: Literal["positive", "unavailable"] = Field(
+        description="Required vision behavior; never converted into an adaptive skip.",
+    )
+    text_models: list[str] = Field(
+        default_factory=list,
+        description="Models qualified through text chat.",
+    )
+    vision_models: list[str] = Field(
+        default_factory=list,
+        description="Models qualified with exact hidden-code image assertions.",
+    )
+
+    @model_validator(mode="after")
+    def _validate_control_surface(self) -> "FreshInstallTarget":
+        """Require the control surface implied by the target kind and contract."""
+
+        if self.eligible and self.exclusion_reason:
+            raise ValueError("eligible targets cannot declare exclusion_reason")
+        if self.kind == "physical":
+            if not self.ssh_host:
+                raise ValueError("physical targets require ssh_host")
+            if not self.service_stop_command or not self.service_start_command:
+                raise ValueError(
+                    "physical targets require service_stop_command and "
+                    "service_start_command"
+                )
+            if not self.isolation_enter_command or not self.isolation_exit_command:
+                raise ValueError(
+                    "physical targets require reversible Skulk-network isolation "
+                    "commands"
+                )
+        if self.kind == "runpod" and self.platform != "nvidia":
+            raise ValueError("runpod targets must use platform='nvidia'")
+        if self.vision_contract == "positive" and not self.vision_models:
+            raise ValueError("positive vision targets require vision_models")
+        if self.vision_contract == "unavailable" and self.vision_models:
+            raise ValueError("vision-unavailable targets cannot list vision_models")
+        return self
+
+
+class RunPodFreshInstallConfig(HarnessBaseModel):
+    """Clean ephemeral RunPod provisioning policy.
+
+    Credentials are read from environment or local files and are never included
+    in qualification reports.
+    """
+
+    api_key_environment: str = Field(
+        default="RUNPOD_API_KEY",
+        description="Environment variable containing the RunPod API key.",
+    )
+    ssh_public_key_file: Path = Field(
+        description="Public SSH key injected into the ephemeral pod.",
+    )
+    ssh_private_key_file: Path = Field(
+        description="Controller private key used for the pod; never reported.",
+    )
+    image_name: str = Field(
+        description="Neutral CUDA plus Node base image; never a Skulk image.",
+    )
+    gpu_type_ids: list[str] = Field(
+        min_length=1,
+        description="Acceptable RunPod GPU type identifiers.",
+    )
+    cloud_type: Literal["SECURE", "COMMUNITY"] = "SECURE"
+    container_disk_gb: int = Field(default=80, ge=40)
+    maximum_hourly_cost_usd: float = Field(default=4.0, gt=0)
+    maximum_runtime_s: float = Field(default=10800.0, gt=0)
+    poll_interval_s: float = Field(default=5.0, gt=0)
+    readiness_timeout_s: float = Field(default=900.0, gt=0)
+    require_no_network_volume: bool = True
+
+    @model_validator(mode="after")
+    def _reject_product_image(self) -> "RunPodFreshInstallConfig":
+        """Keep qualification on a neutral base image, never a Skulk image."""
+
+        if "skulk" in self.image_name.lower():
+            raise ValueError("RunPod fresh qualification cannot use a Skulk image")
+        return self
+
+
+class FreshInstallConfig(HarnessBaseModel):
+    """Fresh-install qualification lifecycle and inventory."""
+
+    required_platforms: list[FreshInstallPlatform] = Field(
+        default_factory=lambda: ["apple", "amd", "nvidia"],
+        min_length=1,
+        description=(
+            "Platforms that must be represented when qualifying the complete "
+            "candidate or shipping release matrix."
+        ),
+    )
+    targets: dict[str, FreshInstallTarget] = Field(
+        default_factory=dict,
+        description="Named inventory. Selection considers only eligible entries.",
+    )
+    snapshot_root: Path = Field(
+        default=Path("fresh-install-snapshots"),
+        description="Controller-side private recovery archive root.",
+    )
+    snapshot_retention_days: int = Field(default=30, ge=1)
+    lease_ttl_s: float = Field(default=3600.0, gt=0)
+    lease_heartbeat_s: float | None = Field(
+        default=None,
+        gt=0,
+        description="Defaults to one third of lease_ttl_s.",
+    )
+    emergency_lease_ttl_s: float = Field(default=21600.0, gt=0)
+    installer_url: str = Field(
+        default=(
+            "https://raw.githubusercontent.com/"
+            "Foxlight-Foundation/Skulk/{ref}/install.sh"
+        ),
+        description="Installer URL template. Candidate replaces ref with the SHA.",
+    )
+    shipping_installer_ref: str = "main"
+    remote_port: int = Field(default=52415, ge=1, le=65535)
+    readiness_timeout_s: float = Field(default=600.0, gt=0)
+    model_ready_timeout_s: float = Field(default=7200.0, gt=0)
+    poll_interval_s: float = Field(default=2.0, gt=0)
+    runpod: RunPodFreshInstallConfig | None = None
+
+    @model_validator(mode="after")
+    def _validate_heartbeat(self) -> "FreshInstallConfig":
+        """Keep the configured heartbeat inside the one-third-TTL safety bound."""
+
+        heartbeat = self.lease_heartbeat_s or self.lease_ttl_s / 3
+        if heartbeat > self.lease_ttl_s / 3:
+            raise ValueError("lease_heartbeat_s must not exceed one third of lease_ttl_s")
+        return self
+
+    @property
+    def resolved_lease_heartbeat_s(self) -> float:
+        """Return the explicit heartbeat or the one-third-TTL default."""
+
+        return self.lease_heartbeat_s or self.lease_ttl_s / 3
+
+    def eligible_targets(
+        self, requested: list[str] | None = None
+    ) -> list[tuple[str, FreshInstallTarget]]:
+        """Select only explicitly eligible targets, preserving inventory order."""
+
+        requested_names = set(requested or ())
+        unknown = requested_names - self.targets.keys()
+        if unknown:
+            raise ValueError(f"unknown fresh-install target(s): {sorted(unknown)}")
+        selected: list[tuple[str, FreshInstallTarget]] = []
+        for name, target in self.targets.items():
+            if requested_names and name not in requested_names:
+                continue
+            if target.eligible:
+                selected.append((name, target))
+        if requested_names and len(selected) != len(requested_names):
+            excluded = sorted(requested_names - {name for name, _ in selected})
+            raise ValueError(f"fresh-install target(s) are not eligible: {excluded}")
+        return selected
+
+    def assert_complete_release_matrix(
+        self,
+        selected: list[tuple[str, FreshInstallTarget]],
+    ) -> None:
+        """Require every configured release-blocking platform."""
+
+        selected_platforms = {target.platform for _name, target in selected}
+        missing = sorted(set(self.required_platforms) - selected_platforms)
+        if missing:
+            raise ValueError(
+                f"release matrix is missing eligible platform(s): {missing}"
+            )
 
 
 class HarnessConfig(HarnessBaseModel):
@@ -227,6 +489,10 @@ class HarnessConfig(HarnessBaseModel):
             "to a shared test fleet across multiple agents. Disabled (no-op) when "
             "absent, so single-operator use is unaffected."
         ),
+    )
+    fresh_install: FreshInstallConfig | None = Field(
+        default=None,
+        description="Opt-in clean-install release qualification configuration.",
     )
 
 
@@ -1121,18 +1387,46 @@ class CacheState(HarnessBaseModel):
     classification: Literal["unknown", "cold", "warm", "mixed"] = "unknown"
 
 
+class InstallProvenance(HarnessBaseModel):
+    """Safe, additive provenance for attached or fresh-install runs.
+
+    This object deliberately contains no credentials, raw private paths, node
+    names, or fixture bytes, so it can be copied into publishable ledgers.
+    """
+
+    mode: Literal["attached", "fresh_install"] = "attached"
+    environment: Literal["configured_fleet", "fresh_install"] = "configured_fleet"
+    profile: FreshInstallProfile | None = None
+    platform: FreshInstallPlatform | None = None
+    hardware_class: str | None = None
+    installer_url: str | None = None
+    installer_sha256: str | None = None
+    requested_ref: str | None = None
+    expected_commit: str | None = None
+    resolved_commit: str | None = None
+    generated_config_sha256: str | None = None
+    environment_override_names: list[str] = Field(default_factory=list)
+    detected_backends: list[str] = Field(default_factory=list)
+    data_transport: DataTransport | None = None
+    node_count: int | None = None
+    dashboard_build_present: bool | None = None
+
+
 class ReportFingerprint(HarnessBaseModel):
     """Durable self-description of a run (results-ledger schema 2.0)."""
 
-    # 2.2 adds per-node accelerator vram_total_bytes / gtt_total_bytes (the
+    # 2.3 adds install provenance and distinguishes attached/configured-fleet
+    # runs from fresh-install release qualification. 2.2 added per-node
+    # accelerator vram_total_bytes / gtt_total_bytes (the
     # unified-APU carve, so a consumer can report true capacity). 2.1 added
     # accelerator_name. Bump on any additive durable fingerprint field so
     # downstream consumers can select parsing/compatibility by version.
-    schema_version: str = "2.2"
+    schema_version: str = "2.3"
     source_context: SourceContext = Field(default_factory=SourceContext)
     runtime: RuntimeFingerprint = Field(default_factory=RuntimeFingerprint)
     cluster: ClusterFingerprint = Field(default_factory=ClusterFingerprint)
     cache_state: CacheState = Field(default_factory=CacheState)
+    install: InstallProvenance = Field(default_factory=InstallProvenance)
 
 
 class RunReport(HarnessBaseModel):
@@ -1172,6 +1466,82 @@ class RunReport(HarnessBaseModel):
         """Return a copy marked with the current UTC finish time."""
 
         return self.model_copy(update={"finished_at": datetime.now(tz=UTC)})
+
+
+class FreshInstallLifecycleStage(HarnessBaseModel):
+    """One durable stage in a fresh-install lifecycle journal."""
+
+    name: str
+    status: FreshInstallStageStatus = "pending"
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    message: str | None = None
+
+
+class VisionFixtureEvidence(HarnessBaseModel):
+    """Secret-free evidence for one exact image-understanding assertion."""
+
+    channel: Literal["api", "dashboard"]
+    fixture_sha256: str
+    code_sha256: str
+    expected_shape: str
+    expected_color: str
+    response_matched_code: bool
+    response_matched_attribute: bool
+    request_image_sha256: str | None = None
+    thumbnail_visible_before_submit: bool | None = None
+    attachment_retained_after_submit: bool | None = None
+    passed: bool
+
+
+class DashboardJourneyOutcome(HarnessBaseModel):
+    """Browser-visible results for one model journey."""
+
+    model_id: str
+    found: bool = False
+    download_started: bool = False
+    launched: bool = False
+    selected: bool = False
+    text_chat_passed: bool = False
+    vision: VisionFixtureEvidence | None = None
+    false_vision_path_offered: bool | None = None
+    passed: bool = False
+    message: str | None = None
+
+
+class FreshInstallQualificationReport(HarnessBaseModel):
+    """Complete private report for one clean-install target leg."""
+
+    schema_version: str = "1.0"
+    qualification_id: str
+    profile: FreshInstallProfile
+    platform: FreshInstallPlatform
+    hardware_class: str
+    started_at: datetime
+    finished_at: datetime | None = None
+    passed: bool = False
+    critical_recovery_required: bool = False
+    install: InstallProvenance
+    lifecycle: list[FreshInstallLifecycleStage] = Field(default_factory=list)
+    api_vision: list[VisionFixtureEvidence] = Field(default_factory=list)
+    browser: list[DashboardJourneyOutcome] = Field(default_factory=list)
+    snapshot_target_sha256: str | None = None
+    snapshot_controller_sha256: str | None = None
+    lease_renewal_expiries: list[datetime] = Field(default_factory=list)
+    restoration_succeeded: bool | None = None
+    teardown_succeeded: bool | None = None
+    artifact_directory: Path | None = Field(
+        default=None,
+        description="Private report-only path; stripped from publishable summaries.",
+    )
+    issues: list[Issue] = Field(default_factory=list)
+
+    def finish(self, *, passed: bool) -> "FreshInstallQualificationReport":
+        """Return a copy marked complete at the current UTC time."""
+
+        return self.model_copy(
+            update={"finished_at": datetime.now(tz=UTC), "passed": passed}
+        )
 
 
 ComparisonGuardKind = Literal[

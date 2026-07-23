@@ -68,7 +68,9 @@ def test_gather_fingerprint_populates_cluster_and_runtime() -> None:
     fp, issues = gather_fingerprint(client, spec, run_reason="plan")  # type: ignore[arg-type]
 
     assert issues == []
-    assert fp.schema_version == "2.2"
+    assert fp.schema_version == "2.3"
+    assert fp.install.mode == "attached"
+    assert fp.install.environment == "configured_fleet"
     assert fp.runtime.skulk_version == "1.4.2"
     assert fp.runtime.skulk_commit == "984179e2"
     assert fp.runtime.python  # populated from the running interpreter
