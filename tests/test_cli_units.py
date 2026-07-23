@@ -37,6 +37,8 @@ def _report(spec: RunSpec, *, passed: bool) -> RunReport:
 class _StubRunner:
     def __init__(self, *, passed: bool) -> None:
         self._passed = passed
+        self.model_sets = {"s": object()}
+        self.test_sets = {"t": object()}
 
     def execute(self, spec: RunSpec) -> RunReport:
         return _report(spec, passed=self._passed)
@@ -114,6 +116,25 @@ def test_shipping_transport_requirement_rejects_mixed_fleet() -> None:
         cli._require_shipping_data_transport(cfg, state)
 
 
+def test_shipping_transport_requirement_rejects_live_node_without_resources() -> None:
+    cfg = HarnessConfig(required_data_transport="zenoh")
+    state: dict[str, object] = {
+        "nodeResources": {
+            "peer-a": {"dataTransport": "zenoh"},
+        },
+        "nodeIdentities": {
+            "peer-a": {"friendlyName": "alpha"},
+            "peer-b": {"friendlyName": "beta"},
+        },
+    }
+
+    with pytest.raises(
+        ValueError,
+        match="shipping-profile violation.*beta=missing",
+    ):
+        cli._require_shipping_data_transport(cfg, state)
+
+
 def test_shipping_transport_requirement_rejects_missing_advertisements() -> None:
     cfg = HarnessConfig(required_data_transport="zenoh")
 
@@ -123,6 +144,21 @@ def test_shipping_transport_requirement_rejects_missing_advertisements() -> None
 
 def test_generic_profile_has_no_shipping_transport_requirement() -> None:
     cli._require_shipping_data_transport(HarnessConfig(), {})
+
+
+def test_goal_execute_uses_shared_execution_preflight(monkeypatch, tmp_path) -> None:
+    _patch(monkeypatch, tmp_path, passed=True)
+    observed: list[tuple[HarnessConfig, bool]] = []
+
+    def record_preflight(cfg: HarnessConfig, *, force: bool) -> None:
+        observed.append((cfg, force))
+
+    monkeypatch.setattr(cli, "_require_execution_preflight", record_preflight)
+
+    result = runner_cli.invoke(cli.app, ["goal", "run s on t", "--execute"])
+
+    assert result.exit_code == 0
+    assert observed == [(HarnessConfig(output_dir=tmp_path), False)]
 
 
 @pytest.mark.parametrize(

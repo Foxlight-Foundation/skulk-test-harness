@@ -80,10 +80,10 @@ harness started gets torn down at the end, leaving your cluster as it found
 it.
 
 Release-qualification profiles can also set
-`required_data_transport: zenoh` (or `gossipsub`). Before an executed run
-mutates the cluster, the harness checks every live node's resolved transport in
-`/state` and refuses a mixed or mismatched fleet. Generic profiles leave this
-unset.
+`required_data_transport: zenoh` (or `gossipsub`). Before any named run,
+natural-language goal, or stability suite mutates the cluster, the harness
+checks every live identity's resolved transport in `/state` and refuses a
+missing, mixed, or mismatched advertisement. Generic profiles leave this unset.
 
 ## Where the results go
 
