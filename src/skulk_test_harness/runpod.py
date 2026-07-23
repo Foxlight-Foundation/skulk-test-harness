@@ -93,8 +93,13 @@ class RunPodClient:
         payload = _object(response.json())
         pod_id = payload.get("id")
         cost = _number(payload.get("adjustedCostPerHr", payload.get("costPerHr")))
-        if not isinstance(pod_id, str) or cost is None:
-            raise RuntimeError("RunPod create response omitted pod id or hourly cost")
+        if not isinstance(pod_id, str):
+            raise RuntimeError("RunPod create response omitted pod id")
+        if cost is None:
+            # Once the provider returns an id, the pod may already be billing.
+            # Preserve fail-closed cost validation without orphaning that pod.
+            self.terminate_and_confirm(pod_id)
+            raise RuntimeError("RunPod create response omitted hourly cost")
         lease = RunPodLease(pod_id=pod_id, hourly_cost_usd=cost)
         if cost > self.config.maximum_hourly_cost_usd:
             self.terminate_and_confirm(pod_id)

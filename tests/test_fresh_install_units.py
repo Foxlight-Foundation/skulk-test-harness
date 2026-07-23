@@ -798,3 +798,43 @@ def test_runpod_rejects_over_ceiling_pod_only_after_confirmed_deletion(
         client.provision(qualification_id="qualification")
 
     assert probes == 2
+
+
+def test_runpod_deletes_created_pod_when_cost_metadata_is_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    public_key = tmp_path / "id.pub"
+    private_key = tmp_path / "id"
+    public_key.write_text("ssh-ed25519 AAAATEST qualification")
+    private_key.write_text("private")
+    monkeypatch.setenv("RUNPOD_API_KEY", "secret")
+    deleted: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(201, json={"id": "pod-unknown-cost"})
+        if request.method == "DELETE":
+            deleted.append(request.url.path)
+            return httpx.Response(204)
+        return httpx.Response(404)
+
+    config = RunPodFreshInstallConfig(
+        ssh_public_key_file=public_key,
+        ssh_private_key_file=private_key,
+        image_name="nvidia/cuda-node-neutral",
+        gpu_type_ids=["NVIDIA L4"],
+        maximum_hourly_cost_usd=2,
+        poll_interval_s=0.001,
+        readiness_timeout_s=0.01,
+    )
+    http_client = httpx.Client(
+        base_url="https://rest.runpod.io/v1",
+        transport=httpx.MockTransport(handler),
+    )
+    client = RunPodClient(config, client=http_client)
+
+    with pytest.raises(RuntimeError, match="omitted hourly cost"):
+        client.provision(qualification_id="qualification")
+
+    assert deleted == ["/v1/pods/pod-unknown-cost"]
