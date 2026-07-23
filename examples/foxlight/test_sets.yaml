@@ -952,7 +952,9 @@ test_sets:
         prompt: >-
           Identify the well-known person. Give the first and last name, then
           describe the visible jacket, shirt, and background in one sentence.
-        max_tokens: 128
+        # Gemma 4 may emit a hidden/reasoning preamble before its concise answer;
+        # keep enough room for the semantic identity and scene assertions.
+        max_tokens: 320
         temperature: 0
         enable_thinking: false
         images:
