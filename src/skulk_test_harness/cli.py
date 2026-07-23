@@ -160,7 +160,8 @@ def _require_shipping_data_transport(
         )
 
     mismatches: list[str] = []
-    for node_id, identity in identities.items():
+    for node_id in resources.keys() | identities.keys():
+        identity = identities.get(node_id)
         friendly_name = (
             identity.get("friendlyName")
             if isinstance(identity, dict)

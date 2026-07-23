@@ -135,6 +135,25 @@ def test_shipping_transport_requirement_rejects_live_node_without_resources() ->
         cli._require_shipping_data_transport(cfg, state)
 
 
+def test_shipping_transport_requirement_rejects_resource_without_identity() -> None:
+    cfg = HarnessConfig(required_data_transport="zenoh")
+    state: dict[str, object] = {
+        "nodeResources": {
+            "peer-a": {"dataTransport": "zenoh"},
+            "peer-b": {"dataTransport": "gossipsub"},
+        },
+        "nodeIdentities": {
+            "peer-a": {"friendlyName": "alpha"},
+        },
+    }
+
+    with pytest.raises(
+        ValueError,
+        match="shipping-profile violation.*peer-b=gossipsub",
+    ):
+        cli._require_shipping_data_transport(cfg, state)
+
+
 def test_shipping_transport_requirement_rejects_missing_advertisements() -> None:
     cfg = HarnessConfig(required_data_transport="zenoh")
 

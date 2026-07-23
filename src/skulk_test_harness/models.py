@@ -206,10 +206,10 @@ class HarnessConfig(HarnessBaseModel):
         default=None,
         description=(
             "Optional fleet qualification invariant. Before an executed run, "
-            "require every node advertised in /state nodeResources to use this "
-            "resolved DATA transport. Foxlight's production E2E profile pins "
-            "this to the transport Skulk ships by default; generic/community "
-            "profiles leave it unset."
+            "require every node present in either /state nodeResources or "
+            "nodeIdentities to advertise this resolved DATA transport. "
+            "Foxlight's production E2E profile pins this to the transport Skulk "
+            "ships by default; generic/community profiles leave it unset."
         ),
     )
     cluster_nodes: dict[str, ClusterNode] = Field(
