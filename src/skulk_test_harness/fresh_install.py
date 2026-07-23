@@ -712,7 +712,11 @@ class FreshInstallQualifier:
             generation_timeout_s=self.config.generation_timeout_s,
             stream_read_timeout_s=self.config.stream_read_timeout_s,
         ) as client:
+            thinking_toggles = client.resolved_thinking_toggle_by_model()
             for model_id in models:
+                enable_thinking = (
+                    False if thinking_toggles.get(model_id, False) else None
+                )
                 with journal.stage(f"dashboard user journey: {model_id}"):
                     browser_fixture = (
                         generate_vision_fixture()
@@ -738,7 +742,11 @@ class FreshInstallQualifier:
                     _check_heartbeat(heartbeat)
 
                 with journal.stage(f"direct API parity: {model_id}"):
-                    if not qualify_direct_text(client, model_id=model_id):
+                    if not qualify_direct_text(
+                        client,
+                        model_id=model_id,
+                        enable_thinking=enable_thinking,
+                    ):
                         raise RuntimeError(
                             f"direct text API parity failed for {model_id}"
                         )
@@ -753,6 +761,7 @@ class FreshInstallQualifier:
                             client,
                             model_id=model_id,
                             fixture=api_fixture,
+                            enable_thinking=enable_thinking,
                         )
                         report.api_vision.append(evidence)
                         journal.persist()
@@ -926,7 +935,8 @@ def _wait_for_api_identity(
             if minimum_node_count is None or node_count >= minimum_node_count:
                 return node_id, node_count
         except Exception:  # noqa: BLE001 - service is starting
-            time.sleep(poll_interval_s)
+            pass
+        time.sleep(poll_interval_s)
     raise TimeoutError("target API did not become ready")
 
 

@@ -13,6 +13,7 @@ import sys
 import tarfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import BinaryIO, cast
 
 import httpx
@@ -20,6 +21,8 @@ import pytest
 from pydantic import ValidationError
 
 import skulk_test_harness.fresh_install as fresh_install_module
+import skulk_test_harness.qualification_checks as qualification_checks_module
+from skulk_test_harness.client import SkulkClient
 from skulk_test_harness.dashboard_qualification import (
     _captured_image_digest,  # pyright: ignore[reportPrivateUsage]
 )
@@ -31,6 +34,7 @@ from skulk_test_harness.fresh_install import (
     _installer_command,  # pyright: ignore[reportPrivateUsage]
     _run_remote_logged_command,  # pyright: ignore[reportPrivateUsage]
     _self_safe_process_pattern,  # pyright: ignore[reportPrivateUsage]
+    _wait_for_api_identity,  # pyright: ignore[reportPrivateUsage]
 )
 from skulk_test_harness.lease_heartbeat import (
     AuthoritativeLeaseHeartbeat,
@@ -45,6 +49,7 @@ from skulk_test_harness.models import (
     InstallProvenance,
     RunPodFreshInstallConfig,
 )
+from skulk_test_harness.qualification_checks import qualify_direct_text
 from skulk_test_harness.runpod import RunPodClient
 from skulk_test_harness.target_control import (
     OriginalTargetState,
@@ -183,6 +188,47 @@ def test_captured_dashboard_request_must_contain_exact_fixture() -> None:
         ]
     )
     assert digest == fixture.sha256
+
+
+def test_direct_text_check_matches_dashboard_thinking_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    class FakeClient:
+        def stream_chat(self, **kwargs: object) -> SimpleNamespace:
+            calls.append(kwargs)
+            return SimpleNamespace(text="API-CAFEBABE")
+
+    monkeypatch.setattr(
+        qualification_checks_module.secrets,
+        "token_hex",
+        lambda _length: "CAFEBABE",
+    )
+
+    assert qualify_direct_text(
+        cast(SkulkClient, FakeClient()),
+        model_id="org/toggle-model",
+        enable_thinking=False,
+    )
+    assert calls == [
+        {
+            "model_id": "org/toggle-model",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": (
+                        "Reply with this token exactly once and nothing else: "
+                        "API-CAFEBABE"
+                    ),
+                }
+            ],
+            "max_tokens": 64,
+            "temperature": 0.0,
+            "top_p": 1.0,
+            "enable_thinking": False,
+        }
+    ]
 
 
 class _LeaseStore:
@@ -419,6 +465,56 @@ def test_restoration_verification_detects_every_changed_surface(
         "original fleet membership did not rejoin",
         "original service manager state was not restored",
     ]
+
+
+def test_restored_membership_wait_uses_configured_poll_interval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    states = iter(
+        [
+            {"nodeIdentities": {"node-a": {}}, "nodeResources": {}},
+            {
+                "nodeIdentities": {
+                    "node-a": {},
+                    "node-b": {},
+                    "node-c": {},
+                },
+                "nodeResources": {},
+            },
+        ]
+    )
+    sleeps: list[float] = []
+
+    class FakeClient:
+        def __init__(self, _base_url: str) -> None:
+            pass
+
+        def __enter__(self) -> "FakeClient":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            pass
+
+        def get_node_id(self) -> str:
+            return "node-a"
+
+        def get_state(self) -> dict[str, object]:
+            return next(states)
+
+    monkeypatch.setattr(fresh_install_module, "SkulkClient", FakeClient)
+    monkeypatch.setattr(
+        fresh_install_module.time,
+        "sleep",
+        sleeps.append,
+    )
+
+    assert _wait_for_api_identity(
+        "http://127.0.0.1:52415",
+        timeout_s=1,
+        poll_interval_s=0.25,
+        minimum_node_count=3,
+    ) == ("node-a", 3)
+    assert sleeps == [0.25]
 
 
 def _run_failed_physical_lifecycle(

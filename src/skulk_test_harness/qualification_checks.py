@@ -83,7 +83,12 @@ def assert_fresh_runtime_contract(
     )
 
 
-def qualify_direct_text(client: SkulkClient, *, model_id: str) -> bool:
+def qualify_direct_text(
+    client: SkulkClient,
+    *,
+    model_id: str,
+    enable_thinking: bool | None,
+) -> bool:
     """Require the direct API to echo an unpredictable token."""
 
     token = f"API-{secrets.token_hex(4).upper()}"
@@ -100,6 +105,7 @@ def qualify_direct_text(client: SkulkClient, *, model_id: str) -> bool:
         max_tokens=64,
         temperature=0.0,
         top_p=1.0,
+        enable_thinking=enable_thinking,
     )
     return token in execution.text
 
@@ -109,6 +115,7 @@ def qualify_direct_vision(
     *,
     model_id: str,
     fixture: VisionFixture,
+    enable_thinking: bool | None,
 ) -> VisionFixtureEvidence:
     """Require exact hidden-code and visual-attribute recognition via the API."""
 
@@ -129,6 +136,7 @@ def qualify_direct_vision(
         max_tokens=128,
         temperature=0.0,
         top_p=1.0,
+        enable_thinking=enable_thinking,
     )
     code_matched, attribute_matched = fixture.response_matches(
         execution.text
