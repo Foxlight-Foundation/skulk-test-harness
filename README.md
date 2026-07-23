@@ -14,9 +14,14 @@
 
 ---
 
-You have a [Skulk](https://github.com/Foxlight-Foundation/Skulk) cluster.
-This tool answers two questions about it: **does it actually work**, and
-**how fast is it?**
+This harness has two deliberately separate jobs:
+
+- **Fresh-install release qualification** installs Skulk from scratch and
+  proves what a new user gets through both the dashboard and API.
+- **Configured-fleet regression coverage** attaches to an already running
+  cluster for routing, failover, concurrency, and benchmark work.
+
+Only the first can satisfy Skulk's release E2E gate.
 
 Point the harness at your cluster's API and it will place models, run real
 chat/tool/vision/speech requests against them, measure time-to-first-token
@@ -86,6 +91,35 @@ checks every live node present in either `/state` telemetry map and refuses a
 missing, mixed, or mismatched transport advertisement. Generic profiles leave
 this unset.
 
+## Fresh-install release qualification
+
+Install Chromium once on the controller:
+
+```bash
+uv run playwright install chromium
+```
+
+Then run either the exact proposed `dev` commit or the literal public `main`
+installer:
+
+```bash
+uv run skulk-harness fresh-install qualify \
+  --profile candidate \
+  --expected-commit <40-character-dev-commit> \
+  --config skulk-harness.fresh-install.yaml
+
+uv run skulk-harness fresh-install qualify \
+  --profile shipping \
+  --config skulk-harness.fresh-install.yaml
+```
+
+The inventory is opt-in: a target is ignored unless its local configuration
+sets `eligible: true`. Physical targets are protected by the authoritative
+fleet lease, dual recovery snapshots, verified restoration, and a lease
+heartbeat. RunPod is created without a network volume and is deleted in
+`finally`, with provider deletion polled to completion. See the
+[fresh-install guide](https://foxlight-foundation.github.io/skulk-test-harness/guides/fresh-install-qualification).
+
 ## Where the results go
 
 Every run writes a directory under `runs/`:
@@ -148,6 +182,9 @@ and
 ## Safety defaults
 
 - `run` and `goal` are dry runs unless you pass `--execute`.
+- Fresh-install qualification is intentionally destructive to only the
+  explicitly eligible target: it temporarily stops that target's existing
+  Skulk service and refuses to release the lease until restoration is proved.
 - The stability suites (`failover`, `churn`, `refusal`) additionally require
   `--execute-destructive` plus explicit SSH process-control configuration
   before they will touch anything. Soaks are non-destructive.
@@ -199,6 +236,7 @@ walks through the whole acquire/deploy/run/release bracket.
 | [Quickstart](https://foxlight-foundation.github.io/skulk-test-harness/quickstart) | The five-minute start, with more hand-holding |
 | [Concepts](https://foxlight-foundation.github.io/skulk-test-harness/concepts/harness-model) | How runs, sets, placements, and reports fit together |
 | [Guides](https://foxlight-foundation.github.io/skulk-test-harness/guides/first-local-run) | First local run, custom sets, stability suites, submitting to the ledger |
+| [Fresh-install qualification](https://foxlight-foundation.github.io/skulk-test-harness/guides/fresh-install-qualification) | The candidate and shipping release gates |
 | [Fleet coordination](https://foxlight-foundation.github.io/skulk-test-harness/guides/fleet-coordination) | Sharing one test fleet across operators with the git-backed lease |
 | [CLI reference](https://foxlight-foundation.github.io/skulk-test-harness/reference/cli) | Every command and flag |
 | [Troubleshooting](https://foxlight-foundation.github.io/skulk-test-harness/troubleshooting) | When something looks wrong |
@@ -208,11 +246,13 @@ publish them.
 
 ## The Foxlight profile
 
-Foxlight's own production test matrix lives under `examples/foxlight/`: the
+Foxlight's attached configured-fleet regression matrix lives under
+`examples/foxlight/`: the
 `run_e2e_battery.sh`, `run_mtp_battery.sh`, `run_throughput_battery.sh`, and
 `run_stability_battery.sh` entrypoints drive the fleet that feeds the public
-ledger. They are ordinary harness invocations and double as worked examples
-of a serious configuration. See
+ledger. They remain valuable, but they do not qualify a release or claim that a
+fresh installation works. They are ordinary harness invocations and double as
+worked examples of a serious configured fleet. See
 [stability suites](https://foxlight-foundation.github.io/skulk-test-harness/guides/stability-suites)
 for what the destructive ones do before running them anywhere.
 

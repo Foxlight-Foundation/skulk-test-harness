@@ -53,6 +53,7 @@ cluster_nodes: {}
 | `test_sets_path` | `configs/test_sets.yaml` | YAML file containing test sets |
 | `required_data_transport` | unset | Optional release-qualification gate: require every live node represented in either `/state` `nodeResources` or `nodeIdentities` telemetry to advertise `zenoh` or `gossipsub` before an executed run can mutate the cluster |
 | `cluster_nodes` | `{}` | SSH control settings for stability suites |
+| `fresh_install` | unset | Opt-in release qualification inventory and lifecycle policy |
 
 ## Required Data Transport
 
@@ -106,3 +107,59 @@ uv run skulk-harness tests sets --config examples/foxlight/skulk-harness.yaml
 
 Use this pattern when switching between public defaults, Foxlight production,
 and private local experiments.
+
+## Fresh-install Inventory
+
+Fresh qualification has a separate inventory from `cluster_nodes`. Selection
+uses only entries with `eligible: true`; a fabric peer that is not in this map
+is irrelevant.
+
+```yaml
+fresh_install:
+  required_platforms: [apple, amd, nvidia]
+  snapshot_root: fresh-install-snapshots
+  snapshot_retention_days: 30
+  lease_ttl_s: 3600
+  emergency_lease_ttl_s: 21600
+  targets:
+    apple:
+      kind: physical
+      platform: apple
+      hardware_class: apple-silicon-32gb
+      eligible: false
+      exclusion_reason: replace placeholders before enabling
+      ssh_host: replace-me
+      service_manager: launchd
+      service_stop_command: replace-me
+      service_start_command: replace-me
+      isolation_enter_command: replace-with-target-local-skulk-traffic-isolation
+      isolation_exit_command: replace-with-target-local-isolation-removal
+      expected_backends: [mlx, mlx-metal]
+      expected_data_transport: zenoh
+      vision_contract: positive
+      text_models:
+        - mlx-community/Qwen3.5-2B-4bit
+        - mlx-community/Qwen3-VL-4B-Instruct-4bit
+      vision_models:
+        - mlx-community/Qwen3.5-2B-4bit
+        - mlx-community/Qwen3-VL-4B-Instruct-4bit
+```
+
+When `fresh-install qualify` is run without `--target`, every
+`required_platforms` entry must have at least one explicitly eligible target or
+the release matrix is refused before any lifecycle mutation begins. Repeated
+`--target` options are for deliberate single-leg qualification and do not claim
+the complete release status.
+
+The heartbeat defaults to one third of `lease_ttl_s` and cannot be configured
+less safely. Physical targets also declare config paths and an existing
+checkout for hash/commit restoration checks. RunPod settings include its
+neutral image, SSH keys, GPU choices, maximum hourly price and runtime, and
+never include a network volume.
+
+Eligible physical targets must also provide reversible isolation commands.
+They block only Skulk discovery and fabric traffic on the selected target while
+preserving SSH. This is how a default, override-free temporary process is
+required to observe exactly one node even when the ordinary dev fleet remains
+online. Isolation removal is part of mandatory restoration; failure leaves the
+lease held.

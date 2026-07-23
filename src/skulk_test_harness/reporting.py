@@ -5,7 +5,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from skulk_test_harness.models import Issue, RunReport, StabilityReport
+from skulk_test_harness.models import (
+    FreshInstallQualificationReport,
+    Issue,
+    RunReport,
+    StabilityReport,
+)
 from skulk_test_harness.utils import slugify
 
 
@@ -41,6 +46,21 @@ class ReportWriter:
             report.model_dump_json(indent=2, serialize_as_any=True)
         )
         (run_dir / "summary.md").write_text(_stability_markdown(report))
+        return run_dir
+
+    def write_fresh_install(
+        self, report: FreshInstallQualificationReport
+    ) -> Path:
+        """Write a private fresh-install report and lifecycle summary."""
+
+        run_dir = self.run_dir(report.qualification_id)
+        run_dir.mkdir(parents=True, exist_ok=True)
+        report_path = run_dir / "fresh-install-report.json"
+        report_path.write_text(report.model_dump_json(indent=2))
+        report_path.chmod(0o600)
+        summary_path = run_dir / "fresh-install-summary.md"
+        summary_path.write_text(_fresh_install_markdown(report))
+        summary_path.chmod(0o600)
         return run_dir
 
 
@@ -212,6 +232,39 @@ def _stability_markdown(report: StabilityReport) -> str:
     else:
         lines.append("- None")
 
+    lines.extend(["", "## Issues", ""])
+    if report.issues:
+        for issue in report.issues:
+            lines.extend(_issue_lines(issue))
+    else:
+        lines.append("- None")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _fresh_install_markdown(report: FreshInstallQualificationReport) -> str:
+    """Render an operator-readable qualification and recovery summary."""
+
+    lines = [
+        f"# Fresh-install qualification: {'PASS' if report.passed else 'FAIL'}",
+        "",
+        f"- Qualification: `{report.qualification_id}`",
+        f"- Profile: `{report.profile}`",
+        f"- Platform: `{report.platform}`",
+        f"- Hardware class: `{report.hardware_class}`",
+        f"- Expected commit: `{report.install.expected_commit or 'shipping main'}`",
+        f"- Resolved commit: `{report.install.resolved_commit or 'unknown'}`",
+        f"- DATA transport: `{report.install.data_transport or 'unknown'}`",
+        f"- Node count: `{report.install.node_count or 'unknown'}`",
+        f"- Restoration: `{report.restoration_succeeded}`",
+        f"- Teardown: `{report.teardown_succeeded}`",
+        f"- Critical recovery required: `{report.critical_recovery_required}`",
+        "",
+        "## Lifecycle",
+        "",
+    ]
+    for stage in report.lifecycle:
+        lines.append(f"- `{stage.status}` **{stage.name}**: {stage.message or ''}")
     lines.extend(["", "## Issues", ""])
     if report.issues:
         for issue in report.issues:

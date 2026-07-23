@@ -166,8 +166,9 @@ model_sets:
 
   vision:
     name: vision
-    description: Vision-capable text-generation model for image input coverage.
+    description: Configured-fleet vision regression models for image input coverage.
     models:
+      - mlx-community/Qwen3.5-2B-4bit
       - mlx-community/Qwen3-VL-4B-Instruct-4bit
 
   served-spec-draft-simple:

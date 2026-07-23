@@ -1,0 +1,139 @@
+name: fresh-install qualification
+
+on:
+  schedule:
+    - cron: "17 7 * * *"
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: Candidate pins dev; shipping runs the literal public main installer
+        required: true
+        type: choice
+        options: [candidate, shipping]
+        default: candidate
+      expected_commit:
+        description: Full candidate SHA; blank resolves the current Skulk dev tip
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fresh-install-release-qualification
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    if: github.event_name != 'schedule' || vars.FRESH_INSTALL_NIGHTLY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      profile: ${{ steps.qualification.outputs.profile }}
+      expected: ${{ steps.qualification.outputs.expected }}
+    steps:
+      - name: Resolve one immutable matrix target
+        id: qualification
+        env:
+          DISPATCH_PROFILE: ${{ inputs.profile }}
+          DISPATCH_COMMIT: ${{ inputs.expected_commit }}
+        run: |
+          profile="${DISPATCH_PROFILE:-candidate}"
+          expected="${DISPATCH_COMMIT:-}"
+          branch=dev
+          if [ "$profile" = shipping ]; then
+            branch=main
+            expected=
+          fi
+          if [ -z "$expected" ]; then
+            expected="$(git ls-remote https://github.com/Foxlight-Foundation/Skulk.git "refs/heads/$branch" | cut -f1)"
+          fi
+          if ! printf '%s' "$expected" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "qualification requires a full Skulk commit" >&2
+            exit 2
+          fi
+          if [ "$profile" = candidate ]; then
+            dev="$(git ls-remote https://github.com/Foxlight-Foundation/Skulk.git refs/heads/dev | cut -f1)"
+            comparison="$(curl -fsSL "https://api.github.com/repos/Foxlight-Foundation/Skulk/compare/$expected...$dev")"
+            comparison_status="$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("status", ""))' <<<"$comparison")"
+            if [ "$comparison_status" != ahead ] && [ "$comparison_status" != identical ]; then
+              echo "candidate commit is not reachable from Skulk dev" >&2
+              exit 2
+            fi
+          fi
+          echo "profile=$profile" >> "$GITHUB_OUTPUT"
+          echo "expected=$expected" >> "$GITHUB_OUTPUT"
+
+  qualify:
+    # Nightly activation is deliberate because these are cost-bearing physical
+    # and cloud legs. Manual candidate/shipping release gates are always enabled.
+    needs: resolve
+    # One controller runs the explicitly eligible inventory in config order.
+    # Keeping the matrix inside one process is what lets a restoration or lease
+    # failure abort every remaining physical and cloud leg immediately.
+    runs-on: [self-hosted, skulk-fresh-install, controller]
+    timeout-minutes: 720
+    env:
+      FRESH_INSTALL_CONFIG: ${{ secrets.FRESH_INSTALL_CONFIG_PATH }}
+      RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Install harness and Chromium
+        run: |
+          uv sync --locked
+          uv run playwright install chromium
+      - name: Qualify fresh install
+        env:
+          PROFILE: ${{ needs.resolve.outputs.profile }}
+          EXPECTED: ${{ needs.resolve.outputs.expected }}
+        run: |
+          test -n "$FRESH_INSTALL_CONFIG"
+          if [ "$PROFILE" = candidate ]; then
+            uv run skulk-harness fresh-install qualify \
+              --profile candidate \
+              --expected-commit "$EXPECTED" \
+              --config "$FRESH_INSTALL_CONFIG"
+          else
+            uv run skulk-harness fresh-install qualify \
+              --profile shipping \
+              --config "$FRESH_INSTALL_CONFIG"
+          fi
+      - name: Retain private qualification artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fresh-install-matrix-${{ github.run_id }}
+          path: runs/fresh-*
+          retention-days: 30
+          if-no-files-found: warn
+
+  publish-gate:
+    if: >-
+      always() &&
+      (github.event_name != 'schedule' ||
+       vars.FRESH_INSTALL_NIGHTLY_ENABLED == 'true')
+    needs: [resolve, qualify]
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.SKULK_STATUS_TOKEN }}
+      RESOLVED_PROFILE: ${{ needs.resolve.outputs.profile }}
+      RESOLVED_COMMIT: ${{ needs.resolve.outputs.expected }}
+    steps:
+      - name: Publish the only release E2E status
+        env:
+          MATRIX_RESULT: ${{ needs.qualify.result }}
+        run: |
+          test -n "$GH_TOKEN"
+          profile="$RESOLVED_PROFILE"
+          commit="$RESOLVED_COMMIT"
+          state=failure
+          if [ "$MATRIX_RESULT" = success ]; then
+            state=success
+          fi
+          gh api \
+            --method POST \
+            "repos/Foxlight-Foundation/Skulk/statuses/$commit" \
+            -f state="$state" \
+            -f context="fresh-install/$profile" \
+            -f description="Apple, AMD, and NVIDIA fresh-install matrix: $state" \
+            -f target_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

@@ -18,9 +18,11 @@ from skulk_test_harness import submit as submit_module
 from skulk_test_harness.client import SkulkClient
 from skulk_test_harness.compare import compare, load_reports, select_run_dirs
 from skulk_test_harness.fleet_lock import FleetLockStore
+from skulk_test_harness.fresh_install import FreshInstallQualifier
 from skulk_test_harness.goal_parser import parse_goal
 from skulk_test_harness.models import (
     ComparisonRecord,
+    FreshInstallProfile,
     HarnessConfig,
     PlacementPolicy,
     RunSpec,
@@ -37,10 +39,14 @@ stability_app = typer.Typer(help="Run cluster stability suites (failover/churn/s
 fleet_app = typer.Typer(
     help="Coordinate exclusive access to a shared test fleet across agents."
 )
+fresh_install_app = typer.Typer(
+    help="Qualify the literal fresh-install experience used for release gates."
+)
 app.add_typer(models_app, name="models")
 app.add_typer(tests_app, name="tests")
 app.add_typer(stability_app, name="stability")
 app.add_typer(fleet_app, name="fleet")
+app.add_typer(fresh_install_app, name="fresh-install")
 
 console = Console()
 
@@ -229,6 +235,89 @@ def _print_lease(store: FleetLockStore) -> None:
         if value:
             table.add_row(label, str(value))
     console.print(table)
+
+
+@fresh_install_app.command("qualify")
+def fresh_install_qualify(
+    profile: Annotated[
+        FreshInstallProfile,
+        typer.Option(
+            "--profile",
+            help="candidate pins a commit; shipping runs the literal main installer.",
+        ),
+    ],
+    expected_commit: Annotated[
+        str | None,
+        typer.Option(
+            "--expected-commit",
+            help="Full 40-character dev commit required for candidate qualification.",
+        ),
+    ] = None,
+    target: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--target",
+            help="Eligible inventory target to run; repeat or omit for the matrix.",
+        ),
+    ] = None,
+    config: ConfigPath = Path("skulk-harness.yaml"),
+) -> None:
+    """Run release-blocking qualification from an empty installation."""
+
+    cfg = load_config(config)
+    if cfg.fresh_install is None:
+        console.print("[bold red]REFUSED[/]: config has no fresh_install section")
+        raise typer.Exit(code=2)
+    if profile == "candidate" and expected_commit is None:
+        console.print(
+            "[bold red]REFUSED[/]: candidate requires --expected-commit with a "
+            "full commit SHA"
+        )
+        raise typer.Exit(code=2)
+    if profile == "shipping" and expected_commit is not None:
+        console.print(
+            "[bold red]REFUSED[/]: shipping runs public main and does not accept "
+            "--expected-commit"
+        )
+        raise typer.Exit(code=2)
+    try:
+        selected = cfg.fresh_install.eligible_targets(target)
+        if target is None:
+            cfg.fresh_install.assert_complete_release_matrix(selected)
+    except ValueError as exception:
+        console.print(f"[bold red]REFUSED[/]: {exception}")
+        raise typer.Exit(code=2) from exception
+    if not selected:
+        console.print("[bold red]REFUSED[/]: no explicitly eligible targets selected")
+        raise typer.Exit(code=2)
+
+    qualifier = FreshInstallQualifier(cfg)
+    failed = False
+    for target_name, target_config in selected:
+        console.print(
+            f"[bold]Fresh install[/] {profile}: "
+            f"{target_config.platform}/{target_config.hardware_class}"
+        )
+        report = qualifier.qualify_target(
+            target_name=target_name,
+            target=target_config,
+            profile=profile,
+            expected_commit=expected_commit,
+        )
+        status = "[green]PASS[/]" if report.passed else "[bold red]FAIL[/]"
+        console.print(
+            f"{status} {report.platform}/{report.hardware_class} "
+            f"report={qualifier.writer.run_dir(report.qualification_id)}"
+        )
+        failed = failed or not report.passed
+        if report.critical_recovery_required:
+            console.print(
+                "[bold red]CRITICAL[/]: recovery is incomplete; the lease remains "
+                "held and no further target will be tested."
+            )
+            break
+    if failed:
+        raise typer.Exit(code=1)
 
 
 @fleet_app.command("status")

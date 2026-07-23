@@ -23,6 +23,7 @@ module.exports = {
         "guides/compare-runs",
         "guides/submit-to-the-ledger",
         "guides/fleet-coordination",
+        "guides/fresh-install-qualification",
         "guides/run-foxlight-profile",
         "guides/stability-suites",
       ],

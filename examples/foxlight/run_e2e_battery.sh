@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Full e2e + benchmark battery against the live multi-node cluster. Each cell
+# Configured-fleet regression + benchmark battery against the live multi-node
+# cluster. This does not install Skulk and cannot satisfy the release E2E gate.
+# Each cell
 # places from the store, runs its test set, then tears the instance down to free
 # memory. The MLX/llama.cpp cells capture wall-clock TTFT + approx TPS; the MTP
 # cell is a pass/fail correctness gate. A failing cell fails the whole battery

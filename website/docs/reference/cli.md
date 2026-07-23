@@ -23,6 +23,7 @@ current directory, falling back to built-in defaults if absent).
 | `goal --execute` | Yes | Yes | Execute the parsed goal |
 | `compare` | No | No | Compare two local run sets like-for-like |
 | `submit` | No | No | Submit a local run to the community benchmarks ledger |
+| `fresh-install qualify` | No pre-existing clean target | Yes, selected target only | Install and qualify the candidate or shipping product experience |
 
 `compare` and `submit` work entirely from local report files under
 `output_dir`; neither contacts a Skulk cluster (`submit` contacts only the
@@ -57,6 +58,24 @@ ledger's ingest API).
 Stability suites also accept `--model`/`-m` (the model to exercise), and
 per-suite knobs: `--min-nodes` (failover), `--rounds` (churn), and
 `--concurrency` plus `--duration-s` (soak).
+
+## Fresh-install Command
+
+```bash
+uv run skulk-harness fresh-install qualify \
+  --profile candidate \
+  --expected-commit <full-sha> \
+  --config skulk-harness.fresh-install.yaml
+
+uv run skulk-harness fresh-install qualify \
+  --profile shipping \
+  --config skulk-harness.fresh-install.yaml
+```
+
+`candidate` requires a full 40-character SHA and passes it to the official
+installer's `--ref` option. `shipping` rejects a commit argument and runs the
+literal public `main/install.sh | bash` path. Repeat `--target` to select a
+subset; omitting it runs every explicitly eligible inventory entry.
 
 ## Common Flags
 
