@@ -51,7 +51,24 @@ cluster_nodes: {}
 | `output_dir` | `runs` | Where reports are written; also where `compare` resolves run selectors |
 | `model_sets_path` | `configs/model_sets.yaml` | YAML file containing model sets |
 | `test_sets_path` | `configs/test_sets.yaml` | YAML file containing test sets |
+| `required_data_transport` | unset | Optional release-qualification gate: require every live node represented in either `/state` `nodeResources` or `nodeIdentities` telemetry to advertise `zenoh` or `gossipsub` before an executed run can mutate the cluster |
 | `cluster_nodes` | `{}` | SSH control settings for stability suites |
+
+## Required Data Transport
+
+Generic and community profiles leave `required_data_transport` unset. A
+release-qualification profile can pin the transport that Skulk ships:
+
+```yaml
+required_data_transport: zenoh
+```
+
+Before any named run, natural-language goal, or stability suite performs a
+mutating action, the harness reads `/state` and checks every live node present
+in either `nodeResources` or `nodeIdentities`. Execution stops before placement
+or other cluster changes if a node has no transport advertisement, if the
+telemetry maps are only partially populated, or if any node reports a different
+transport.
 
 ## Cluster Nodes
 

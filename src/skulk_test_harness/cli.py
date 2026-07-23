@@ -132,6 +132,80 @@ def _require_fleet_or_refuse(cfg: HarnessConfig, *, force: bool) -> None:
         raise typer.Exit(code=1)
 
 
+def _require_shipping_data_transport(
+    cfg: HarnessConfig, state: dict[str, object]
+) -> None:
+    """Refuse an E2E run whose live fleet is not on the required DATA transport.
+
+    The Foxlight battery is release qualification, so testing a hand-configured
+    transport that differs from a fresh Skulk installation gives false
+    confidence. ``nodeResources`` carries each node's startup-resolved transport;
+    require a complete, uniform match before any placement or model-store
+    mutation. Generic harness profiles leave the requirement unset.
+    """
+    required = cfg.required_data_transport
+    if required is None:
+        return
+    resources = _dict_field(state, "nodeResources")
+    identities = _dict_field(state, "nodeIdentities")
+    if not resources:
+        raise ValueError(
+            f"required_data_transport={required!r}, but /state has no "
+            "nodeResources transport advertisements"
+        )
+    if not identities:
+        raise ValueError(
+            f"required_data_transport={required!r}, but /state has no "
+            "nodeIdentities to define the live fleet"
+        )
+
+    mismatches: list[str] = []
+    for node_id in resources.keys() | identities.keys():
+        identity = identities.get(node_id)
+        friendly_name = (
+            identity.get("friendlyName")
+            if isinstance(identity, dict)
+            and isinstance(identity.get("friendlyName"), str)
+            else node_id
+        )
+        raw_resource = resources.get(node_id)
+        observed = (
+            raw_resource.get("dataTransport")
+            if isinstance(raw_resource, dict)
+            else None
+        )
+        if observed != required:
+            rendered = observed if isinstance(observed, str) else "missing"
+            mismatches.append(f"{friendly_name}={rendered}")
+
+    if mismatches:
+        raise ValueError(
+            f"E2E shipping-profile violation: required DATA transport "
+            f"{required!r}, observed {', '.join(sorted(mismatches))}. Refusing "
+            "to qualify a runtime path different from the one we ship."
+        )
+
+
+def _require_execution_preflight(cfg: HarnessConfig, *, force: bool) -> None:
+    """Apply every safety and shipping-contract gate before fleet mutation.
+
+    All execution entry points share this preflight so natural-language goals,
+    named runs, and stability suites cannot certify a transport path that the
+    configured profile does not ship.
+    """
+    _require_fleet_or_refuse(cfg, force=force)
+    if cfg.required_data_transport is None:
+        return
+    with SkulkClient(
+        cfg.api_base_url, request_timeout_s=cfg.request_timeout_s
+    ) as client:
+        try:
+            _require_shipping_data_transport(cfg, client.get_state())
+        except ValueError as exception:
+            console.print(f"[bold red]REFUSED[/]: {exception}")
+            raise typer.Exit(code=1) from exception
+
+
 def _print_lease(store: FleetLockStore) -> None:
     lease = store.read()
     now = datetime.now(UTC)
@@ -514,7 +588,7 @@ def run(
     # An executed run mutates the shared fleet; refuse if another agent holds the
     # lease. A dry-run only reads/plans, so it never needs the fleet.
     if execute:
-        _require_fleet_or_refuse(cfg, force=force)
+        _require_execution_preflight(cfg, force=force)
     # Resolve friendly names to live libp2p node IDs before building the
     # spec: placement exclusion is by node ID, but node IDs are ephemeral so a
     # battery cell can only name a node by its stable friendly name.
@@ -602,7 +676,7 @@ def goal(
 
     cfg, runner = _load_runner(config)
     if execute:
-        _require_fleet_or_refuse(cfg, force=force)
+        _require_execution_preflight(cfg, force=force)
     spec = parse_goal(
         text,
         model_set_names=list(runner.model_sets),
@@ -728,7 +802,7 @@ def stability_failover(
 
     _require_destructive_opt_in(execute_destructive)
     cfg = load_config(config)
-    _require_fleet_or_refuse(cfg, force=force)
+    _require_execution_preflight(cfg, force=force)
     with _stability_client(cfg) as client:
         report = stability.run_failover(client, cfg, model, min_nodes=min_nodes)
     _write_stability(cfg, report)
@@ -758,7 +832,7 @@ def stability_churn(
 
     _require_destructive_opt_in(execute_destructive)
     cfg = load_config(config)
-    _require_fleet_or_refuse(cfg, force=force)
+    _require_execution_preflight(cfg, force=force)
     with _stability_client(cfg) as client:
         report = stability.run_churn(client, cfg, model, rounds=rounds)
     _write_stability(cfg, report)
@@ -781,7 +855,7 @@ def stability_soak(
     """Drive sustained concurrent load and report latency/failures."""
 
     cfg = load_config(config)
-    _require_fleet_or_refuse(cfg, force=force)
+    _require_execution_preflight(cfg, force=force)
     with _stability_client(cfg) as client:
         report = stability.run_soak(
             client, cfg, model, concurrency=concurrency, duration_s=duration_s
@@ -812,7 +886,7 @@ def stability_refusal(
 
     _require_destructive_opt_in(execute_destructive)
     cfg = load_config(config)
-    _require_fleet_or_refuse(cfg, force=force)
+    _require_execution_preflight(cfg, force=force)
     with _stability_client(cfg) as client:
         report = stability.run_placement_refusal(client, cfg, model)
     _write_stability(cfg, report)

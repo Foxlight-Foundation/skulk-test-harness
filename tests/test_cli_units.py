@@ -37,6 +37,8 @@ def _report(spec: RunSpec, *, passed: bool) -> RunReport:
 class _StubRunner:
     def __init__(self, *, passed: bool) -> None:
         self._passed = passed
+        self.model_sets = {"s": object()}
+        self.test_sets = {"t": object()}
 
     def execute(self, spec: RunSpec) -> RunReport:
         return _report(spec, passed=self._passed)
@@ -76,6 +78,106 @@ def test_dry_run_does_not_gate(monkeypatch, tmp_path) -> None:
     _patch(monkeypatch, tmp_path, passed=False)
     result = runner_cli.invoke(cli.app, ["run", "-m", "s", "-t", "t", "--dry-run"])
     assert result.exit_code == 0
+
+
+def test_shipping_transport_requirement_accepts_uniform_fleet() -> None:
+    cfg = HarnessConfig(required_data_transport="zenoh")
+    state: dict[str, object] = {
+        "nodeResources": {
+            "peer-a": {"dataTransport": "zenoh"},
+            "peer-b": {"dataTransport": "zenoh"},
+        },
+        "nodeIdentities": {
+            "peer-a": {"friendlyName": "alpha"},
+            "peer-b": {"friendlyName": "beta"},
+        },
+    }
+
+    cli._require_shipping_data_transport(cfg, state)
+
+
+def test_shipping_transport_requirement_rejects_mixed_fleet() -> None:
+    cfg = HarnessConfig(required_data_transport="zenoh")
+    state: dict[str, object] = {
+        "nodeResources": {
+            "peer-a": {"dataTransport": "zenoh"},
+            "peer-b": {"dataTransport": "gossipsub"},
+        },
+        "nodeIdentities": {
+            "peer-a": {"friendlyName": "alpha"},
+            "peer-b": {"friendlyName": "beta"},
+        },
+    }
+
+    with pytest.raises(
+        ValueError,
+        match="shipping-profile violation.*beta=gossipsub",
+    ):
+        cli._require_shipping_data_transport(cfg, state)
+
+
+def test_shipping_transport_requirement_rejects_live_node_without_resources() -> None:
+    cfg = HarnessConfig(required_data_transport="zenoh")
+    state: dict[str, object] = {
+        "nodeResources": {
+            "peer-a": {"dataTransport": "zenoh"},
+        },
+        "nodeIdentities": {
+            "peer-a": {"friendlyName": "alpha"},
+            "peer-b": {"friendlyName": "beta"},
+        },
+    }
+
+    with pytest.raises(
+        ValueError,
+        match="shipping-profile violation.*beta=missing",
+    ):
+        cli._require_shipping_data_transport(cfg, state)
+
+
+def test_shipping_transport_requirement_rejects_resource_without_identity() -> None:
+    cfg = HarnessConfig(required_data_transport="zenoh")
+    state: dict[str, object] = {
+        "nodeResources": {
+            "peer-a": {"dataTransport": "zenoh"},
+            "peer-b": {"dataTransport": "gossipsub"},
+        },
+        "nodeIdentities": {
+            "peer-a": {"friendlyName": "alpha"},
+        },
+    }
+
+    with pytest.raises(
+        ValueError,
+        match="shipping-profile violation.*peer-b=gossipsub",
+    ):
+        cli._require_shipping_data_transport(cfg, state)
+
+
+def test_shipping_transport_requirement_rejects_missing_advertisements() -> None:
+    cfg = HarnessConfig(required_data_transport="zenoh")
+
+    with pytest.raises(ValueError, match="no nodeResources transport advertisements"):
+        cli._require_shipping_data_transport(cfg, {})
+
+
+def test_generic_profile_has_no_shipping_transport_requirement() -> None:
+    cli._require_shipping_data_transport(HarnessConfig(), {})
+
+
+def test_goal_execute_uses_shared_execution_preflight(monkeypatch, tmp_path) -> None:
+    _patch(monkeypatch, tmp_path, passed=True)
+    observed: list[tuple[HarnessConfig, bool]] = []
+
+    def record_preflight(cfg: HarnessConfig, *, force: bool) -> None:
+        observed.append((cfg, force))
+
+    monkeypatch.setattr(cli, "_require_execution_preflight", record_preflight)
+
+    result = runner_cli.invoke(cli.app, ["goal", "run s on t", "--execute"])
+
+    assert result.exit_code == 0
+    assert observed == [(HarnessConfig(output_dir=tmp_path), False)]
 
 
 @pytest.mark.parametrize(

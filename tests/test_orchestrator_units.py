@@ -118,10 +118,12 @@ def test_public_and_foxlight_example_configs_load() -> None:
 
     assert public_config.api_base_url == "http://localhost:52415"
     assert public_config.model_sets_path == Path("configs/model_sets.yaml")
+    assert public_config.required_data_transport is None
     assert public_config.cluster_nodes == {}
     assert foxlight_config.api_base_url == "http://kite1:52415"
     assert foxlight_config.model_sets_path == Path("examples/foxlight/model_sets.yaml")
     assert foxlight_config.test_sets_path == Path("examples/foxlight/test_sets.yaml")
+    assert foxlight_config.required_data_transport == "zenoh"
     assert foxlight_config.cluster_nodes == {}
     assert sorted(stability_config.cluster_nodes) == ["node-a", "node-b"]
     assert all(

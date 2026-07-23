@@ -79,6 +79,13 @@ uv run skulk-harness run \
 harness started gets torn down at the end, leaving your cluster as it found
 it.
 
+Release-qualification profiles can also set
+`required_data_transport: zenoh` (or `gossipsub`). Before any named run,
+natural-language goal, or stability suite mutates the cluster, the harness
+checks every live node present in either `/state` telemetry map and refuses a
+missing, mixed, or mismatched transport advertisement. Generic profiles leave
+this unset.
+
 ## Where the results go
 
 Every run writes a directory under `runs/`:

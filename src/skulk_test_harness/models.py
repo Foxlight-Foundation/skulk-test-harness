@@ -202,6 +202,16 @@ class HarnessConfig(HarnessBaseModel):
     output_dir: Path = Path("runs")
     model_sets_path: Path = Path("configs/model_sets.yaml")
     test_sets_path: Path = Path("configs/test_sets.yaml")
+    required_data_transport: Literal["zenoh", "gossipsub"] | None = Field(
+        default=None,
+        description=(
+            "Optional fleet qualification invariant. Before an executed run, "
+            "require every node present in either /state nodeResources or "
+            "nodeIdentities to advertise this resolved DATA transport. "
+            "Foxlight's production E2E profile pins this to the transport Skulk "
+            "ships by default; generic/community profiles leave it unset."
+        ),
+    )
     cluster_nodes: dict[str, ClusterNode] = Field(
         default_factory=dict,
         description=(
