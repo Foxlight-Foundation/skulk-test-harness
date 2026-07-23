@@ -11,6 +11,7 @@ import signal
 import subprocess
 import sys
 import tarfile
+import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -838,3 +839,29 @@ def test_runpod_deletes_created_pod_when_cost_metadata_is_missing(
         client.provision(qualification_id="qualification")
 
     assert deleted == ["/v1/pods/pod-unknown-cost"]
+
+
+def test_cancelled_runpod_deadline_does_not_reenter_teardown() -> None:
+    terminated: list[str] = []
+
+    class FakeRunPodClient:
+        def terminate_and_confirm(self, pod_id: str) -> None:
+            terminated.append(pod_id)
+
+    fired = threading.Event()
+    cancelled = threading.Event()
+    cancelled.set()
+    errors: list[Exception] = []
+
+    fresh_install_module._runpod_deadline_teardown(
+        client=cast(RunPodClient, FakeRunPodClient()),
+        pod_id="pod-already-terminating",
+        fired=fired,
+        cancelled=cancelled,
+        errors=errors,
+        teardown_lock=threading.Lock(),
+    )
+
+    assert fired.is_set()
+    assert terminated == []
+    assert errors == []

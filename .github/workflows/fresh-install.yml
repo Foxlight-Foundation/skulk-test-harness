@@ -36,6 +36,7 @@ jobs:
         env:
           DISPATCH_PROFILE: ${{ inputs.profile }}
           DISPATCH_COMMIT: ${{ inputs.expected_commit }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           profile="${DISPATCH_PROFILE:-candidate}"
           expected="${DISPATCH_COMMIT:-}"
@@ -53,7 +54,10 @@ jobs:
           fi
           if [ "$profile" = candidate ]; then
             dev="$(git ls-remote https://github.com/Foxlight-Foundation/Skulk.git refs/heads/dev | cut -f1)"
-            comparison="$(curl -fsSL "https://api.github.com/repos/Foxlight-Foundation/Skulk/compare/$expected...$dev")"
+            comparison="$(curl -fsSL \
+              -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/Foxlight-Foundation/Skulk/compare/$expected...$dev")"
             comparison_status="$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("status", ""))' <<<"$comparison")"
             if [ "$comparison_status" != ahead ] && [ "$comparison_status" != identical ]; then
               echo "candidate commit is not reachable from Skulk dev" >&2

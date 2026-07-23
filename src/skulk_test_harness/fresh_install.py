@@ -421,6 +421,7 @@ class FreshInstallQualifier:
         teardown_succeeded = False
         deadline_timer: threading.Timer | None = None
         deadline_fired = threading.Event()
+        deadline_cancelled = threading.Event()
         deadline_errors: list[Exception] = []
         teardown_lock = threading.Lock()
         runpod = RunPodClient(self.fresh.runpod)
@@ -435,6 +436,7 @@ class FreshInstallQualifier:
                         "client": runpod,
                         "pod_id": pod_id,
                         "fired": deadline_fired,
+                        "cancelled": deadline_cancelled,
                         "errors": deadline_errors,
                         "teardown_lock": teardown_lock,
                     },
@@ -485,6 +487,7 @@ class FreshInstallQualifier:
                 Issue(severity="error", message=f"RunPod qualification failed: {exception}")
             )
         finally:
+            deadline_cancelled.set()
             if deadline_timer is not None:
                 deadline_timer.cancel()
             try:
@@ -505,7 +508,9 @@ class FreshInstallQualifier:
                 )
                 report.critical_recovery_required = True
             if deadline_timer is not None:
-                deadline_timer.join(timeout=1)
+                # The timer shares the provider client. Wait for its bounded
+                # teardown path to exit before closing that client.
+                deadline_timer.join()
             if deadline_fired.is_set():
                 report.issues.append(
                     Issue(
@@ -1059,6 +1064,7 @@ def _runpod_deadline_teardown(
     client: RunPodClient,
     pod_id: str,
     fired: threading.Event,
+    cancelled: threading.Event,
     errors: list[Exception],
     teardown_lock: threading.Lock,
 ) -> None:
@@ -1067,6 +1073,8 @@ def _runpod_deadline_teardown(
     fired.set()
     try:
         with teardown_lock:
+            if cancelled.is_set():
+                return
             client.terminate_and_confirm(pod_id)
     except Exception as exception:  # noqa: BLE001 - relayed to the main report
         errors.append(exception)
