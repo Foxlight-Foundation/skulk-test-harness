@@ -69,13 +69,15 @@ uv run skulk-harness fresh-install qualify \
 
 uv run skulk-harness fresh-install qualify \
   --profile shipping \
+  --expected-commit <full-promoted-main-sha> \
   --config skulk-harness.fresh-install.yaml
 ```
 
 `candidate` requires a full 40-character SHA and passes it to the official
-installer's `--ref` option. `shipping` rejects a commit argument and runs the
-literal public `main/install.sh | bash` path. Repeat `--target` to select a
-subset; omitting it runs every explicitly eligible inventory entry.
+installer's `--ref` option. `shipping` runs the literal public
+`main/install.sh | bash` path and uses the expected commit only to assert what
+that command resolved. Repeat `--target` to select a subset; omitting it runs
+every explicitly eligible inventory entry.
 
 ## Common Flags
 

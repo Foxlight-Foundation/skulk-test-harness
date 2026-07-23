@@ -146,10 +146,7 @@ class FreshInstallQualifier:
 
         if not target.eligible:
             raise ValueError(f"fresh-install target {target_name!r} is not eligible")
-        if profile == "candidate":
-            _require_commit_sha(expected_commit)
-        elif expected_commit is not None:
-            raise ValueError("shipping qualification does not accept expected_commit")
+        _require_commit_sha(expected_commit)
         qualification_id = (
             f"fresh-{profile}-{target.platform}-"
             f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}"

@@ -110,6 +110,7 @@ uv run skulk-harness fresh-install qualify \
 
 uv run skulk-harness fresh-install qualify \
   --profile shipping \
+  --expected-commit <40-character-promoted-main-commit> \
   --config skulk-harness.fresh-install.yaml
 ```
 

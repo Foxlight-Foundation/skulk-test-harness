@@ -96,6 +96,7 @@ jobs:
           else
             uv run skulk-harness fresh-install qualify \
               --profile shipping \
+              --expected-commit "$EXPECTED" \
               --config "$FRESH_INSTALL_CONFIG"
           fi
       - name: Retain private qualification artifacts

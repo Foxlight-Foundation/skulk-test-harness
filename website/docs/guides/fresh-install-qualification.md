@@ -14,8 +14,10 @@ fetches that exact object and checks it out detached, so a moving branch cannot
 change the tested candidate.
 
 `shipping` runs the literal public README command against `main`, with no
-product flags or `SKULK_*` environment overrides. It runs after promotion but
-before a release or tag is published.
+product flags or `SKULK_*` environment overrides. The expected promoted commit
+is supplied only as a post-install assertion, so a moving `main` cannot publish
+status for different code. It runs after promotion but before a release or tag
+is published.
 
 ```bash
 uv run playwright install chromium
@@ -27,6 +29,7 @@ uv run skulk-harness fresh-install qualify \
 
 uv run skulk-harness fresh-install qualify \
   --profile shipping \
+  --expected-commit <40-character-promoted-main-sha> \
   --config skulk-harness.fresh-install.yaml
 ```
 

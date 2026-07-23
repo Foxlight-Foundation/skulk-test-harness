@@ -250,7 +250,10 @@ def fresh_install_qualify(
         str | None,
         typer.Option(
             "--expected-commit",
-            help="Full 40-character dev commit required for candidate qualification.",
+            help=(
+                "Full 40-character promoted commit. Candidate installs it "
+                "directly; shipping asserts the literal main installer resolved it."
+            ),
         ),
     ] = None,
     target: Annotated[
@@ -268,16 +271,10 @@ def fresh_install_qualify(
     if cfg.fresh_install is None:
         console.print("[bold red]REFUSED[/]: config has no fresh_install section")
         raise typer.Exit(code=2)
-    if profile == "candidate" and expected_commit is None:
+    if expected_commit is None:
         console.print(
-            "[bold red]REFUSED[/]: candidate requires --expected-commit with a "
-            "full commit SHA"
-        )
-        raise typer.Exit(code=2)
-    if profile == "shipping" and expected_commit is not None:
-        console.print(
-            "[bold red]REFUSED[/]: shipping runs public main and does not accept "
-            "--expected-commit"
+            f"[bold red]REFUSED[/]: {profile} requires --expected-commit with "
+            "the full commit that the release gate will certify"
         )
         raise typer.Exit(code=2)
     try:

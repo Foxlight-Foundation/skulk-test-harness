@@ -252,7 +252,7 @@ def test_install_commands_pin_candidate_and_preserve_literal_shipping() -> None:
             "Foxlight-Foundation/Skulk/main/install.sh"
         ),
         profile="shipping",
-        expected_commit=None,
+        expected_commit=sha,
     )
     candidate = _installer_command(
         installer_url=f"https://example.invalid/{sha}/install.sh",

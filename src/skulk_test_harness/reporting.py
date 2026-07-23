@@ -252,7 +252,7 @@ def _fresh_install_markdown(report: FreshInstallQualificationReport) -> str:
         f"- Profile: `{report.profile}`",
         f"- Platform: `{report.platform}`",
         f"- Hardware class: `{report.hardware_class}`",
-        f"- Expected commit: `{report.install.expected_commit or 'shipping main'}`",
+        f"- Expected commit: `{report.install.expected_commit or 'unknown'}`",
         f"- Resolved commit: `{report.install.resolved_commit or 'unknown'}`",
         f"- DATA transport: `{report.install.data_transport or 'unknown'}`",
         f"- Node count: `{report.install.node_count or 'unknown'}`",
