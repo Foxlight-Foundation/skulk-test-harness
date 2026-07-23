@@ -943,17 +943,20 @@ test_sets:
   vision:
     name: vision
     description: >
-      Semantic multimodal coverage using a real portrait fixture with identity,
-      clothing, and background assertions that a text-only guess cannot satisfy.
+      Semantic multimodal coverage across Qwen3-VL, Qwen3.5, Gemma 3n, and
+      Gemma 4 using a real portrait fixture. Every architecture must report
+      multiple facts grounded in the actual pixels; prompts are scoped only
+      where small-model instruction behavior requires different phrasing.
     tests:
-      - name: real-portrait-identification
+      - name: qwen-real-portrait-identification
         kind: chat
+        model_ids:
+          - mlx-community/Qwen3-VL-4B-Instruct-4bit
+          - mlx-community/Qwen3.5-2B-4bit
         system: Describe only evidence visible in the supplied image.
         prompt: >-
           Identify the well-known person. Give the first and last name, then
           describe the visible jacket, shirt, and background in one sentence.
-        # Gemma 4 may emit a hidden/reasoning preamble before its concise answer;
-        # keep enough room for the semantic identity and scene assertions.
         max_tokens: 320
         temperature: 0
         enable_thinking: false
@@ -965,6 +968,58 @@ test_sets:
           required_regexes:
             - "(?i)\\belon\\s+musk\\b"
             - "(?i)(\\b(dark|black|navy)\\b.{0,40}\\b(suit|jacket|blazer)\\b|\\b(suit|jacket|blazer)\\b.{0,40}\\b(dark|black|navy)\\b)"
+            - "(?i)(\\b(white|light[- ]colored)\\b.{0,30}\\b(shirt|collar)\\b|\\b(shirt|collar)\\b.{0,30}\\b(white|light[- ]colored)\\b)"
+            - "(?i)(\\b(black|dark)\\b.{0,30}\\b(background|backdrop)\\b|\\b(background|backdrop)\\b.{0,30}\\b(black|dark)\\b)"
+          forbidden_substrings:
+            - bedroom
+            - furniture
+            - potted plant
+
+      - name: gemma3n-real-portrait-identification
+        kind: chat
+        model_ids:
+          - mlx-community/gemma-3n-E2B-it-4bit
+        prompt: >-
+          Who is this person? What colors are the jacket, shirt, and background?
+          Answer exactly: NAME; JACKET; SHIRT; BACKGROUND.
+        max_tokens: 192
+        temperature: 0
+        enable_thinking: false
+        images:
+          - input_path: fixtures/vision/elon-musk-portrait.png
+            media_type: image/png
+        success:
+          min_chars: 30
+          required_regexes:
+            - "(?i)\\belon\\s+musk\\b"
+            - "(?i)(\\b(dark|black|navy)\\b.{0,40}\\b(suit|jacket|blazer)\\b|\\b(suit|jacket|blazer)\\b.{0,40}\\b(dark|black|navy)\\b)"
+            - "(?i)(\\b(white|light[- ]colored)\\b.{0,30}\\b(shirt|collar)\\b|\\b(shirt|collar)\\b.{0,30}\\b(white|light[- ]colored)\\b)"
+            - "(?i)(\\b(black|dark)\\b.{0,30}\\b(background|backdrop)\\b|\\b(background|backdrop)\\b.{0,30}\\b(black|dark)\\b)"
+          forbidden_substrings:
+            - bedroom
+            - furniture
+            - potted plant
+
+      - name: gemma4-real-portrait-visible-details
+        kind: chat
+        model_ids:
+          - mlx-community/gemma-4-e2b-it-8bit
+        prompt: >-
+          How many people are visible? Describe the jacket color, the shirt or
+          collar color, and the background color. Do not identify the person.
+        # This small checkpoint emits a verbose analysis before the visible
+        # answer even with thinking disabled; leave room for all four facts.
+        max_tokens: 320
+        temperature: 0
+        enable_thinking: false
+        images:
+          - input_path: fixtures/vision/elon-musk-portrait.png
+            media_type: image/png
+        success:
+          min_chars: 30
+          required_regexes:
+            - "(?i)(\\b(one|1|single)\\b.{0,30}\\b(person|man)\\b|\\b(person|man)\\b.{0,30}\\b(one|1|single)\\b)"
+            - "(?i)(\\b(dark|black|navy|blue)\\b.{0,40}\\b(suit|jacket|blazer)\\b|\\b(suit|jacket|blazer)\\b.{0,40}\\b(dark|black|navy|blue)\\b)"
             - "(?i)(\\b(white|light[- ]colored)\\b.{0,30}\\b(shirt|collar)\\b|\\b(shirt|collar)\\b.{0,30}\\b(white|light[- ]colored)\\b)"
             - "(?i)(\\b(black|dark)\\b.{0,30}\\b(background|backdrop)\\b|\\b(background|backdrop)\\b.{0,30}\\b(black|dark)\\b)"
           forbidden_substrings:

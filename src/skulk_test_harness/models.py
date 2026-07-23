@@ -480,6 +480,13 @@ class PromptTest(HarnessBaseModel):
     name: str
     kind: TestKind = "chat"
     description: str = ""
+    model_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Optional exact model IDs this test applies to. An empty list runs "
+            "the test against every model in the selected model set."
+        ),
+    )
     system: str | None = None
     prompt: str
     max_tokens: int = Field(default=512, ge=1)
@@ -795,6 +802,17 @@ class PromptTest(HarnessBaseModel):
     )
     repetitions: int = Field(default=1, ge=1)
     success: SuccessCriteria = Field(default_factory=SuccessCriteria)
+
+    @field_validator("model_ids")
+    @classmethod
+    def _model_ids_are_non_empty_and_unique(cls, value: list[str]) -> list[str]:
+        """Reject ambiguous empty or duplicate exact-model scopes."""
+
+        if any(not model_id.strip() for model_id in value):
+            raise ValueError("PromptTest.model_ids entries must be non-empty")
+        if len(value) != len(set(value)):
+            raise ValueError("PromptTest.model_ids entries must be unique")
+        return value
 
 
 class TestSet(HarnessBaseModel):

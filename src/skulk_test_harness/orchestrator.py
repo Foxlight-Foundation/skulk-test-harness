@@ -261,7 +261,22 @@ class HarnessRunner:
             # test does not pin enable_thinking, default it OFF so the model
             # answers instead of emitting an all-reasoning, length-capped reply.
             thinking_default = False if thinking_toggles.get(model.model_id) else None
-            for test in test_set.tests:
+            applicable_tests = [
+                test
+                for test in test_set.tests
+                if _test_applies_to_model(test, model.model_id)
+            ]
+            if test_set.tests and not applicable_tests:
+                report.issues.append(
+                    Issue(
+                        severity="error",
+                        model_id=model.model_id,
+                        message="No tests in the selected test set apply to this model",
+                        evidence={"test_set": test_set.name},
+                    )
+                )
+                writer.write(report)
+            for test in applicable_tests:
                 for repetition in range(1, test.repetitions + 1):
                     result = self._run_test(
                         client,
@@ -4380,6 +4395,12 @@ def _speech_generation_kwargs(test: PromptTest) -> _SpeechGenerationKwargs:
 
 def _expanded_prompt(test: PromptTest) -> str:
     return test.prompt * test.prompt_repetitions
+
+
+def _test_applies_to_model(test: PromptTest, model_id: str) -> bool:
+    """Return whether a test's optional exact-model scope includes a model."""
+
+    return not test.model_ids or model_id in test.model_ids
 
 
 def _messages_for_test(test: PromptTest) -> list[dict[str, object]]:

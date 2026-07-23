@@ -68,6 +68,7 @@ from skulk_test_harness.orchestrator import (
     _score_transcript_fidelity,
     _select_catalog_models,
     _store_registry_entries,
+    _test_applies_to_model,
     _tool_roundtrip_messages,
     _wav_from_pcm16,
     _word_error_rate,
@@ -520,6 +521,28 @@ def test_messages_for_test_builds_multimodal_content() -> None:
     ]
 
 
+def test_prompt_test_model_scope_is_exact_and_defaults_to_all_models() -> None:
+    generic = PromptTest(name="generic", prompt="hello")
+    scoped = PromptTest(
+        name="scoped",
+        prompt="hello",
+        model_ids=["org/ModelA", "org/ModelB"],
+    )
+
+    assert _test_applies_to_model(generic, "org/Anything") is True
+    assert _test_applies_to_model(scoped, "org/ModelA") is True
+    assert _test_applies_to_model(scoped, "org/ModelC") is False
+
+    with pytest.raises(ValueError, match="must be non-empty"):
+        PromptTest(name="empty-scope", prompt="hello", model_ids=[" "])
+    with pytest.raises(ValueError, match="must be unique"):
+        PromptTest(
+            name="duplicate-scope",
+            prompt="hello",
+            model_ids=["org/ModelA", "org/ModelA"],
+        )
+
+
 def test_served_spec_selector_matches_runtime_field() -> None:
     selector = (
         load_model_sets(Path(__file__).parents[1] / "configs/model_sets.yaml")
@@ -966,27 +989,48 @@ def test_vision_suite_uses_real_portrait_and_strict_semantic_checks(
     root = Path(__file__).parents[1]
     monkeypatch.chdir(root)
     expected_hash = "90636c8a7c9032fdef45f65fa3c2f84887ed1d111742d7e6ecf2c33f3f34d113"
+    correct_identity_response = (
+        "The image shows Elon Musk wearing a dark navy suit jacket and a white "
+        "collared shirt against a black background."
+    )
+    correct_visible_details_response = (
+        "One man is visible in a dark navy jacket with a white shirt and a "
+        "black background."
+    )
+    hallucinated_response = (
+        "Elon Musk is standing in a bedroom with furniture and a potted plant."
+    )
 
-    for test_sets_path in (
-        root / "configs/test_sets.yaml",
-        root / "examples/foxlight/test_sets.yaml",
-    ):
-        test_sets = load_test_sets(test_sets_path).test_sets
-        vision = test_sets["vision"].tests[0]
-        data_plane = test_sets["vision-data-plane"].tests[0]
+    public_sets = load_test_sets(root / "configs/test_sets.yaml").test_sets
+    public_vision = public_sets["vision"].tests[0]
+    assert public_vision.name == "real-portrait-identification"
+    assert len(public_vision.success.required_regexes) == 4
+    assert (
+        _score_output(
+            "vision-model",
+            public_vision.name,
+            correct_identity_response,
+            public_vision.success,
+        )
+        == []
+    )
 
-        assert vision.name == "real-portrait-identification"
-        assert vision.images[0].input_path == Path(
-            "fixtures/vision/elon-musk-portrait.png"
+    foxlight_sets = load_test_sets(
+        root / "examples/foxlight/test_sets.yaml"
+    ).test_sets
+    foxlight_vision_tests = foxlight_sets["vision"].tests
+    assert {test.name for test in foxlight_vision_tests} == {
+        "qwen-real-portrait-identification",
+        "gemma3n-real-portrait-identification",
+        "gemma4-real-portrait-visible-details",
+    }
+    for vision in foxlight_vision_tests:
+        correct_response = (
+            correct_visible_details_response
+            if vision.name == "gemma4-real-portrait-visible-details"
+            else correct_identity_response
         )
         assert len(vision.success.required_regexes) == 4
-        assert data_plane.kind == "vision_data_plane"
-        assert data_plane.success.required_regexes == vision.success.required_regexes
-
-        correct_response = (
-            "The image shows Elon Musk wearing a dark suit jacket and a white "
-            "collared shirt against a black background."
-        )
         assert (
             _score_output(
                 "vision-model",
@@ -996,9 +1040,6 @@ def test_vision_suite_uses_real_portrait_and_strict_semantic_checks(
             )
             == []
         )
-        hallucinated_response = (
-            "Elon Musk is standing in a bedroom with furniture and a potted plant."
-        )
         assert _score_output(
             "vision-model",
             vision.name,
@@ -1006,15 +1047,27 @@ def test_vision_suite_uses_real_portrait_and_strict_semantic_checks(
             vision.success,
         )
 
-        messages = _messages_for_test(vision)
-        content = messages[-1]["content"]
-        assert isinstance(content, list)
-        image_part = content[0]
-        image_url = image_part["image_url"]["url"]
-        assert isinstance(image_url, str)
-        prefix, encoded = image_url.split(",", maxsplit=1)
-        assert prefix == "data:image/png;base64"
-        assert hashlib.sha256(base64.b64decode(encoded)).hexdigest() == expected_hash
+    for test_sets in (public_sets, foxlight_sets):
+        for vision in test_sets["vision"].tests:
+            assert vision.images[0].input_path == Path(
+                "fixtures/vision/elon-musk-portrait.png"
+            )
+            messages = _messages_for_test(vision)
+            content = messages[-1]["content"]
+            assert isinstance(content, list)
+            image_part = content[0]
+            image_url = image_part["image_url"]["url"]
+            assert isinstance(image_url, str)
+            prefix, encoded = image_url.split(",", maxsplit=1)
+            assert prefix == "data:image/png;base64"
+            assert (
+                hashlib.sha256(base64.b64decode(encoded)).hexdigest()
+                == expected_hash
+            )
+
+        data_plane = test_sets["vision-data-plane"].tests[0]
+        assert data_plane.kind == "vision_data_plane"
+        assert len(data_plane.success.required_regexes) == 4
 
 
 def test_foxlight_vision_model_set_spans_three_families() -> None:
@@ -1027,6 +1080,15 @@ def test_foxlight_vision_model_set_spans_three_families() -> None:
         "mlx-community/gemma-3n-E2B-it-4bit",
         "mlx-community/gemma-4-e2b-it-8bit",
     ]
+    foxlight_test_sets = load_test_sets(
+        root / "examples/foxlight/test_sets.yaml"
+    ).test_sets
+    scoped_models = {
+        model_id
+        for test in foxlight_test_sets["vision"].tests
+        for model_id in test.model_ids
+    }
+    assert scoped_models == set(model_sets["vision"].models)
     inventory_selector = model_sets["vision-inventory"].selectors[0]
     assert inventory_selector.capabilities_any == ["vision"]
     assert inventory_selector.max_models is None
@@ -3193,6 +3255,50 @@ def test_clear_deferred_placement_issues_keeps_real_run_errors() -> None:
     assert [(issue.model_id, issue.message) for issue in report.issues] == [
         ("m/Foo", "Model run failed; continuing to next model"),
         ("m/Bar", "No usable placement preview found before execution"),
+    ]
+
+
+def test_model_lifecycle_reports_when_every_test_excludes_model(
+    tmp_path: Path,
+) -> None:
+    client = _FakeClient()
+    runner = _runner()
+    runner._ensure_model_placed = lambda *_a, **_k: PlacementResult(  # type: ignore[method-assign]
+        model_id="m/Foo",
+        instance_id="inst-1",
+        created_by_harness=True,
+        ready=True,
+    )
+    spec = RunSpec(model_set="m", test_set="scoped", mode="execute")
+    report = RunReport.start("run-1", spec, [])
+
+    placed = runner._run_model_lifecycle(
+        client,  # type: ignore[arg-type]
+        ModelRef(model_id="m/Foo", source="explicit"),
+        spec,
+        report,
+        HarnessTestSet(
+            name="scoped",
+            tests=[
+                PromptTest(
+                    name="other-model-only",
+                    prompt="hello",
+                    model_ids=["m/Bar"],
+                )
+            ],
+        ),
+        ReportWriter(tmp_path),
+        {},
+    )
+
+    assert placed is True
+    assert report.results == []
+    assert [(issue.severity, issue.model_id, issue.message) for issue in report.issues] == [
+        (
+            "error",
+            "m/Foo",
+            "No tests in the selected test set apply to this model",
+        )
     ]
 
 
