@@ -31,6 +31,7 @@ from skulk_test_harness.dashboard_qualification import (
     _captured_image_digest,  # pyright: ignore[reportPrivateUsage]
     _JourneyProgress,  # pyright: ignore[reportPrivateUsage]
 )
+from skulk_test_harness.echo_phrase import echo_matched, echo_phrase, echo_prompt
 from skulk_test_harness.fleet_lock import FleetLease, LeaseOutcome
 from skulk_test_harness.fresh_install import (
     QualificationInterruptedError,
@@ -207,12 +208,12 @@ def test_direct_text_check_matches_dashboard_thinking_default(
     class FakeClient:
         def stream_chat(self, **kwargs: object) -> SimpleNamespace:
             calls.append(kwargs)
-            return SimpleNamespace(text="API-CAFEBABE")
+            return SimpleNamespace(text="amber harbor 4821")
 
     monkeypatch.setattr(
-        qualification_checks_module.secrets,
-        "token_hex",
-        lambda _length: "CAFEBABE",
+        qualification_checks_module,
+        "echo_phrase",
+        lambda: "amber harbor 4821",
     )
 
     assert qualify_direct_text(
@@ -227,8 +228,8 @@ def test_direct_text_check_matches_dashboard_thinking_default(
                 {
                     "role": "user",
                     "content": (
-                        "Reply with this token exactly once and nothing else: "
-                        "API-CAFEBABE"
+                        "Repeat this phrase back exactly and say nothing else: "
+                        "amber harbor 4821"
                     ),
                 }
             ],
@@ -1667,3 +1668,69 @@ def test_untouched_browser_journey_reports_no_progress() -> None:
     assert outcome.vision is None
     assert outcome.false_vision_path_offered is None
     assert outcome.passed is False
+
+
+def test_echo_phrase_does_not_look_like_a_credential() -> None:
+    """The echo phrase must not read as a secret to a safety-tuned model.
+
+    A hex nonce (``FRESH-3D8C32F7``) was refused outright by a 1B instruct
+    model, which failed a qualification leg on an install that was working
+    perfectly. The phrase is ordinary language for that reason, so this
+    asserts the property rather than the exact wording.
+    """
+
+    for _ in range(50):
+        phrase = echo_phrase()
+        words = phrase.split(" ")
+        assert len(words) == 3
+        assert words[0].isalpha() and words[1].isalpha()
+        assert words[0] != words[1]
+        assert words[2].isdigit() and len(words[2]) == 4
+        # No hex-nonce run, and none of the words that cue "secret".
+        assert not re.search(r"[0-9a-f]{8}", phrase, re.IGNORECASE)
+        assert "-" not in phrase
+        assert not re.search(r"token|key|secret|code", phrase, re.IGNORECASE)
+
+    assert "token" not in echo_prompt("amber harbor 1234").lower()
+
+
+def test_echo_phrase_is_unpredictable() -> None:
+    """A stale or replayed response must not be able to satisfy the check."""
+
+    assert len({echo_phrase() for _ in range(200)}) > 150
+
+
+def test_echo_match_accepts_a_recapitalized_reply() -> None:
+    """A model that capitalizes its reply has still proven the chat path works.
+
+    The browser waiter already returns on a case-insensitive match, so a
+    case-sensitive assertion afterwards would reject a response the wait had
+    declared good.
+    """
+
+    assert echo_matched("amber harbor 4821", "Amber Harbor 4821")
+    assert echo_matched("amber harbor 4821", "Sure! amber harbor 4821")
+    assert not echo_matched("amber harbor 4821", "amber harbor 4822")
+
+
+def test_failed_text_chat_reports_what_the_model_actually_said() -> None:
+    """A refused prompt must be distinguishable from a broken chat path.
+
+    Both produce ``text_chat_passed: false``. Only the response text says
+    which one happened, and reading it out of a screenshot is not diagnosis.
+    """
+
+    progress = _JourneyProgress(model_id="org/model")
+    progress.text_chat_response = "I can't assist with that request."
+
+    message = progress.failure_message()
+
+    assert message is not None
+    assert "I can't assist with that request." in message
+    assert progress.outcome(passed=False, message=message).message == message
+
+
+def test_passing_text_chat_carries_no_failure_message() -> None:
+    """A journey that met its assertions reports no explanation."""
+
+    assert _JourneyProgress(model_id="org/model").failure_message() is None

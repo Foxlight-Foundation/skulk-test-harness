@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-import secrets
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -12,6 +11,7 @@ from pathlib import Path
 from playwright.sync_api import Locator, Page, Request, sync_playwright
 
 from skulk_test_harness.client import SkulkClient
+from skulk_test_harness.echo_phrase import echo_matched, echo_phrase, echo_prompt
 from skulk_test_harness.models import (
     DashboardJourneyOutcome,
     VisionFixtureEvidence,
@@ -38,6 +38,23 @@ class _JourneyProgress:
     vision: VisionFixtureEvidence | None = None
     false_vision_path_offered: bool | None = None
     first_run_consent_prompted: bool = False
+    text_chat_response: str | None = None
+
+    def failure_message(self) -> str | None:
+        """Explain a failure the booleans alone cannot, or return None.
+
+        A journey that reaches its assertions and fails them raises nothing,
+        so without this the report carries a bare ``passed: false``. The
+        response text is what distinguishes a model declining the prompt from
+        a broken chat path.
+        """
+
+        if self.text_chat_response is None:
+            return None
+        return (
+            "chat response did not contain the requested phrase; "
+            f"the model replied: {self.text_chat_response!r}"
+        )
 
     def outcome(
         self,
@@ -182,20 +199,29 @@ class DashboardQualifier:
             selector.select_option(model_id)
         progress.selected = True
 
-        token = f"FRESH-{secrets.token_hex(4).upper()}"
-        prompt = f"Reply with this token exactly once and nothing else: {token}"
+        phrase = echo_phrase()
         message = page.get_by_label("Chat message", exact=True)
-        message.fill(prompt)
+        message.fill(echo_prompt(phrase))
         page.get_by_role("button", name="Send message", exact=True).click()
-        assistant = self._wait_for_assistant(page, expected=token)
-        text_chat_passed = token in assistant
+        assistant = self._wait_for_assistant(page, expected=phrase)
+        # Case-insensitive, matching the waiter. The waiter accepts a
+        # case-insensitive match and returns, so a case-sensitive assertion
+        # here would reject a response the wait had already declared good.
+        text_chat_passed = echo_matched(phrase, assistant)
         progress.text_chat_passed = text_chat_passed
+        if not text_chat_passed:
+            # Quote the response. A chat failure is otherwise indistinguishable
+            # from a hang, and the reason is usually in what the model said.
+            progress.text_chat_response = assistant.strip()[:400]
 
         if vision_contract == "unavailable":
             attach = page.get_by_role("button", name="Attach file", exact=True)
             unavailable = attach.is_disabled()
             progress.false_vision_path_offered = not unavailable
-            return progress.outcome(passed=text_chat_passed and unavailable)
+            return progress.outcome(
+                passed=text_chat_passed and unavailable,
+                message=progress.failure_message(),
+            )
         if fixture is None:
             raise ValueError("positive vision browser journey requires a fixture")
 
@@ -245,7 +271,10 @@ class DashboardQualifier:
             ),
         )
         progress.vision = evidence
-        return progress.outcome(passed=text_chat_passed and evidence.passed)
+        return progress.outcome(
+            passed=text_chat_passed and evidence.passed,
+            message=progress.failure_message(),
+        )
 
     def _dismiss_first_run_consent(self, page: Page) -> bool:
         """Answer the first-run telemetry consent dialog and report whether it appeared.

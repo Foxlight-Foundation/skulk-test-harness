@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import secrets
-
 import httpx
 
 from skulk_test_harness.client import SkulkClient
+from skulk_test_harness.echo_phrase import echo_matched, echo_phrase, echo_prompt
 from skulk_test_harness.models import (
     DashboardContract,
     DataTransport,
@@ -103,23 +102,16 @@ def qualify_direct_text(
 ) -> bool:
     """Require the direct API to echo an unpredictable token."""
 
-    token = f"API-{secrets.token_hex(4).upper()}"
+    phrase = echo_phrase()
     execution = client.stream_chat(
         model_id=model_id,
-        messages=[
-            {
-                "role": "user",
-                "content": (
-                    "Reply with this token exactly once and nothing else: " + token
-                ),
-            }
-        ],
+        messages=[{"role": "user", "content": echo_prompt(phrase)}],
         max_tokens=64,
         temperature=0.0,
         top_p=1.0,
         enable_thinking=enable_thinking,
     )
-    return token in execution.text
+    return echo_matched(phrase, execution.text)
 
 
 def qualify_direct_vision(
