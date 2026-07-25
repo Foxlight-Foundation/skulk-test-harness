@@ -180,6 +180,15 @@ class FreshInstallTarget(HarnessBaseModel):
         default=None,
         description="Optional private-key path. Never copied into reports.",
     )
+    accept_unknown_host_key: bool = Field(
+        default=False,
+        description=(
+            "Trust an unknown SSH host key on first contact. Only ever set for "
+            "an ephemeral provider-created pod, whose host key is generated at "
+            "boot and cannot be known in advance. Inventory targets leave this "
+            "false so a changed host key on real hardware still fails loudly."
+        ),
+    )
     service_manager: ServiceManager = Field(
         default="command",
         description="How the pre-existing Skulk service is controlled.",

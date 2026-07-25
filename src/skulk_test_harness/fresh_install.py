@@ -453,6 +453,9 @@ class FreshInstallQualifier:
                 ssh_user="root",
                 ssh_port=endpoint.port,
                 ssh_identity_file=self.fresh.runpod.ssh_private_key_file,
+                # The pod generates its host key at boot, so there is nothing to
+                # have pinned in advance. Inventory hardware never gets this.
+                accept_unknown_host_key=True,
                 service_manager="command",
                 service_stop_command="true",
                 service_start_command="true",

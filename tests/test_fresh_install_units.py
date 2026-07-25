@@ -969,3 +969,46 @@ def test_runpod_ssh_readiness_times_out_when_sshd_never_answers(
 
     with pytest.raises(TimeoutError, match="readiness deadline"):
         client.wait_for_ssh("pod-1")
+
+
+def test_ssh_host_key_policy_is_strict_for_inventory_and_lenient_for_pods(
+    tmp_path: Path,
+) -> None:
+    """Only an ephemeral pod may trust an unknown host key.
+
+    A provider pod's host key is generated at boot and its address/port pairs
+    are recycled between pods, so strict checking rejected the controller's
+    very first connection. Real fleet hardware keeps strict checking, because
+    there a changed host key is a signal worth stopping on.
+    """
+
+    inventory = _physical_target()
+    ephemeral = FreshInstallTarget(
+        kind="physical",
+        platform="nvidia",
+        hardware_class="nvidia-cuda",
+        eligible=True,
+        ssh_host="203.0.113.10",
+        ssh_user="root",
+        ssh_port=22198,
+        ssh_identity_file=tmp_path / "pod-key",
+        accept_unknown_host_key=True,
+        service_manager="command",
+        service_stop_command="true",
+        service_start_command="true",
+        isolation_enter_command="true",
+        isolation_exit_command="true",
+        expected_backends=["llama_server", "llama_server-cuda"],
+        vision_contract="unavailable",
+        text_models=["unsloth/Llama-3.2-1B-Instruct-GGUF"],
+    )
+
+    strict_prefix = SshTargetController(inventory)._ssh_prefix()  # pyright: ignore[reportPrivateUsage]
+    lenient_prefix = SshTargetController(ephemeral)._ssh_prefix()  # pyright: ignore[reportPrivateUsage]
+    lenient_scp = SshTargetController(ephemeral)._scp_prefix()  # pyright: ignore[reportPrivateUsage]
+
+    assert "StrictHostKeyChecking=accept-new" not in strict_prefix
+    assert "UserKnownHostsFile=/dev/null" not in strict_prefix
+    assert "StrictHostKeyChecking=accept-new" in lenient_prefix
+    assert "UserKnownHostsFile=/dev/null" in lenient_prefix
+    assert "UserKnownHostsFile=/dev/null" in lenient_scp

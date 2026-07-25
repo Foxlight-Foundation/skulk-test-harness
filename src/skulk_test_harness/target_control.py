@@ -307,6 +307,7 @@ class SshTargetController:
             "BatchMode=yes",
             "-o",
             "ConnectTimeout=15",
+            *self._host_key_options(),
             "-p",
             str(self.target.ssh_port),
         ]
@@ -318,12 +319,36 @@ class SshTargetController:
         prefix = [
             "scp",
             "-q",
+            *self._host_key_options(),
             "-P",
             str(self.target.ssh_port),
         ]
         if self.target.ssh_identity_file is not None:
             prefix.extend(["-i", str(self.target.ssh_identity_file.expanduser())])
         return prefix
+
+    def _host_key_options(self) -> list[str]:
+        """Return this target's SSH host-key policy.
+
+        Inventory hardware keeps the caller's normal strict checking, so a
+        changed host key on a real fleet node still stops the run. An ephemeral
+        provider pod generates its host key at boot and the provider reuses
+        address/port pairs across pods, so its key is accepted on first contact
+        and deliberately never written to the controller's known-hosts file.
+        """
+
+        if not self.target.accept_unknown_host_key:
+            return []
+        return [
+            "-o",
+            "StrictHostKeyChecking=accept-new",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-o",
+            "GlobalKnownHostsFile=/dev/null",
+            "-o",
+            "LogLevel=ERROR",
+        ]
 
 
 def _available_local_port() -> int:
