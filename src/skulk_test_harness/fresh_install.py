@@ -1069,9 +1069,16 @@ def _provision_model_over_api(
             )
         time.sleep(poll_interval_s)
 
-    previews = client.get_placement_previews(model_id)
+    offered = client.get_placement_previews(model_id)
+    # A preview carrying an error is an option the planner examined and
+    # rejected (it does not fit, or the node cannot serve it), and the API is
+    # free to list one ahead of a viable option. Taking the first entry blindly
+    # would place against a rejected option and fail a target that was in fact
+    # offering a working placement further down the list. Every other placement
+    # path in this harness filters the same way.
+    previews = [preview for preview in offered if preview.get("error") in (None, "")]
     if not previews:
-        raise RuntimeError(f"no placement preview was offered for {model_id}")
+        raise RuntimeError(f"no viable placement preview was offered for {model_id}: {offered}")
     preview = previews[0]
     placed = client.place_model(
         model_id=model_id,

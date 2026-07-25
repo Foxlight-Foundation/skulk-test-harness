@@ -1382,7 +1382,7 @@ def test_headless_provisioning_failures_fail_the_leg() -> None:
         )
 
     no_preview = _StubProvisionClient(download_states=["complete"], previews=[])
-    with pytest.raises(RuntimeError, match="no placement preview"):
+    with pytest.raises(RuntimeError, match="no viable placement preview"):
         _provision_model_over_api(
             cast(SkulkClient, no_preview),
             model_id="model",
@@ -1390,6 +1390,54 @@ def test_headless_provisioning_failures_fail_the_leg() -> None:
             poll_interval_s=0,
             heartbeat=None,
         )
+
+    only_rejected = _StubProvisionClient(
+        download_states=["complete"],
+        previews=[{"sharding": "single", "error": "does not fit"}],
+    )
+    with pytest.raises(RuntimeError, match="no viable placement preview"):
+        _provision_model_over_api(
+            cast(SkulkClient, only_rejected),
+            model_id="model",
+            model_ready_timeout_s=30,
+            poll_interval_s=0,
+            heartbeat=None,
+        )
+
+
+def test_headless_provisioning_skips_previews_the_planner_rejected() -> None:
+    """A rejected preview listed first must not shadow a viable one behind it.
+
+    ``/instance/previews`` lists options the planner examined, and an option it
+    rejected carries an error. Taking the first entry blindly would place
+    against a rejected option and fail a target that was in fact offering a
+    working placement, which is the exact false-failure class this gate exists
+    to avoid.
+    """
+
+    rejected: dict[str, object] = {
+        "sharding": "pipeline",
+        "instance_meta": "TextInstance",
+        "error": "model does not fit on the available nodes",
+    }
+    viable: dict[str, object] = {
+        "sharding": "single",
+        "instance_meta": "TextInstance",
+    }
+    client = _StubProvisionClient(
+        download_states=["complete"], previews=[rejected, viable]
+    )
+
+    _provision_model_over_api(
+        cast(SkulkClient, client),
+        model_id="model",
+        model_ready_timeout_s=30,
+        poll_interval_s=0,
+        heartbeat=None,
+    )
+
+    assert client.placement_request is not None
+    assert client.placement_request["sharding"] == "single"
 
 
 class _StubConsentDialog:
