@@ -19,6 +19,7 @@ from typing import BinaryIO, cast
 
 import httpx
 import pytest
+from playwright.sync_api import Page
 from pydantic import ValidationError
 
 import skulk_test_harness.fresh_install as fresh_install_module
@@ -26,6 +27,7 @@ import skulk_test_harness.qualification_checks as qualification_checks_module
 from skulk_test_harness import runpod as runpod_module
 from skulk_test_harness.client import SkulkClient
 from skulk_test_harness.dashboard_qualification import (
+    DashboardQualifier,
     _captured_image_digest,  # pyright: ignore[reportPrivateUsage]
 )
 from skulk_test_harness.fleet_lock import FleetLease, LeaseOutcome
@@ -34,6 +36,7 @@ from skulk_test_harness.fresh_install import (
     QualificationSignalGuard,
     _clean_environment_command,  # pyright: ignore[reportPrivateUsage]
     _installer_command,  # pyright: ignore[reportPrivateUsage]
+    _provision_model_over_api,  # pyright: ignore[reportPrivateUsage]
     _run_remote_logged_command,  # pyright: ignore[reportPrivateUsage]
     _self_safe_process_pattern,  # pyright: ignore[reportPrivateUsage]
     _wait_for_api_identity,  # pyright: ignore[reportPrivateUsage]
@@ -50,6 +53,7 @@ from skulk_test_harness.models import (
     FreshInstallTarget,
     HarnessConfig,
     InstallProvenance,
+    PlacementResult,
     RunPodFreshInstallConfig,
 )
 from skulk_test_harness.qualification_checks import qualify_direct_text
@@ -443,7 +447,10 @@ def test_restoration_verification_detects_every_changed_surface(
         config_sha256={"/config": "digest-b"},
         process_arguments=["different command"],
         service_status="exit=1\nstopped",
-        api_node_id="node-b",
+        # A node that never answered at all reports no identity. That is the
+        # identity failure worth catching; a *different* identity is what a
+        # healthy restart always produces and is asserted separately.
+        api_node_id=None,
         cluster_node_count=2,
     )
     controller = SshTargetController(_physical_target())
@@ -455,7 +462,7 @@ def test_restoration_verification_detects_every_changed_surface(
 
     mismatches = controller.verify_restored_state(
         original,
-        api_node_id="node-b",
+        api_node_id=None,
         cluster_node_count=2,
     )
 
@@ -464,10 +471,47 @@ def test_restoration_verification_detects_every_changed_surface(
         "original checkout status changed",
         "original configuration hash changed",
         "original process arguments were not restored",
-        "original API identity was not restored",
+        "restored node did not report an API identity",
         "original fleet membership did not rejoin",
         "original service manager state was not restored",
     ]
+
+
+def test_restoration_accepts_the_new_identity_a_restart_always_produces(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fully restored node reports a different node id and must still pass.
+
+    Skulk regenerates its node identity on every process start and never
+    persists it, so stopping and starting the service guarantees a new one.
+    Comparing identities for equality failed every physical leg on a machine
+    that had actually recovered.
+    """
+
+    original = OriginalTargetState(
+        git_commit="commit-a",
+        git_status="clean",
+        config_sha256={"/config": "digest-a"},
+        process_arguments=["uv run skulk"],
+        service_status="exit=0\nrunning",
+        api_node_id="node-before-restart",
+        cluster_node_count=5,
+    )
+    restored = dataclasses.replace(original, api_node_id="node-after-restart")
+    controller = SshTargetController(_physical_target())
+    monkeypatch.setattr(
+        controller,
+        "capture_original_state",
+        lambda **_kwargs: restored,
+    )
+
+    mismatches = controller.verify_restored_state(
+        original,
+        api_node_id="node-after-restart",
+        cluster_node_count=5,
+    )
+
+    assert mismatches == []
 
 
 def test_restored_membership_wait_uses_configured_poll_interval(
@@ -1148,3 +1192,225 @@ def test_pinned_commit_matches_the_runtime_abbreviation(
             expected_transport="zenoh",
             expected_commit=pinned,
         )
+
+
+class _StubProvisionClient:
+    """Record the store and placement calls a headless provisioning leg makes."""
+
+    def __init__(
+        self,
+        *,
+        download_states: list[str],
+        placement_ready: bool = True,
+        card_add_error: Exception | None = None,
+        download_request_error: Exception | None = None,
+        previews: list[dict[str, object]] | None = None,
+    ) -> None:
+        self.calls: list[str] = []
+        self._download_states = iter(download_states)
+        self._placement_ready = placement_ready
+        self._card_add_error = card_add_error
+        self._download_request_error = download_request_error
+        default_preview: dict[str, object] = {
+            "sharding": "single",
+            "instance_meta": "TextInstance",
+        }
+        self._previews = previews if previews is not None else [default_preview]
+        self.placement_request: dict[str, object] | None = None
+
+    def add_model_card(self, model_id: str) -> dict[str, object] | None:
+        self.calls.append("add_model_card")
+        if self._card_add_error is not None:
+            raise self._card_add_error
+        return {"model_id": model_id}
+
+    def request_store_download(self, model_id: str) -> dict[str, object] | None:
+        self.calls.append("request_store_download")
+        if self._download_request_error is not None:
+            raise self._download_request_error
+        return {"model_id": model_id}
+
+    def get_store_download_status(self, model_id: str) -> dict[str, object] | None:
+        self.calls.append("get_store_download_status")
+        return {"status": next(self._download_states)}
+
+    def get_placement_previews(self, model_id: str) -> list[dict[str, object]]:
+        self.calls.append("get_placement_previews")
+        return self._previews
+
+    def place_model(self, **kwargs: object) -> dict[str, object] | None:
+        self.calls.append("place_model")
+        self.placement_request = dict(kwargs)
+        return {"instance_id": "instance-a"}
+
+    def find_placements_for_model(self, model_id: str) -> list[PlacementResult]:
+        self.calls.append("find_placements_for_model")
+        return [
+            PlacementResult(
+                model_id=model_id,
+                instance_id="instance-a",
+                ready=self._placement_ready,
+                terminal_failure=not self._placement_ready,
+                runner_failure_messages=(
+                    [] if self._placement_ready else ["runner exited"]
+                ),
+            )
+        ]
+
+
+def test_headless_provisioning_walks_the_same_path_the_dashboard_drives() -> None:
+    """A target with no web UI must still download, place, and mount the model.
+
+    The browser journey is what provisions the model on a target that serves
+    the UI. A headless node has no UI to drive, so it walks the identical
+    store-download-then-place endpoints rather than skipping provisioning and
+    asking the direct-API parity check to serve a model that was never mounted.
+    """
+
+    client = _StubProvisionClient(download_states=["downloading", "complete"])
+
+    _provision_model_over_api(
+        cast(SkulkClient, client),
+        model_id="unsloth/Llama-3.2-1B-Instruct-GGUF",
+        model_ready_timeout_s=30,
+        poll_interval_s=0,
+        heartbeat=None,
+    )
+
+    assert client.calls == [
+        "add_model_card",
+        "request_store_download",
+        "get_store_download_status",
+        "get_store_download_status",
+        "get_placement_previews",
+        "place_model",
+        "find_placements_for_model",
+    ]
+    assert client.placement_request == {
+        "model_id": "unsloth/Llama-3.2-1B-Instruct-GGUF",
+        "sharding": "single",
+        "instance_meta": "TextInstance",
+        "min_nodes": 1,
+        "excluded_nodes": [],
+    }
+
+
+def test_headless_provisioning_failures_fail_the_leg() -> None:
+    """Provisioning is a release gate, so no step may degrade into a warning."""
+
+    unreachable = httpx.ConnectError("store unreachable")
+    download_refused = _StubProvisionClient(
+        download_states=[],
+        card_add_error=unreachable,
+        download_request_error=unreachable,
+    )
+    with pytest.raises(RuntimeError, match="after card add failed"):
+        _provision_model_over_api(
+            cast(SkulkClient, download_refused),
+            model_id="model",
+            model_ready_timeout_s=30,
+            poll_interval_s=0,
+            heartbeat=None,
+        )
+
+    download_failed = _StubProvisionClient(download_states=["failed"])
+    with pytest.raises(RuntimeError, match="store download failed"):
+        _provision_model_over_api(
+            cast(SkulkClient, download_failed),
+            model_id="model",
+            model_ready_timeout_s=30,
+            poll_interval_s=0,
+            heartbeat=None,
+        )
+
+    runner_failed = _StubProvisionClient(
+        download_states=["complete"], placement_ready=False
+    )
+    with pytest.raises(RuntimeError, match="runner failed"):
+        _provision_model_over_api(
+            cast(SkulkClient, runner_failed),
+            model_id="model",
+            model_ready_timeout_s=30,
+            poll_interval_s=0,
+            heartbeat=None,
+        )
+
+    no_preview = _StubProvisionClient(download_states=["complete"], previews=[])
+    with pytest.raises(RuntimeError, match="no placement preview"):
+        _provision_model_over_api(
+            cast(SkulkClient, no_preview),
+            model_id="model",
+            model_ready_timeout_s=30,
+            poll_interval_s=0,
+            heartbeat=None,
+        )
+
+
+class _StubConsentDialog:
+    """Stand in for the Playwright locator of the first-run consent modal."""
+
+    def __init__(self, *, visible: bool) -> None:
+        self._visible = visible
+        self._pending_click = ""
+        self.clicked: list[str] = []
+        self.waited_states: list[str] = []
+
+    def wait_for(self, *, state: str, timeout: float) -> None:
+        self.waited_states.append(state)
+        if state == "visible" and not self._visible:
+            raise TimeoutError("consent dialog never appeared")
+
+    def get_by_role(self, role: str, *, name: str, exact: bool) -> "_StubConsentDialog":
+        self._pending_click = f"{role}:{name}"
+        return self
+
+    def click(self) -> None:
+        self.clicked.append(self._pending_click)
+
+
+class _StubConsentPage:
+    def __init__(self, dialog: _StubConsentDialog) -> None:
+        self._dialog = dialog
+
+    def get_by_role(self, role: str) -> "_StubConsentPage":
+        return self
+
+    def get_by_text(self, text: str, *, exact: bool) -> str:
+        return text
+
+    def filter(self, *, has: object) -> _StubConsentDialog:
+        return self._dialog
+
+
+def test_first_run_consent_modal_is_answered_not_bypassed() -> None:
+    """A clean machine shows a blocking consent modal that the journey answers.
+
+    The modal covers the page and intercepts every pointer event until it is
+    answered, so a fresh install fails at the first click without this. A
+    long-lived operator browser stamped its marker long ago and never sees it,
+    which is exactly the fleet-versus-new-user delta this records. "Not now"
+    is the deliberate answer: it leaves fleet consent unasked, so a throwaway
+    qualification node never enables collection or publishes anything.
+    """
+
+    qualifier = DashboardQualifier(
+        api_base_url="http://example.invalid",
+        artifact_directory=Path("unused"),
+        poll_interval_s=1,
+        model_ready_timeout_s=1,
+    )
+
+    prompted_dialog = _StubConsentDialog(visible=True)
+    prompted = qualifier._dismiss_first_run_consent(  # pyright: ignore[reportPrivateUsage]
+        cast(Page, _StubConsentPage(prompted_dialog))
+    )
+    assert prompted is True
+    assert prompted_dialog.clicked == ["button:Not now"]
+    assert prompted_dialog.waited_states == ["visible", "hidden"]
+
+    absent_dialog = _StubConsentDialog(visible=False)
+    absent = qualifier._dismiss_first_run_consent(  # pyright: ignore[reportPrivateUsage]
+        cast(Page, _StubConsentPage(absent_dialog))
+    )
+    assert absent is False
+    assert absent_dialog.clicked == []

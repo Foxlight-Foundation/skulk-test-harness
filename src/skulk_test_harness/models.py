@@ -1526,6 +1526,11 @@ class DashboardJourneyOutcome(HarnessBaseModel):
     text_chat_passed: bool = False
     vision: VisionFixtureEvidence | None = None
     false_vision_path_offered: bool | None = None
+    # Whether the shipped first-run telemetry consent dialog appeared and was
+    # answered with "Not now". A clean machine sees it and a long-lived
+    # operator browser does not, so recording it keeps the difference visible
+    # in the report instead of only surfacing as an unexplained click failure.
+    first_run_consent_prompted: bool = False
     passed: bool = False
     message: str | None = None
 

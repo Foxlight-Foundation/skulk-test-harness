@@ -104,6 +104,7 @@ class DashboardQualifier:
     ) -> DashboardJourneyOutcome:
         page.goto(f"{self.api_base_url}/model-store", wait_until="networkidle")
         self._check_abort()
+        consent_prompted = self._dismiss_first_run_consent(page)
         page.get_by_role("button", name="Find Models", exact=True).click()
         search = page.get_by_label("Search models", exact=True)
         search.fill(model_id)
@@ -152,6 +153,7 @@ class DashboardQualifier:
                 selected=selected,
                 text_chat_passed=text_chat_passed,
                 false_vision_path_offered=not unavailable,
+                first_run_consent_prompted=consent_prompted,
                 passed=text_chat_passed and unavailable,
             )
         if fixture is None:
@@ -210,8 +212,38 @@ class DashboardQualifier:
             selected=selected,
             text_chat_passed=text_chat_passed,
             vision=evidence,
+            first_run_consent_prompted=consent_prompted,
             passed=text_chat_passed and evidence.passed,
         )
+
+    def _dismiss_first_run_consent(self, page: Page) -> bool:
+        """Answer the first-run telemetry consent dialog and report whether it appeared.
+
+        A genuinely fresh install shows a modal asking about optional field
+        telemetry, and it is a real modal: it covers the page and intercepts
+        every pointer event until answered. A long-lived operator browser
+        stamped its no-nag marker months ago, so this is invisible on a
+        developer fleet and blocks the entire journey on a clean machine.
+
+        "Not now" is the deliberate choice here. It dismisses the dialog and
+        leaves fleet consent at ``unasked``, so a throwaway qualification node
+        never enables collection and never publishes anything. Answering by
+        clicking is also the point: this drives the same control a new user
+        does rather than reaching around the UI to seed browser storage.
+        """
+
+        dialog = page.get_by_role("dialog").filter(
+            has=page.get_by_text("Help make Skulk better?", exact=False)
+        )
+        try:
+            dialog.wait_for(state="visible", timeout=10_000)
+        except Exception:  # noqa: BLE001 - absence is a valid, reportable outcome
+            # Consent already decided in skulk.yaml, or this browser profile
+            # was asked before. Either way there is nothing to answer.
+            return False
+        dialog.get_by_role("button", name="Not now", exact=True).click()
+        dialog.wait_for(state="hidden", timeout=10_000)
+        return True
 
     def _wait_for_store_model(self, model_id: str) -> None:
         deadline = time.monotonic() + self.model_ready_timeout_s

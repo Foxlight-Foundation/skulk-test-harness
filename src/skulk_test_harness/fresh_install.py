@@ -18,7 +18,7 @@ from typing import BinaryIO
 
 import httpx
 
-from skulk_test_harness.client import SkulkClient
+from skulk_test_harness.client import SkulkApiError, SkulkClient
 from skulk_test_harness.dashboard_qualification import DashboardQualifier
 from skulk_test_harness.fleet_lock import FleetLockStore
 from skulk_test_harness.lease_heartbeat import (
@@ -726,29 +726,46 @@ class FreshInstallQualifier:
                 enable_thinking = (
                     False if thinking_toggles.get(model_id, False) else None
                 )
-                with journal.stage(f"dashboard user journey: {model_id}"):
-                    browser_fixture = (
-                        generate_vision_fixture()
-                        if model_id in target.vision_models
-                        else None
-                    )
-                    outcome = dashboard.qualify(
-                        model_id=model_id,
-                        vision_contract=(
-                            "positive"
+                # The browser journey is what provisions the model on a target
+                # that serves the UI: it finds, downloads, launches, and then
+                # chats. A headless node has no UI to drive, so it provisions
+                # the same model through the API the dashboard itself calls.
+                # Skipping provisioning entirely would leave the parity check
+                # below asking a node to serve a model it never mounted.
+                if target.dashboard_contract == "required":
+                    with journal.stage(f"dashboard user journey: {model_id}"):
+                        browser_fixture = (
+                            generate_vision_fixture()
                             if model_id in target.vision_models
-                            else target.vision_contract
-                        ),
-                        fixture=browser_fixture,
-                    )
-                    report.browser.append(outcome)
-                    journal.persist()
-                    if not outcome.passed:
-                        raise RuntimeError(
-                            outcome.message
-                            or f"dashboard journey failed for {model_id}"
+                            else None
                         )
-                    _check_heartbeat(heartbeat)
+                        outcome = dashboard.qualify(
+                            model_id=model_id,
+                            vision_contract=(
+                                "positive"
+                                if model_id in target.vision_models
+                                else target.vision_contract
+                            ),
+                            fixture=browser_fixture,
+                        )
+                        report.browser.append(outcome)
+                        journal.persist()
+                        if not outcome.passed:
+                            raise RuntimeError(
+                                outcome.message
+                                or f"dashboard journey failed for {model_id}"
+                            )
+                        _check_heartbeat(heartbeat)
+                else:
+                    with journal.stage(f"headless model provisioning: {model_id}"):
+                        _provision_model_over_api(
+                            client,
+                            model_id=model_id,
+                            model_ready_timeout_s=self.fresh.model_ready_timeout_s,
+                            poll_interval_s=self.fresh.poll_interval_s,
+                            heartbeat=heartbeat,
+                        )
+                        _check_heartbeat(heartbeat)
 
                 with journal.stage(f"direct API parity: {model_id}"):
                     if not qualify_direct_text(
@@ -801,7 +818,7 @@ class FreshInstallQualifier:
         api_base_url: str,
         journal: _LifecycleJournal,
     ) -> bool:
-        with journal.stage("restore original selected-target service"):
+        with journal.stage("restore original selected-target service") as stage:
             assert target.service_start_command is not None
             controller.run(target.service_start_command, timeout_s=120)
             node_id, node_count = _wait_for_api_identity(
@@ -817,6 +834,14 @@ class FreshInstallQualifier:
             )
             if mismatches:
                 raise RuntimeError("; ".join(mismatches))
+            # A restarted node always carries a new identity because Skulk never
+            # persists node_id, so both are recorded rather than compared. An
+            # operator reading the report can still see exactly which identity
+            # left and which one rejoined.
+            stage.message = (
+                f"restored: node identity {original.api_node_id} -> {node_id}, "
+                f"fleet {node_count} nodes"
+            )
         return True
 
 
@@ -969,6 +994,98 @@ def _wait_for_http(
             pass
         time.sleep(poll_interval_s)
     raise TimeoutError(f"HTTP endpoint did not become ready: {url}")
+
+
+_COMPLETED_DOWNLOAD_STATES = frozenset(
+    {"complete", "completed", "ready", "succeeded"}
+)
+_FAILED_DOWNLOAD_STATES = frozenset({"failed", "error"})
+
+
+def _provision_model_over_api(
+    client: SkulkClient,
+    *,
+    model_id: str,
+    model_ready_timeout_s: float,
+    poll_interval_s: float,
+    heartbeat: AuthoritativeLeaseHeartbeat | None,
+) -> None:
+    """Download and mount one model through the API the dashboard itself calls.
+
+    A target that ships without the web UI still has to prove that a brand-new
+    machine can go from nothing to a served model. This walks the same
+    endpoints the browser journey drives (add the card, download into the
+    node's store, place an instance, wait for a ready runner) so the headless
+    leg exercises the identical product path rather than a weaker one.
+
+    Every step is fatal. This is a release gate, so a model that cannot be
+    fetched or mounted must fail the leg rather than degrade into a parity
+    check against a model that was never there.
+    """
+
+    card_error: str | None = None
+    try:
+        client.add_model_card(model_id)
+    except (SkulkApiError, httpx.HTTPError) as exception:
+        # A model that already ships as a card answers this differently across
+        # versions, so it is only fatal if the download below also fails.
+        card_error = str(exception)
+    try:
+        client.request_store_download(model_id)
+    except (SkulkApiError, httpx.HTTPError) as exception:
+        detail = str(exception)
+        if card_error:
+            detail = f"{detail} (after card add failed: {card_error})"
+        raise RuntimeError(
+            f"could not request a download for {model_id}: {detail}"
+        ) from exception
+
+    deadline = time.monotonic() + model_ready_timeout_s
+    while True:
+        _check_heartbeat(heartbeat)
+        status = client.get_store_download_status(model_id) or {}
+        state = str(status.get("status") or status.get("state") or "").lower()
+        if state in _COMPLETED_DOWNLOAD_STATES:
+            break
+        if state in _FAILED_DOWNLOAD_STATES:
+            raise RuntimeError(f"store download failed for {model_id}: {status}")
+        if time.monotonic() >= deadline:
+            raise TimeoutError(
+                f"store download did not complete for {model_id}: last state {state!r}"
+            )
+        time.sleep(poll_interval_s)
+
+    previews = client.get_placement_previews(model_id)
+    if not previews:
+        raise RuntimeError(f"no placement preview was offered for {model_id}")
+    preview = previews[0]
+    placed = client.place_model(
+        model_id=model_id,
+        sharding=str(preview.get("sharding") or "auto"),
+        instance_meta=str(preview.get("instance_meta") or "TextInstance"),
+        min_nodes=1,
+        excluded_nodes=[],
+    )
+    if placed is None:
+        raise RuntimeError(f"placement request was refused for {model_id}")
+
+    ready_deadline = time.monotonic() + model_ready_timeout_s
+    while True:
+        _check_heartbeat(heartbeat)
+        placements = client.find_placements_for_model(model_id)
+        if any(placement.ready for placement in placements):
+            return
+        failures = [
+            message
+            for placement in placements
+            if placement.terminal_failure
+            for message in placement.runner_failure_messages
+        ]
+        if failures:
+            raise RuntimeError(f"runner failed for {model_id}: {'; '.join(failures)}")
+        if time.monotonic() >= ready_deadline:
+            raise TimeoutError(f"placement never became ready for {model_id}")
+        time.sleep(poll_interval_s)
 
 
 def _wait_for_no_placement(

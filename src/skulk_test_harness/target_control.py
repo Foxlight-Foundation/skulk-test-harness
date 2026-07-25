@@ -281,8 +281,15 @@ class SshTargetController:
             failures.append("original configuration hash changed")
         if restored.process_arguments != original.process_arguments:
             failures.append("original process arguments were not restored")
-        if original.api_node_id and restored.api_node_id != original.api_node_id:
-            failures.append("original API identity was not restored")
+        # Deliberately no equality check on the API node id. Skulk regenerates
+        # its node identity on every process start and never persists it, so a
+        # restored service is guaranteed to report a different one. Requiring a
+        # match failed every physical leg on a fully recovered machine. What
+        # restoration actually means here is that the service answers again and
+        # rejoined the fleet, which the identity presence and node-count checks
+        # below cover.
+        if original.api_node_id and not restored.api_node_id:
+            failures.append("restored node did not report an API identity")
         if (
             original.cluster_node_count is not None
             and restored.cluster_node_count is not None
