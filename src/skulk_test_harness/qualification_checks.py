@@ -60,9 +60,10 @@ def assert_fresh_runtime_contract(
     resolved_commit = runtime.get("skulkCommit", runtime.get("skulk_commit"))
     if not isinstance(resolved_commit, str):
         resolved_commit = None
-    if expected_commit and resolved_commit != expected_commit:
+    if expected_commit and not _commit_matches(expected_commit, resolved_commit):
         raise RuntimeError(
-            "fresh install runtime commit did not match the pinned candidate"
+            "fresh install runtime commit did not match the pinned candidate: "
+            f"pinned {expected_commit}, runtime reported {resolved_commit}"
         )
     response = httpx.get(client.base_url, timeout=client.request_timeout_s)
     dashboard_present = (
@@ -163,6 +164,32 @@ def qualify_direct_vision(
         request_image_sha256=fixture.sha256,
         passed=code_matched and attribute_matched,
     )
+
+
+_MINIMUM_ABBREVIATED_COMMIT_LENGTH = 7
+
+
+def _commit_matches(expected: str, resolved: str | None) -> bool:
+    """Return whether a runtime commit identifies the pinned candidate build.
+
+    A qualification pins a full 40-character SHA, but the node reports
+    ``git rev-parse --short HEAD``, so an equality test can never succeed.
+    Skulk itself compares builds by abbreviation, so this applies the same
+    contract: the shorter identifier must be a prefix of the longer one and
+    at least as long as git's minimum abbreviation. A node that cannot read
+    its own commit reports ``unknown``, which never matches.
+    """
+
+    if resolved is None:
+        return False
+    pinned = expected.strip().lower()
+    reported = resolved.strip().lower()
+    if not pinned or not reported or reported == "unknown":
+        return False
+    shorter, longer = sorted((pinned, reported), key=len)
+    if len(shorter) < _MINIMUM_ABBREVIATED_COMMIT_LENGTH:
+        return False
+    return longer.startswith(shorter)
 
 
 def _object(value: object) -> dict[str, object]:

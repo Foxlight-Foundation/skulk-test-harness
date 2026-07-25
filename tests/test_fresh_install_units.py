@@ -1018,9 +1018,10 @@ def test_ssh_host_key_policy_is_strict_for_inventory_and_lenient_for_pods(
 class _StubContractClient:
     """Minimal API stand-in for the fresh-runtime contract assertions."""
 
-    def __init__(self) -> None:
+    def __init__(self, reported_commit: str | None = None) -> None:
         self.base_url = "http://127.0.0.1:52415"
         self.request_timeout_s = 5.0
+        self.reported_commit = reported_commit
 
     def get_state(self) -> dict[str, object]:
         """Return one node advertising the expected backend and transport."""
@@ -1036,9 +1037,9 @@ class _StubContractClient:
         }
 
     def get_diagnostics_node(self) -> dict[str, object]:
-        """Return runtime provenance with no pinned commit to compare."""
+        """Return runtime provenance carrying this stub's reported commit."""
 
-        return {"runtime": {"skulkCommit": None}}
+        return {"runtime": {"skulkCommit": self.reported_commit}}
 
 
 @pytest.mark.parametrize(
@@ -1090,4 +1091,60 @@ def test_dashboard_contract_asserts_both_shipped_shapes(
             expected_transport="zenoh",
             expected_commit=None,
             dashboard_contract=cast(DashboardContract, contract),
+        )
+
+
+@pytest.mark.parametrize(
+    ("reported_commit", "matches"),
+    [
+        ("32fffb7", True),
+        ("32fffb7a36f9872b361c20ef47888f452211a8b6", True),
+        ("32FFFB7", True),
+        ("32fffb8", False),
+        ("32fff", False),
+        ("unknown", False),
+        (None, False),
+    ],
+)
+def test_pinned_commit_matches_the_runtime_abbreviation(
+    monkeypatch: pytest.MonkeyPatch,
+    reported_commit: str | None,
+    matches: bool,
+) -> None:
+    """A pinned full SHA must match the node's abbreviated commit.
+
+    Qualification pins a 40-character SHA, but a node reports
+    `git rev-parse --short HEAD`, so an equality test could never succeed and
+    every leg stalled until the readiness deadline. Skulk compares builds by
+    abbreviation, and this applies the same contract: prefix match, no shorter
+    than git's minimum abbreviation, and never a match on an unknown commit.
+    """
+
+    pinned = "32fffb7a36f9872b361c20ef47888f452211a8b6"
+
+    def fake_get(url: str, timeout: float | None = None) -> httpx.Response:
+        return httpx.Response(
+            200, text='<html><body><div id="root"></div></body></html>'
+        )
+
+    monkeypatch.setattr(qualification_checks_module.httpx, "get", fake_get)
+    client = cast(SkulkClient, _StubContractClient(reported_commit))
+
+    if matches:
+        provenance = qualification_checks_module.assert_fresh_runtime_contract(
+            client,
+            expected_backends=["llama_server"],
+            expected_transport="zenoh",
+            expected_commit=pinned,
+        )
+        # The report records what the node actually said, not the pinned value.
+        assert provenance.resolved_commit == reported_commit
+        return
+
+    with pytest.raises(RuntimeError, match="did not match the pinned candidate"):
+        qualification_checks_module.assert_fresh_runtime_contract(
+            client,
+            expected_backends=["llama_server"],
+            expected_transport="zenoh",
+            expected_commit=pinned,
         )
