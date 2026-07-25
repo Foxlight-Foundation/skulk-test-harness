@@ -37,6 +37,7 @@ from skulk_test_harness.fleet_lock import FleetLease, LeaseOutcome
 from skulk_test_harness.fresh_install import (
     QualificationInterruptedError,
     QualificationSignalGuard,
+    _blocking_issues,  # pyright: ignore[reportPrivateUsage]
     _browser_vision_expectation,  # pyright: ignore[reportPrivateUsage]
     _clean_environment_command,  # pyright: ignore[reportPrivateUsage]
     _installer_command,  # pyright: ignore[reportPrivateUsage]
@@ -57,6 +58,7 @@ from skulk_test_harness.models import (
     FreshInstallTarget,
     HarnessConfig,
     InstallProvenance,
+    Issue,
     PlacementResult,
     RunPodFreshInstallConfig,
 )
@@ -1556,6 +1558,63 @@ def test_first_run_consent_modal_is_answered_not_bypassed() -> None:
     )
     assert absent is False
     assert absent_dialog.clicked == []
+
+
+def _report_with(issues: list[Issue]) -> FreshInstallQualificationReport:
+    """Build a minimal finished report carrying the given issues."""
+
+    return FreshInstallQualificationReport(
+        qualification_id="fresh-candidate-test",
+        profile="candidate",
+        platform="apple",
+        hardware_class="test-class",
+        started_at=datetime.now(UTC),
+        install=InstallProvenance(
+            mode="fresh_install",
+            environment="fresh_install",
+            data_transport="zenoh",
+            node_count=1,
+        ),
+        issues=issues,
+    )
+
+
+def test_a_warning_does_not_fail_a_leg_that_otherwise_passed() -> None:
+    """Only an error is a release gate; a warning is operator information.
+
+    The fleet-size comparison was deliberately downgraded from a fatal
+    restoration failure to a warning so a healthy target would stop being
+    declared broken by the state of machines outside the experiment. Failing
+    on any issue at all undid that: a leg whose every stage passed, whose
+    target restored cleanly, and whose only finding was that warning was
+    still reported as a failed release gate. This pins the distinction the
+    downgrade was supposed to make.
+    """
+
+    warned = _report_with(
+        [
+            Issue(
+                severity="warning",
+                message=(
+                    "restored fleet is smaller than before the run: 2 -> 1 "
+                    "nodes; the target itself restored cleanly"
+                ),
+            )
+        ]
+    )
+    assert _blocking_issues(warned) == []
+
+    informational = _report_with([Issue(severity="info", message="noted")])
+    assert _blocking_issues(informational) == []
+
+    failed = _report_with(
+        [
+            Issue(severity="warning", message="fleet came back smaller"),
+            Issue(severity="error", message="fresh-install leg failed"),
+        ]
+    )
+    blocking = _blocking_issues(failed)
+    assert [issue.severity for issue in blocking] == ["error"]
 
 
 class _StubConversationLocator:

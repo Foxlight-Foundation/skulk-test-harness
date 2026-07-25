@@ -397,7 +397,7 @@ class FreshInstallQualifier:
                 )
             report = report.finish(
                 passed=(
-                    not report.issues
+                    not _blocking_issues(report)
                     and restoration_succeeded
                     and not release_failed
                     and not report.critical_recovery_required
@@ -535,7 +535,7 @@ class FreshInstallQualifier:
             report.restoration_succeeded = None
             report.teardown_succeeded = teardown_succeeded
             report = report.finish(
-                passed=not report.issues and teardown_succeeded
+                passed=not _blocking_issues(report) and teardown_succeeded
             )
             journal.report = report
             journal.persist()
@@ -872,6 +872,27 @@ class FreshInstallQualifier:
                     )
                 )
         return True
+
+
+def _blocking_issues(report: FreshInstallQualificationReport) -> list[Issue]:
+    """Return only the issues that should fail a leg.
+
+    A qualification records two different kinds of finding. An ``error`` is a
+    release gate saying the candidate or the machine is not acceptable. A
+    ``warning`` is a condition worth an operator's attention that does not
+    make the leg's verdict false, such as the fleet coming back with fewer
+    members than it had before the run because peers outside the experiment
+    were down the whole time.
+
+    Failing on any issue at all collapsed that distinction: a leg whose every
+    stage passed, whose target restored cleanly, and whose only finding was
+    that exact fleet-size warning was reported as a failed release gate. The
+    warning had already been deliberately downgraded from a fatal restoration
+    failure for this reason, so counting it here undid the downgrade and left
+    only the label changed.
+    """
+
+    return [issue for issue in report.issues if issue.severity == "error"]
 
 
 def _browser_vision_expectation(
