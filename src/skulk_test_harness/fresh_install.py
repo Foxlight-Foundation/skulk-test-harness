@@ -1014,9 +1014,16 @@ def _provision_model_over_api(
 
     A target that ships without the web UI still has to prove that a brand-new
     machine can go from nothing to a served model. This walks the same
-    endpoints the browser journey drives (add the card, download into the
-    node's store, place an instance, wait for a ready runner) so the headless
-    leg exercises the identical product path rather than a weaker one.
+    endpoints the browser journey drives (download into the node's store, place
+    an instance, wait for a ready runner) so the headless leg exercises the
+    identical product path rather than a weaker one.
+
+    A model the release already ships a card for is never re-added. ``POST
+    /models/add`` fetches a card from Hugging Face and stores it as a *custom*
+    card, which then overrides the shipped one, so adding it here would
+    qualify a card the release does not ship. This mirrors what the dashboard
+    does: it offers "Download" for a model already in the catalog and "Add and
+    download" only for one that is not.
 
     Every step is fatal. This is a release gate, so a model that cannot be
     fetched or mounted must fail the leg rather than degrade into a parity
@@ -1024,12 +1031,19 @@ def _provision_model_over_api(
     """
 
     card_error: str | None = None
-    try:
-        client.add_model_card(model_id)
-    except (SkulkApiError, httpx.HTTPError) as exception:
-        # A model that already ships as a card answers this differently across
-        # versions, so it is only fatal if the download below also fails.
-        card_error = str(exception)
+    catalog = {
+        str(entry.get("id"))
+        for entry in client.list_models()
+        if isinstance(entry.get("id"), str)
+    }
+    if model_id not in catalog:
+        try:
+            client.add_model_card(model_id)
+        except (SkulkApiError, httpx.HTTPError) as exception:
+            # Only fatal if the download below also fails: the catalog read
+            # could be stale, and the download is the step that actually
+            # decides whether this model can be provisioned.
+            card_error = str(exception)
     try:
         client.request_store_download(model_id)
     except (SkulkApiError, httpx.HTTPError) as exception:

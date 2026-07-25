@@ -1205,8 +1205,10 @@ class _StubProvisionClient:
         card_add_error: Exception | None = None,
         download_request_error: Exception | None = None,
         previews: list[dict[str, object]] | None = None,
+        catalog_model_ids: list[str] | None = None,
     ) -> None:
         self.calls: list[str] = []
+        self._catalog_model_ids = catalog_model_ids or []
         self._download_states = iter(download_states)
         self._placement_ready = placement_ready
         self._card_add_error = card_add_error
@@ -1217,6 +1219,10 @@ class _StubProvisionClient:
         }
         self._previews = previews if previews is not None else [default_preview]
         self.placement_request: dict[str, object] | None = None
+
+    def list_models(self) -> list[dict[str, object]]:
+        self.calls.append("list_models")
+        return [{"id": model_id} for model_id in self._catalog_model_ids]
 
     def add_model_card(self, model_id: str) -> dict[str, object] | None:
         self.calls.append("add_model_card")
@@ -1267,18 +1273,22 @@ def test_headless_provisioning_walks_the_same_path_the_dashboard_drives() -> Non
     asking the direct-API parity check to serve a model that was never mounted.
     """
 
-    client = _StubProvisionClient(download_states=["downloading", "complete"])
+    model_id = "unsloth/Llama-3.2-1B-Instruct-GGUF"
+    client = _StubProvisionClient(
+        download_states=["downloading", "complete"],
+        catalog_model_ids=[model_id],
+    )
 
     _provision_model_over_api(
         cast(SkulkClient, client),
-        model_id="unsloth/Llama-3.2-1B-Instruct-GGUF",
+        model_id=model_id,
         model_ready_timeout_s=30,
         poll_interval_s=0,
         heartbeat=None,
     )
 
     assert client.calls == [
-        "add_model_card",
+        "list_models",
         "request_store_download",
         "get_store_download_status",
         "get_store_download_status",
@@ -1287,12 +1297,48 @@ def test_headless_provisioning_walks_the_same_path_the_dashboard_drives() -> Non
         "find_placements_for_model",
     ]
     assert client.placement_request == {
-        "model_id": "unsloth/Llama-3.2-1B-Instruct-GGUF",
+        "model_id": model_id,
         "sharding": "single",
         "instance_meta": "TextInstance",
         "min_nodes": 1,
         "excluded_nodes": [],
     }
+
+
+def test_headless_provisioning_never_overrides_a_shipped_card() -> None:
+    """A model the release ships a card for must not be re-added from the hub.
+
+    ``POST /models/add`` stores a Hugging Face card as a *custom* card, which
+    then overrides the shipped one. Adding it here would qualify a card the
+    release does not ship. This mirrors the dashboard, which offers "Download"
+    for a catalog model and "Add and download" only for one that is not.
+    """
+
+    shipped = _StubProvisionClient(
+        download_states=["complete"],
+        catalog_model_ids=["unsloth/Llama-3.2-1B-Instruct-GGUF"],
+    )
+    _provision_model_over_api(
+        cast(SkulkClient, shipped),
+        model_id="unsloth/Llama-3.2-1B-Instruct-GGUF",
+        model_ready_timeout_s=30,
+        poll_interval_s=0,
+        heartbeat=None,
+    )
+    assert "add_model_card" not in shipped.calls
+
+    uncarded = _StubProvisionClient(
+        download_states=["complete"],
+        catalog_model_ids=["some/other-model"],
+    )
+    _provision_model_over_api(
+        cast(SkulkClient, uncarded),
+        model_id="unsloth/Llama-3.2-1B-Instruct-GGUF",
+        model_ready_timeout_s=30,
+        poll_interval_s=0,
+        heartbeat=None,
+    )
+    assert "add_model_card" in uncarded.calls
 
 
 def test_headless_provisioning_failures_fail_the_leg() -> None:
