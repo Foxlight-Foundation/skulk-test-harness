@@ -39,22 +39,29 @@ class _JourneyProgress:
     false_vision_path_offered: bool | None = None
     first_run_consent_prompted: bool = False
     text_chat_response: str | None = None
+    vision_response: str | None = None
 
     def failure_message(self) -> str | None:
         """Explain a failure the booleans alone cannot, or return None.
 
         A journey that reaches its assertions and fails them raises nothing,
         so without this the report carries a bare ``passed: false``. The
-        response text is what distinguishes a model declining the prompt from
-        a broken chat path.
+        response text is what distinguishes a model declining the prompt, or
+        answering the wrong question, from a genuinely broken path.
         """
 
-        if self.text_chat_response is None:
-            return None
-        return (
-            "chat response did not contain the requested phrase; "
-            f"the model replied: {self.text_chat_response!r}"
-        )
+        parts: list[str] = []
+        if self.text_chat_response is not None:
+            parts.append(
+                "chat response did not contain the requested phrase; "
+                f"the model replied: {self.text_chat_response!r}"
+            )
+        if self.vision_response is not None:
+            parts.append(
+                "vision response did not match the fixture; "
+                f"the model replied: {self.vision_response!r}"
+            )
+        return "; ".join(parts) if parts else None
 
     def outcome(
         self,
@@ -225,6 +232,13 @@ class DashboardQualifier:
         if fixture is None:
             raise ValueError("positive vision browser journey requires a fixture")
 
+        # The vision turn gets its own conversation. Sharing one with the text
+        # turn left "repeat this phrase back exactly and say nothing else"
+        # standing in context, and a 4B model kept obeying it: shown the
+        # fixture, it answered with the previous turn's echo phrase instead of
+        # reading the image. That measured instruction carryover, not vision.
+        message = self._start_new_conversation(page, model_id=model_id)
+
         fixture_path = self.artifact_directory / f"{_safe_model_name(model_id)}.png"
         fixture.write(fixture_path)
         captured_before = len(captured_chat_requests)
@@ -243,12 +257,15 @@ class DashboardQualifier:
         )
         retained_attachment.wait_for(state="visible", timeout=30_000)
         attachment_retained = retained_attachment.is_visible()
-        response = self._wait_for_assistant(
-            page,
-            expected=fixture.code,
-            after_count=1,
-        )
+        # Zero, not one: the vision turn is the first exchange of its own
+        # conversation, so there is no earlier assistant message to skip past.
+        response = self._wait_for_assistant(page, expected=fixture.code)
         code_matched, attribute_matched = fixture.response_matches(response)
+        if not (code_matched and attribute_matched):
+            # Same reasoning as the text chat: without the response text a
+            # vision failure cannot be told apart from a broken image path,
+            # and the digest match already proves the bytes arrived.
+            progress.vision_response = response.strip()[:400]
         vision_requests = captured_chat_requests[captured_before:]
         image_digest = _captured_image_digest(vision_requests)
         evidence = VisionFixtureEvidence(
@@ -304,6 +321,42 @@ class DashboardQualifier:
         dialog.get_by_role("button", name="Not now", exact=True).click()
         dialog.wait_for(state="hidden", timeout=10_000)
         return True
+
+    def _start_new_conversation(self, page: Page, *, model_id: str) -> Locator:
+        """Open a fresh conversation and return its message box.
+
+        Each capability check has to be judged on its own answer. Sharing one
+        conversation let the text turn's standing instruction ("repeat this
+        phrase back exactly and say nothing else") govern the vision turn as
+        well, so the model answered an image prompt with the earlier echo
+        phrase. That is ordinary multi-turn behavior, not a defect, which is
+        exactly why the qualification must not stack the two checks in one
+        thread.
+
+        Clicking the control a user would click also keeps this honest: it
+        exercises the new-conversation path rather than reaching around the UI
+        to reset state.
+        """
+
+        page.get_by_role("button", name="+ New", exact=True).click()
+        # A new conversation may come up with no model selected, so re-select
+        # before asserting anything about the reply.
+        selector = page.get_by_label("Select chat model", exact=True)
+        if selector.count():
+            selector.select_option(model_id)
+        message = page.get_by_label("Chat message", exact=True)
+        message.wait_for(state="visible", timeout=30_000)
+        # The turn only means anything against an empty thread.
+        assistant = page.get_by_label("Assistant message", exact=True)
+        deadline = time.monotonic() + 30
+        while assistant.count() and time.monotonic() < deadline:
+            page.wait_for_timeout(250)
+        if assistant.count():
+            raise RuntimeError(
+                "new conversation still shows prior assistant messages; the "
+                "vision turn would inherit the text turn's instructions"
+            )
+        return message
 
     def _wait_for_store_model(self, model_id: str) -> None:
         deadline = time.monotonic() + self.model_ready_timeout_s

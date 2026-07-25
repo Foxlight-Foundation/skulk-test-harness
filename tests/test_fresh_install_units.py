@@ -22,6 +22,7 @@ import pytest
 from playwright.sync_api import Page
 from pydantic import ValidationError
 
+import skulk_test_harness.dashboard_qualification as dashboard_qualification_module
 import skulk_test_harness.fresh_install as fresh_install_module
 import skulk_test_harness.qualification_checks as qualification_checks_module
 from skulk_test_harness import runpod as runpod_module
@@ -1557,6 +1558,119 @@ def test_first_run_consent_modal_is_answered_not_bypassed() -> None:
     assert absent_dialog.clicked == []
 
 
+class _StubConversationLocator:
+    """Stand in for a Playwright locator used by the conversation reset."""
+
+    def __init__(self, *, matches: int = 1) -> None:
+        self.matches = matches
+        self.clicks = 0
+        self.selected: list[str] = []
+        self.waited_states: list[str] = []
+
+    def count(self) -> int:
+        return self.matches
+
+    def click(self) -> None:
+        self.clicks += 1
+
+    def select_option(self, value: str) -> None:
+        self.selected.append(value)
+
+    def wait_for(self, *, state: str, timeout: float) -> None:
+        self.waited_states.append(state)
+
+
+class _StubConversationPage:
+    """A dashboard page whose prior thread clears, or does not."""
+
+    def __init__(self, *, stale_replies: int, clears: bool) -> None:
+        self.new_button = _StubConversationLocator()
+        self.model_selector = _StubConversationLocator()
+        self.message_box = _StubConversationLocator()
+        self.assistant = _StubConversationLocator(matches=stale_replies)
+        self._clears = clears
+        self.idle_polls = 0
+
+    def get_by_role(
+        self, role: str, *, name: str, exact: bool
+    ) -> _StubConversationLocator:
+        assert (role, name, exact) == ("button", "+ New", True)
+        return self.new_button
+
+    def get_by_label(self, label: str, *, exact: bool) -> _StubConversationLocator:
+        assert exact is True
+        if label == "Select chat model":
+            return self.model_selector
+        if label == "Chat message":
+            return self.message_box
+        if label == "Assistant message":
+            return self.assistant
+        raise AssertionError(f"unexpected label {label!r}")
+
+    def wait_for_timeout(self, milliseconds: float) -> None:
+        self.idle_polls += 1
+        if self._clears:
+            self.assistant.matches = 0
+
+
+def test_vision_turn_starts_its_own_conversation() -> None:
+    """Each capability check must be judged on its own answer.
+
+    Stacking the vision turn onto the text turn's thread left the earlier
+    instruction ("repeat this phrase back exactly and say nothing else")
+    standing, and a 4B model obeyed it: shown the image fixture, it answered
+    with the previous turn's echo phrase. The leg failed reporting a vision
+    defect on a run whose image bytes had provably arrived intact. Resetting
+    through the control a user would click keeps the check honest, and
+    re-selecting the model covers a new conversation coming up unselected.
+    """
+
+    qualifier = DashboardQualifier(
+        api_base_url="http://example.invalid",
+        artifact_directory=Path("unused"),
+        poll_interval_s=1,
+        model_ready_timeout_s=1,
+    )
+
+    page = _StubConversationPage(stale_replies=2, clears=True)
+    message = qualifier._start_new_conversation(  # pyright: ignore[reportPrivateUsage]
+        cast(Page, page), model_id="org/vision-model"
+    )
+
+    assert page.new_button.clicks == 1
+    assert page.model_selector.selected == ["org/vision-model"]
+    assert cast(object, message) is page.message_box
+    assert page.message_box.waited_states == ["visible"]
+
+
+def test_a_conversation_that_never_clears_fails_loudly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reset that silently kept the old thread would measure the wrong thing.
+
+    Without this the vision turn would run against the text turn's context
+    again and the failure would once more be reported as a vision defect.
+    """
+
+    ticks = iter(range(0, 600, 10))
+    monkeypatch.setattr(
+        dashboard_qualification_module.time, "monotonic", lambda: float(next(ticks))
+    )
+
+    page = _StubConversationPage(stale_replies=1, clears=False)
+    qualifier = DashboardQualifier(
+        api_base_url="http://example.invalid",
+        artifact_directory=Path("unused"),
+        poll_interval_s=1,
+        model_ready_timeout_s=1,
+    )
+
+    with pytest.raises(RuntimeError, match="prior assistant messages"):
+        qualifier._start_new_conversation(  # pyright: ignore[reportPrivateUsage]
+            cast(Page, page), model_id="org/vision-model"
+        )
+
+
 def test_browser_vision_expectation_is_per_model_not_per_target() -> None:
     """A text model must be checked for the absence of a vision path.
 
@@ -1734,3 +1848,37 @@ def test_passing_text_chat_carries_no_failure_message() -> None:
     """A journey that met its assertions reports no explanation."""
 
     assert _JourneyProgress(model_id="org/model").failure_message() is None
+
+
+def test_failed_vision_reports_what_the_model_actually_said() -> None:
+    """A vision miss must be distinguishable from a broken image path.
+
+    The image digest already proves the bytes arrived, so what remains
+    unexplained is the answer itself. Reading it out of a screenshot is not
+    diagnosis: shown the fixture, a model once replied with the previous
+    turn's echo phrase, and only the response text revealed that the two
+    checks were sharing a conversation.
+    """
+
+    progress = _JourneyProgress(model_id="org/model")
+    progress.vision_response = "quartz cobalt 2911 square"
+
+    message = progress.failure_message()
+
+    assert message is not None
+    assert "quartz cobalt 2911 square" in message
+    assert "vision response" in message
+
+
+def test_both_chat_and_vision_failures_are_reported_together() -> None:
+    """One failing check must not hide the other."""
+
+    progress = _JourneyProgress(model_id="org/model")
+    progress.text_chat_response = "I can't assist with that."
+    progress.vision_response = "a blue triangle"
+
+    message = progress.failure_message()
+
+    assert message is not None
+    assert "I can't assist with that." in message
+    assert "a blue triangle" in message
