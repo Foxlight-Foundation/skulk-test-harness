@@ -402,6 +402,42 @@ def test_signal_guard_turns_sigterm_into_recoverable_exception() -> None:
         QualificationSignalGuard._handle(signal.SIGTERM, None)  # pyright: ignore[reportPrivateUsage]
 
 
+def test_interruption_survives_the_broad_handlers_that_report_outcomes() -> None:
+    """An operator's stop request must outrank every report-the-failure boundary.
+
+    The qualification wraps browser work, subprocess work, and probes in
+    ``except Exception`` so a failure becomes a reported outcome rather than a
+    traceback. An interruption caught by one of those would let a billable,
+    destructive run continue past the stop request.
+    """
+
+    assert not issubclass(QualificationInterruptedError, Exception)
+
+    caught_by_boundary = False
+    try:
+        try:
+            QualificationSignalGuard._handle(signal.SIGINT, None)  # pyright: ignore[reportPrivateUsage]
+        except Exception:  # noqa: BLE001 - the boundary shape under test
+            caught_by_boundary = True
+    except QualificationInterruptedError:
+        pass
+    assert not caught_by_boundary
+
+
+def test_interruption_still_lets_finally_restore_state() -> None:
+    """BaseException does not skip cleanup, so orderly restoration is unaffected."""
+
+    restored = False
+    try:
+        try:
+            QualificationSignalGuard._handle(signal.SIGTERM, None)  # pyright: ignore[reportPrivateUsage]
+        finally:
+            restored = True
+    except QualificationInterruptedError:
+        pass
+    assert restored
+
+
 def test_recovery_snapshot_is_mode_600_and_contains_manifest_and_config(
     tmp_path: Path,
 ) -> None:

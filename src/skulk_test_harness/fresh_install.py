@@ -50,8 +50,22 @@ from skulk_test_harness.target_control import (
 from skulk_test_harness.vision_fixture import generate_vision_fixture
 
 
-class QualificationInterruptedError(RuntimeError):
-    """Raised when a termination signal requests orderly restoration."""
+class QualificationInterruptedError(BaseException):
+    """Raised when a termination signal requests orderly restoration.
+
+    Deliberately a ``BaseException``, for the same reason ``KeyboardInterrupt``
+    is one. This is raised from a signal handler, so it lands wherever the
+    interpreter happens to be executing, and the qualification is full of
+    ``except Exception`` boundaries that exist to turn a browser or subprocess
+    failure into a reported outcome. Inheriting from ``Exception`` let those
+    boundaries swallow an operator's termination request and carry on: a
+    signal arriving inside the consent-dialog probe was read as "no dialog",
+    and one arriving anywhere in the browser journey was reported as a failed
+    leg before the run continued to the next one. On a path that provisions
+    billable cloud machines and destroys local state, an ignored stop request
+    is not acceptable. ``finally`` blocks still run, so orderly restoration is
+    unaffected.
+    """
 
 
 class QualificationSignalGuard(AbstractContextManager["QualificationSignalGuard"]):
