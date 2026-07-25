@@ -464,6 +464,7 @@ class FreshInstallQualifier:
                 expected_backends=target.expected_backends,
                 expected_data_transport=target.expected_data_transport,
                 vision_contract=target.vision_contract,
+                dashboard_contract=target.dashboard_contract,
                 text_models=target.text_models,
                 vision_models=target.vision_models,
             )
@@ -910,6 +911,7 @@ def _wait_for_runtime_contract(
                     expected_backends=target.expected_backends,
                     expected_transport=target.expected_data_transport,
                     expected_commit=expected_commit,
+                    dashboard_contract=target.dashboard_contract,
                 )
             except Exception as exception:  # noqa: BLE001 - startup is eventually consistent
                 last_error = exception

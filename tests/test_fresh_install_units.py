@@ -43,6 +43,7 @@ from skulk_test_harness.lease_heartbeat import (
     LeaseHeartbeatError,
 )
 from skulk_test_harness.models import (
+    DashboardContract,
     FleetLock,
     FreshInstallConfig,
     FreshInstallQualificationReport,
@@ -1012,3 +1013,81 @@ def test_ssh_host_key_policy_is_strict_for_inventory_and_lenient_for_pods(
     assert "StrictHostKeyChecking=accept-new" in lenient_prefix
     assert "UserKnownHostsFile=/dev/null" in lenient_prefix
     assert "UserKnownHostsFile=/dev/null" in lenient_scp
+
+
+class _StubContractClient:
+    """Minimal API stand-in for the fresh-runtime contract assertions."""
+
+    def __init__(self) -> None:
+        self.base_url = "http://127.0.0.1:52415"
+        self.request_timeout_s = 5.0
+
+    def get_state(self) -> dict[str, object]:
+        """Return one node advertising the expected backend and transport."""
+
+        return {
+            "nodeResources": {
+                "node-a": {
+                    "backends": ["llama_server", "llama_server-vulkan"],
+                    "dataTransport": "zenoh",
+                }
+            },
+            "nodeIdentities": {"node-a": {}},
+        }
+
+    def get_diagnostics_node(self) -> dict[str, object]:
+        """Return runtime provenance with no pinned commit to compare."""
+
+        return {"runtime": {"skulkCommit": None}}
+
+
+@pytest.mark.parametrize(
+    ("contract", "served", "expected_failure"),
+    [
+        ("required", True, None),
+        ("required", False, "did not serve the production dashboard build"),
+        ("absent", False, None),
+        ("absent", True, "declared headless"),
+    ],
+)
+def test_dashboard_contract_asserts_both_shipped_shapes(
+    monkeypatch: pytest.MonkeyPatch,
+    contract: str,
+    served: bool,
+    expected_failure: str | None,
+) -> None:
+    """A headless node is a shipped shape, and both outcomes are asserted.
+
+    The installer skips the dashboard build on a target with no Node toolchain,
+    so demanding the web UI everywhere fails a supported install. Declaring the
+    absence keeps it a contract rather than a skip: an unexpectedly missing
+    dashboard still fails, and so does one that appears where none should.
+    """
+
+    body = '<html><body><div id="root"></div></body></html>' if served else "not found"
+
+    def fake_get(url: str, timeout: float | None = None) -> httpx.Response:
+        return httpx.Response(200 if served else 404, text=body)
+
+    monkeypatch.setattr(qualification_checks_module.httpx, "get", fake_get)
+    client = cast(SkulkClient, _StubContractClient())
+
+    if expected_failure is None:
+        provenance = qualification_checks_module.assert_fresh_runtime_contract(
+            client,
+            expected_backends=["llama_server"],
+            expected_transport="zenoh",
+            expected_commit=None,
+            dashboard_contract=cast(DashboardContract, contract),
+        )
+        assert provenance.dashboard_build_present is served
+        return
+
+    with pytest.raises(RuntimeError, match=expected_failure):
+        qualification_checks_module.assert_fresh_runtime_contract(
+            client,
+            expected_backends=["llama_server"],
+            expected_transport="zenoh",
+            expected_commit=None,
+            dashboard_contract=cast(DashboardContract, contract),
+        )

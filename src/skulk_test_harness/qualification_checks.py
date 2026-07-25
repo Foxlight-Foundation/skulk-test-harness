@@ -8,6 +8,7 @@ import httpx
 
 from skulk_test_harness.client import SkulkClient
 from skulk_test_harness.models import (
+    DashboardContract,
     DataTransport,
     InstallProvenance,
     VisionFixtureEvidence,
@@ -21,6 +22,7 @@ def assert_fresh_runtime_contract(
     expected_backends: list[str],
     expected_transport: DataTransport,
     expected_commit: str | None,
+    dashboard_contract: DashboardContract = "required",
 ) -> InstallProvenance:
     """Validate topology, backend, transport, dashboard, and commit truth."""
 
@@ -68,8 +70,17 @@ def assert_fresh_runtime_contract(
         and "<html" in response.text.lower()
         and 'id="root"' in response.text
     )
-    if not dashboard_present:
+    # A node with no Node toolchain is a shipped shape, not a degraded one: the
+    # installer skips the dashboard build and the API serves without the web UI.
+    # The target declares which of the two it is, and both are asserted, so an
+    # unexpectedly missing dashboard still fails and "absent" never becomes a
+    # quiet skip that would also pass on a broken build.
+    if dashboard_contract == "required" and not dashboard_present:
         raise RuntimeError("fresh install did not serve the production dashboard build")
+    if dashboard_contract == "absent" and dashboard_present:
+        raise RuntimeError(
+            "fresh install served a dashboard on a target declared headless"
+        )
     return InstallProvenance(
         mode="fresh_install",
         environment="fresh_install",
@@ -79,7 +90,7 @@ def assert_fresh_runtime_contract(
         detected_backends=sorted(detected_backends),
         data_transport=expected_transport,
         node_count=1,
-        dashboard_build_present=True,
+        dashboard_build_present=dashboard_present,
     )
 
 
