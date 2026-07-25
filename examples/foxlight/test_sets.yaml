@@ -944,33 +944,33 @@ test_sets:
     name: vision
     description: >
       Semantic multimodal coverage across Qwen3-VL, Qwen3.5, Gemma 3n, and
-      Gemma 4 using a real portrait fixture. Every architecture must report
-      multiple facts grounded in the actual pixels; prompts are scoped only
-      where small-model instruction behavior requires different phrasing.
+      Gemma 4 using an original qualification card. Every architecture must
+      report the exact large code plus the independently visible color and
+      shape; prompts are scoped only where small-model instruction behavior
+      requires different phrasing.
     tests:
-      - name: qwen-real-portrait-identification
+      - name: qwen-semantic-card-reading
         kind: chat
         model_ids:
           - mlx-community/Qwen3-VL-4B-Instruct-4bit
           - mlx-community/Qwen3.5-2B-4bit
-        system: Describe only evidence visible in the supplied image.
+        system: Report only evidence visible in the supplied image.
         prompt: >-
-          Identify the well-known person. Give the first and last name, then
-          describe the visible jacket, shirt, and background in one sentence.
+          Read the large six-character code. Then name the colored shape.
+          Answer exactly: CODE; COLOR SHAPE.
         max_tokens: 320
         temperature: 0
         enable_thinking: false
         repetitions: 2
         images:
-          - input_path: fixtures/vision/elon-musk-portrait.png
+          - input_path: fixtures/vision/semantic-qualification-card.png
             media_type: image/png
         success:
-          min_chars: 40
+          min_chars: 16
           required_regexes:
-            - "(?i)\\belon\\s+musk\\b"
-            - "(?i)(\\b(dark|black|navy)\\b.{0,40}\\b(suit|jacket|blazer)\\b|\\b(suit|jacket|blazer)\\b.{0,40}\\b(dark|black|navy)\\b)"
-            - "(?i)(\\b(white|light[- ]colored)\\b.{0,30}\\b(shirt|collar)\\b|\\b(shirt|collar)\\b.{0,30}\\b(white|light[- ]colored)\\b)"
-            - "(?i)(\\b(black|dark)\\b.{0,30}\\b(background|backdrop)\\b|\\b(background|backdrop)\\b.{0,30}\\b(black|dark)\\b)"
+            - "(?i)\\bFUE4ZG\\b"
+            - "(?i)\\bcyan\\b"
+            - "(?i)\\bdiamond\\b"
           forbidden_substrings:
             - bedroom
             - furniture
@@ -980,27 +980,26 @@ test_sets:
             - "<|image|>"
             - "<start_of_turn>"
 
-      - name: gemma3n-real-portrait-identification
+      - name: gemma3n-semantic-card-reading
         kind: chat
         model_ids:
           - mlx-community/gemma-3n-E2B-it-4bit
         prompt: >-
-          Who is this person? What colors are the jacket, shirt, and background?
-          Answer exactly: NAME; JACKET; SHIRT; BACKGROUND.
+          What is the large six-character code? What color and shape are below
+          it? Answer exactly: CODE; COLOR SHAPE.
         max_tokens: 192
         temperature: 0
         enable_thinking: false
         repetitions: 2
         images:
-          - input_path: fixtures/vision/elon-musk-portrait.png
+          - input_path: fixtures/vision/semantic-qualification-card.png
             media_type: image/png
         success:
-          min_chars: 30
+          min_chars: 16
           required_regexes:
-            - "(?i)\\belon\\s+musk\\b"
-            - "(?i)(\\b(dark|black|navy)\\b.{0,40}\\b(suit|jacket|blazer)\\b|\\b(suit|jacket|blazer)\\b.{0,40}\\b(dark|black|navy)\\b)"
-            - "(?i)(\\b(white|light[- ]colored)\\b.{0,30}\\b(shirt|collar)\\b|\\b(shirt|collar)\\b.{0,30}\\b(white|light[- ]colored)\\b)"
-            - "(?i)(\\b(black|dark)\\b.{0,30}\\b(background|backdrop)\\b|\\b(background|backdrop)\\b.{0,30}\\b(black|dark)\\b)"
+            - "(?i)\\bFUE4ZG\\b"
+            - "(?i)\\bcyan\\b"
+            - "(?i)\\bdiamond\\b"
           forbidden_substrings:
             - bedroom
             - furniture
@@ -1010,29 +1009,28 @@ test_sets:
             - "<|image|>"
             - "<start_of_turn>"
 
-      - name: gemma4-real-portrait-visible-details
+      - name: gemma4-semantic-card-reading
         kind: chat
         model_ids:
           - mlx-community/gemma-4-e2b-it-8bit
         prompt: >-
-          How many people are visible? Describe the jacket color, the shirt or
-          collar color, and the background color. Do not identify the person.
+          Transcribe the large code and describe the colored shape below it.
+          Answer exactly: CODE; COLOR SHAPE.
         # This small checkpoint emits a verbose analysis before the visible
-        # answer even with thinking disabled; leave room for all four facts.
+        # answer even with thinking disabled; leave room for all three facts.
         max_tokens: 320
         temperature: 0
         enable_thinking: false
         repetitions: 2
         images:
-          - input_path: fixtures/vision/elon-musk-portrait.png
+          - input_path: fixtures/vision/semantic-qualification-card.png
             media_type: image/png
         success:
-          min_chars: 30
+          min_chars: 16
           required_regexes:
-            - "(?i)(\\b(one|1|single)\\b.{0,30}\\b(person|man)\\b|\\b(person|man)\\b.{0,30}\\b(one|1|single)\\b)"
-            - "(?i)(\\b(dark|black|navy|blue)\\b.{0,40}\\b(suit|jacket|blazer)\\b|\\b(suit|jacket|blazer)\\b.{0,40}\\b(dark|black|navy|blue)\\b)"
-            - "(?i)(\\b(white|light[- ]colored)\\b.{0,30}\\b(shirt|collar)\\b|\\b(shirt|collar)\\b.{0,30}\\b(white|light[- ]colored)\\b)"
-            - "(?i)(\\b(black|dark)\\b.{0,30}\\b(background|backdrop)\\b|\\b(background|backdrop)\\b.{0,30}\\b(black|dark)\\b)"
+            - "(?i)\\bFUE4ZG\\b"
+            - "(?i)\\bcyan\\b"
+            - "(?i)\\bdiamond\\b"
           forbidden_substrings:
             - bedroom
             - furniture
@@ -1045,29 +1043,27 @@ test_sets:
   vision-visible-details:
     name: vision-visible-details
     description: >
-      Inventory-wide vision-path qualification using four facts grounded in
-      the portrait pixels. This intentionally avoids using celebrity
-      recognition as a proxy for whether image bytes reached the model.
+      Inventory-wide vision-path qualification using an exact code plus color
+      and shape facts grounded in the card pixels.
     tests:
-      - name: real-portrait-visible-details
+      - name: semantic-card-visible-details
         kind: chat
         prompt: >-
-          How many people are visible? Describe the jacket color, the shirt or
-          collar color, and the background color. Do not identify the person.
+          Read the large code and describe the colored shape. Include the code,
+          color, and shape in one short sentence.
         max_tokens: 320
         temperature: 0
         enable_thinking: false
         repetitions: 2
         images:
-          - input_path: fixtures/vision/elon-musk-portrait.png
+          - input_path: fixtures/vision/semantic-qualification-card.png
             media_type: image/png
         success:
-          min_chars: 30
+          min_chars: 16
           required_regexes:
-            - "(?i)(\\b(one|1|single)\\b.{0,30}\\b(person|man)\\b|\\b(person|man)\\b.{0,30}\\b(one|1|single)\\b)"
-            - "(?i)(\\b(dark|black|navy|blue)\\b.{0,40}\\b(suit|jacket|blazer)\\b|\\b(suit|jacket|blazer)\\b.{0,40}\\b(dark|black|navy|blue)\\b)"
-            - "(?i)(\\b(white|light[- ]colored)\\b.{0,30}\\b(shirt|collar)\\b|\\b(shirt|collar)\\b.{0,30}\\b(white|light[- ]colored)\\b)"
-            - "(?i)(\\b(black|dark)\\b.{0,30}\\b(background|backdrop)\\b|\\b(background|backdrop)\\b.{0,30}\\b(black|dark)\\b)"
+            - "(?i)\\bFUE4ZG\\b"
+            - "(?i)\\bcyan\\b"
+            - "(?i)\\bdiamond\\b"
           forbidden_substrings:
             - bedroom
             - furniture
@@ -1080,29 +1076,27 @@ test_sets:
   vision-structured-identity:
     name: vision-structured-identity
     description: >
-      Structured portrait semantics for Gemma 3n checkpoints whose small
-      instruction model answers this form reliably. Identity and three visible
-      colors are all required, so a text-only response cannot pass.
+      Structured card semantics for checkpoints whose small instruction model
+      answers this form reliably. Code, color, and shape are all required.
     tests:
-      - name: real-portrait-structured-identity
+      - name: semantic-card-structured-answer
         kind: chat
         prompt: >-
-          Who is this person? What colors are the jacket, shirt, and background?
-          Answer exactly: NAME; JACKET; SHIRT; BACKGROUND.
+          What large code, color, and shape are visible?
+          Answer exactly: CODE; COLOR; SHAPE.
         max_tokens: 192
         temperature: 0
         enable_thinking: false
         repetitions: 2
         images:
-          - input_path: fixtures/vision/elon-musk-portrait.png
+          - input_path: fixtures/vision/semantic-qualification-card.png
             media_type: image/png
         success:
-          min_chars: 30
+          min_chars: 16
           required_regexes:
-            - "(?i)\\belon\\s+musk\\b"
-            - "(?i)(\\b(dark|black|navy)\\b.{0,40}\\b(suit|jacket|blazer)\\b|\\b(suit|jacket|blazer)\\b.{0,40}\\b(dark|black|navy)\\b)"
-            - "(?i)(\\b(white|light[- ]colored)\\b.{0,30}\\b(shirt|collar)\\b|\\b(shirt|collar)\\b.{0,30}\\b(white|light[- ]colored)\\b)"
-            - "(?i)(\\b(black|dark)\\b.{0,30}\\b(background|backdrop)\\b|\\b(background|backdrop)\\b.{0,30}\\b(black|dark)\\b)"
+            - "(?i)\\bFUE4ZG\\b"
+            - "(?i)\\bcyan\\b"
+            - "(?i)\\bdiamond\\b"
           forbidden_substrings:
             - bedroom
             - furniture
@@ -1122,21 +1116,20 @@ test_sets:
         kind: vision_data_plane
         system: You are a careful vision assistant.
         prompt: >-
-          Identify the well-known person. Give the first and last name, then
-          describe the visible jacket, shirt, and background in one sentence.
+          Read the large six-character code. Then name the colored shape.
+          Answer exactly: CODE; COLOR SHAPE.
         max_tokens: 128
         temperature: 0
         enable_thinking: false
         images:
-          - input_path: fixtures/vision/elon-musk-portrait.png
+          - input_path: fixtures/vision/semantic-qualification-card.png
             media_type: image/png
         success:
-          min_chars: 40
+          min_chars: 16
           required_regexes:
-            - "(?i)\\belon\\s+musk\\b"
-            - "(?i)(\\b(dark|black|navy)\\b.{0,40}\\b(suit|jacket|blazer)\\b|\\b(suit|jacket|blazer)\\b.{0,40}\\b(dark|black|navy)\\b)"
-            - "(?i)(\\b(white|light[- ]colored)\\b.{0,30}\\b(shirt|collar)\\b|\\b(shirt|collar)\\b.{0,30}\\b(white|light[- ]colored)\\b)"
-            - "(?i)(\\b(black|dark)\\b.{0,30}\\b(background|backdrop)\\b|\\b(background|backdrop)\\b.{0,30}\\b(black|dark)\\b)"
+            - "(?i)\\bFUE4ZG\\b"
+            - "(?i)\\bcyan\\b"
+            - "(?i)\\bdiamond\\b"
           forbidden_substrings:
             - bedroom
             - furniture

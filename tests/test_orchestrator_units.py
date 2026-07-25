@@ -985,39 +985,41 @@ def test_chat_and_llama_concise_tests_have_reasoning_budget() -> None:
         assert concise.max_tokens >= 256
 
 
-def test_vision_suite_uses_real_portrait_and_strict_semantic_checks(
+def test_vision_suite_uses_original_card_and_strict_semantic_checks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root = Path(__file__).parents[1]
     monkeypatch.chdir(root)
-    expected_hash = "90636c8a7c9032fdef45f65fa3c2f84887ed1d111742d7e6ecf2c33f3f34d113"
-    correct_identity_response = (
-        "The image shows Elon Musk wearing a dark navy suit jacket and a white "
-        "collared shirt against a black background."
-    )
-    correct_visible_details_response = (
-        "One man is visible in a dark navy jacket with a white shirt and a "
-        "black background."
-    )
-    hallucinated_response = (
-        "Elon Musk is standing in a bedroom with furniture and a potted plant."
-    )
-    leaked_visible_details_response = (
-        f"<|im_start|> image\n{correct_visible_details_response}"
-    )
+    expected_hash = "2832760871d31e987ba83a3ad9366e1b4f603742e716a59976ac13f0a07c12f5"
+    correct_response = "FUE4ZG; cyan diamond"
+    wrong_code_response = "FUE42G; cyan diamond"
+    wrong_attribute_response = "FUE4ZG; magenta triangle"
+    leaked_response = f"<|im_start|> image\n{correct_response}"
 
     public_sets = load_test_sets(root / "configs/test_sets.yaml").test_sets
     public_vision = public_sets["vision"].tests[0]
-    assert public_vision.name == "real-portrait-identification"
-    assert len(public_vision.success.required_regexes) == 4
+    assert public_vision.name == "semantic-card-reading"
+    assert len(public_vision.success.required_regexes) == 3
     assert (
         _score_output(
             "vision-model",
             public_vision.name,
-            correct_identity_response,
+            correct_response,
             public_vision.success,
         )
         == []
+    )
+    assert _score_output(
+        "vision-model",
+        public_vision.name,
+        wrong_code_response,
+        public_vision.success,
+    )
+    assert _score_output(
+        "vision-model",
+        public_vision.name,
+        wrong_attribute_response,
+        public_vision.success,
     )
 
     foxlight_sets = load_test_sets(
@@ -1025,18 +1027,13 @@ def test_vision_suite_uses_real_portrait_and_strict_semantic_checks(
     ).test_sets
     foxlight_vision_tests = foxlight_sets["vision"].tests
     assert {test.name for test in foxlight_vision_tests} == {
-        "qwen-real-portrait-identification",
-        "gemma3n-real-portrait-identification",
-        "gemma4-real-portrait-visible-details",
+        "qwen-semantic-card-reading",
+        "gemma3n-semantic-card-reading",
+        "gemma4-semantic-card-reading",
     }
     for vision in foxlight_vision_tests:
         assert vision.repetitions == 2
-        correct_response = (
-            correct_visible_details_response
-            if vision.name == "gemma4-real-portrait-visible-details"
-            else correct_identity_response
-        )
-        assert len(vision.success.required_regexes) == 4
+        assert len(vision.success.required_regexes) == 3
         assert (
             _score_output(
                 "vision-model",
@@ -1049,13 +1046,8 @@ def test_vision_suite_uses_real_portrait_and_strict_semantic_checks(
         assert _score_output(
             "vision-model",
             vision.name,
-            hallucinated_response,
+            wrong_code_response,
             vision.success,
-        )
-        leaked_response = (
-            leaked_visible_details_response
-            if vision.name == "gemma4-real-portrait-visible-details"
-            else f"<|im_start|> image\n{correct_identity_response}"
         )
         assert _score_output(
             "vision-model",
@@ -1071,7 +1063,7 @@ def test_vision_suite_uses_real_portrait_and_strict_semantic_checks(
         _score_output(
             "vision-model",
             inventory_vision.name,
-            correct_visible_details_response,
+            correct_response,
             inventory_vision.success,
         )
         == []
@@ -1079,13 +1071,13 @@ def test_vision_suite_uses_real_portrait_and_strict_semantic_checks(
     assert _score_output(
         "vision-model",
         inventory_vision.name,
-        hallucinated_response,
+        wrong_attribute_response,
         inventory_vision.success,
     )
     assert _score_output(
         "vision-model",
         inventory_vision.name,
-        leaked_visible_details_response,
+        leaked_response,
         inventory_vision.success,
     )
 
@@ -1096,7 +1088,7 @@ def test_vision_suite_uses_real_portrait_and_strict_semantic_checks(
         _score_output(
             "vision-model",
             structured_identity.name,
-            correct_identity_response,
+            correct_response,
             structured_identity.success,
         )
         == []
@@ -1104,13 +1096,13 @@ def test_vision_suite_uses_real_portrait_and_strict_semantic_checks(
     assert _score_output(
         "vision-model",
         structured_identity.name,
-        hallucinated_response,
+        wrong_code_response,
         structured_identity.success,
     )
     assert _score_output(
         "vision-model",
         structured_identity.name,
-        f"<|im_start|> image\n{correct_identity_response}",
+        leaked_response,
         structured_identity.success,
     )
 
@@ -1122,7 +1114,7 @@ def test_vision_suite_uses_real_portrait_and_strict_semantic_checks(
             vision_tests.extend(test_sets["vision-structured-identity"].tests)
         for vision in vision_tests:
             assert vision.images[0].input_path == Path(
-                "fixtures/vision/elon-musk-portrait.png"
+                "fixtures/vision/semantic-qualification-card.png"
             )
             messages = _messages_for_test(vision)
             content = messages[-1]["content"]
@@ -1139,7 +1131,7 @@ def test_vision_suite_uses_real_portrait_and_strict_semantic_checks(
 
         data_plane = test_sets["vision-data-plane"].tests[0]
         assert data_plane.kind == "vision_data_plane"
-        assert len(data_plane.success.required_regexes) == 4
+        assert len(data_plane.success.required_regexes) == 3
 
 
 def test_foxlight_vision_model_set_spans_three_families() -> None:
