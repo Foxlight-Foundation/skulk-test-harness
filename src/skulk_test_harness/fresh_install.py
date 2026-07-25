@@ -724,6 +724,7 @@ class FreshInstallQualifier:
             stream_read_timeout_s=self.config.stream_read_timeout_s,
         ) as client:
             thinking_toggles = client.resolved_thinking_toggle_by_model()
+            card_image_input = client.resolved_image_input_by_model()
             for model_id in models:
                 enable_thinking = (
                     False if thinking_toggles.get(model_id, False) else None
@@ -737,7 +738,9 @@ class FreshInstallQualifier:
                 if target.dashboard_contract == "required":
                     with journal.stage(f"dashboard user journey: {model_id}"):
                         expectation = _browser_vision_expectation(
-                            model_id, vision_models=target.vision_models
+                            model_id,
+                            vision_models=target.vision_models,
+                            card_image_input=card_image_input.get(model_id),
                         )
                         browser_fixture = (
                             generate_vision_fixture()
@@ -875,6 +878,7 @@ def _browser_vision_expectation(
     model_id: str,
     *,
     vision_models: Sequence[str],
+    card_image_input: bool | None,
 ) -> Literal["positive", "unavailable"]:
     """Return what the browser journey must prove about vision for one model.
 
@@ -884,9 +888,26 @@ def _browser_vision_expectation(
     serve vision. Passing a target's ``positive`` contract straight through for
     a text model demanded a vision check on a model that has no vision, and
     failed the leg on a fixture that could not exist for it.
+
+    The shipped card is the authority. ``card_image_input`` is what the release
+    itself declares for this model, and the inventory's ``vision_models`` list
+    is the operator's statement of intent; a disagreement means one of the two
+    is wrong and is raised as its own error. Deriving the expectation from an
+    inventory list alone let a hand-maintained list drift from the card, and
+    the leg then failed on a UI assertion that was itself incorrect instead of
+    naming the real problem.
     """
 
-    return "positive" if model_id in vision_models else "unavailable"
+    declared_vision = model_id in vision_models
+    if card_image_input is not None and card_image_input != declared_vision:
+        raise RuntimeError(
+            f"vision classification disagrees for {model_id}: the shipped card "
+            f"reports supports_image_input={card_image_input} but the "
+            f"qualification inventory lists it as a "
+            f"{'vision' if declared_vision else 'text'} model. Fix whichever is "
+            "wrong before qualifying this model."
+        )
+    return "positive" if declared_vision else "unavailable"
 
 
 def _installer_provenance(

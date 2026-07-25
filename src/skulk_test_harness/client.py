@@ -1044,6 +1044,25 @@ class SkulkClient:
             toggles[model_id] = bool(resolved.get("supports_thinking_toggle"))
         return toggles
 
+    def resolved_image_input_by_model(self) -> dict[str, bool]:
+        """Map each catalog model id to whether it accepts image input.
+
+        Read from ``/models`` -> ``resolved_capabilities.supports_image_input``,
+        which is the same value the dashboard uses to enable or disable its
+        attachment control. The harness derives what a browser journey must
+        prove about vision from the model's own shipped card through this,
+        rather than from a hand-maintained list that can silently disagree
+        with the card.
+        """
+        supported: dict[str, bool] = {}
+        for entry in self.list_models():
+            model_id = entry.get("id")
+            resolved = entry.get("resolved_capabilities")
+            if not isinstance(model_id, str) or not isinstance(resolved, dict):
+                continue
+            supported[model_id] = bool(resolved.get("supports_image_input"))
+        return supported
+
     def add_model_card(self, model_id: str) -> dict[str, object] | None:
         """Ask Skulk to add/fetch a custom model card for ``model_id``."""
 

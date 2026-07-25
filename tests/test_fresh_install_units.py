@@ -1570,16 +1570,56 @@ def test_browser_vision_expectation_is_per_model_not_per_target() -> None:
     vision_models = ["org/vision-model"]
 
     assert (
-        _browser_vision_expectation("org/vision-model", vision_models=vision_models)
+        _browser_vision_expectation(
+            "org/vision-model",
+            vision_models=vision_models,
+            card_image_input=True,
+        )
         == "positive"
     )
     assert (
-        _browser_vision_expectation("org/text-model", vision_models=vision_models)
+        _browser_vision_expectation(
+            "org/text-model",
+            vision_models=vision_models,
+            card_image_input=False,
+        )
         == "unavailable"
     )
-    assert _browser_vision_expectation("org/text-model", vision_models=[]) == (
-        "unavailable"
+    # A model the catalog did not report on falls back to the inventory.
+    assert (
+        _browser_vision_expectation(
+            "org/text-model", vision_models=[], card_image_input=None
+        )
+        == "unavailable"
     )
+
+
+def test_vision_classification_disagreement_is_named_not_asserted_around() -> None:
+    """A card that disagrees with the inventory must fail by saying so.
+
+    The shipped card is the authority for what a model can accept, and the
+    inventory list is the operator's statement of intent. When they disagreed,
+    deriving the expectation from the list alone made the journey assert
+    something untrue about the interface and fail on the assertion, pointing
+    diagnosis at the dashboard instead of at the misclassification. This is a
+    real case: a small model whose shipped card declares native multimodal
+    support was listed as a text model, and the leg failed claiming the
+    dashboard offered a false vision path when the card says it is a vision
+    model.
+    """
+
+    with pytest.raises(RuntimeError, match="vision classification disagrees"):
+        _browser_vision_expectation(
+            "org/actually-a-vision-model",
+            vision_models=[],
+            card_image_input=True,
+        )
+    with pytest.raises(RuntimeError, match="vision classification disagrees"):
+        _browser_vision_expectation(
+            "org/actually-a-text-model",
+            vision_models=["org/actually-a-text-model"],
+            card_image_input=False,
+        )
 
 
 def test_failed_browser_journey_reports_the_progress_it_actually_made() -> None:
