@@ -285,17 +285,19 @@ class SshTargetController:
         # its node identity on every process start and never persists it, so a
         # restored service is guaranteed to report a different one. Requiring a
         # match failed every physical leg on a fully recovered machine. What
-        # restoration actually means here is that the service answers again and
-        # rejoined the fleet, which the identity presence and node-count checks
-        # below cover.
+        # restoration actually means here is that the service answers again from
+        # the original checkout and configuration, which the presence check
+        # below and the checkout, config, argument, and service-state checks
+        # above cover.
         if original.api_node_id and not restored.api_node_id:
             failures.append("restored node did not report an API identity")
-        if (
-            original.cluster_node_count is not None
-            and restored.cluster_node_count is not None
-            and restored.cluster_node_count < original.cluster_node_count
-        ):
-            failures.append("original fleet membership did not rejoin")
+        # Deliberately no failure on a smaller fleet either. A leg stops and
+        # starts exactly one node, so every other member is outside the
+        # experiment: a peer rebooting, a stopped peer still pruning out of the
+        # pre-run reading, or a fleet deliberately quieted for the duration all
+        # produce a lower count while this target recovered perfectly. Treating
+        # that as a critical restoration failure held the fleet lease on a
+        # healthy machine. The caller records the change as a warning instead.
         if self.target.service_status_command and restored.service_status is None:
             failures.append("restored service status could not be read")
         if (

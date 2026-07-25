@@ -10,11 +10,12 @@ import socket
 import subprocess
 import threading
 import time
+from collections.abc import Sequence
 from contextlib import AbstractContextManager
 from datetime import UTC, datetime
 from pathlib import Path
 from types import FrameType
-from typing import BinaryIO
+from typing import BinaryIO, Literal
 
 import httpx
 
@@ -318,6 +319,7 @@ class FreshInstallQualifier:
                         target=target,
                         original=snapshot.original,
                         api_base_url=f"http://127.0.0.1:{local_port}",
+                        report=report,
                         journal=journal,
                     )
                     restoration_succeeded = isolation_restored and service_restored
@@ -734,18 +736,17 @@ class FreshInstallQualifier:
                 # below asking a node to serve a model it never mounted.
                 if target.dashboard_contract == "required":
                     with journal.stage(f"dashboard user journey: {model_id}"):
+                        expectation = _browser_vision_expectation(
+                            model_id, vision_models=target.vision_models
+                        )
                         browser_fixture = (
                             generate_vision_fixture()
-                            if model_id in target.vision_models
+                            if expectation == "positive"
                             else None
                         )
                         outcome = dashboard.qualify(
                             model_id=model_id,
-                            vision_contract=(
-                                "positive"
-                                if model_id in target.vision_models
-                                else target.vision_contract
-                            ),
+                            vision_contract=expectation,
                             fixture=browser_fixture,
                         )
                         report.browser.append(outcome)
@@ -816,16 +817,22 @@ class FreshInstallQualifier:
         target: FreshInstallTarget,
         original: OriginalTargetState,
         api_base_url: str,
+        report: FreshInstallQualificationReport,
         journal: _LifecycleJournal,
     ) -> bool:
         with journal.stage("restore original selected-target service") as stage:
             assert target.service_start_command is not None
             controller.run(target.service_start_command, timeout_s=120)
+            # Readiness is the target answering again, which is exactly what
+            # restarting its service controls. It deliberately does not wait for
+            # the fleet to return to its pre-run size: that size counts nodes
+            # this leg never touched, so a peer that was rebooting, pruning, or
+            # deliberately quiet made the wait unsatisfiable and timed out on a
+            # machine that had already recovered.
             node_id, node_count = _wait_for_api_identity(
                 api_base_url,
                 timeout_s=self.fresh.readiness_timeout_s,
                 poll_interval_s=self.fresh.poll_interval_s,
-                minimum_node_count=original.cluster_node_count,
             )
             mismatches = controller.verify_restored_state(
                 original,
@@ -842,7 +849,44 @@ class FreshInstallQualifier:
                 f"restored: node identity {original.api_node_id} -> {node_id}, "
                 f"fleet {node_count} nodes"
             )
+            if (
+                original.cluster_node_count is not None
+                and node_count < original.cluster_node_count
+            ):
+                # Recorded, not fatal. This leg stops and starts exactly one
+                # node, so a smaller fleet is a statement about peers outside
+                # the experiment. Failing here would hold the fleet lease and
+                # declare a fully recovered machine broken because someone
+                # else's node was down.
+                report.issues.append(
+                    Issue(
+                        severity="warning",
+                        message=(
+                            "restored fleet is smaller than before the run: "
+                            f"{original.cluster_node_count} -> {node_count} "
+                            "nodes; the target itself restored cleanly"
+                        ),
+                    )
+                )
         return True
+
+
+def _browser_vision_expectation(
+    model_id: str,
+    *,
+    vision_models: Sequence[str],
+) -> Literal["positive", "unavailable"]:
+    """Return what the browser journey must prove about vision for one model.
+
+    The expectation is per model, not per target. The dashboard enables its
+    attachment control from the selected model's own image-input support, so a
+    text model must offer no image path even on a target whose platform can
+    serve vision. Passing a target's ``positive`` contract straight through for
+    a text model demanded a vision check on a model that has no vision, and
+    failed the leg on a fixture that could not exist for it.
+    """
+
+    return "positive" if model_id in vision_models else "unavailable"
 
 
 def _installer_provenance(
@@ -949,9 +993,14 @@ def _wait_for_api_identity(
     *,
     timeout_s: float,
     poll_interval_s: float,
-    minimum_node_count: int | None = None,
 ) -> tuple[str, int]:
-    """Wait for API identity and return its observed cluster size."""
+    """Wait for the API to answer with an identity and report its fleet size.
+
+    Readiness is deliberately the target answering, not the fleet reaching a
+    given size. A leg starts exactly one node, so gating this wait on a
+    pre-run fleet count made it depend on peers the leg never touched and
+    timed out on targets that had already recovered.
+    """
 
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
@@ -966,9 +1015,7 @@ def _wait_for_api_identity(
                 ids.update(identities)
             if isinstance(resources, dict):
                 ids.update(resources)
-            node_count = len(ids)
-            if minimum_node_count is None or node_count >= minimum_node_count:
-                return node_id, node_count
+            return node_id, len(ids)
         except Exception:  # noqa: BLE001 - service is starting
             pass
         time.sleep(poll_interval_s)

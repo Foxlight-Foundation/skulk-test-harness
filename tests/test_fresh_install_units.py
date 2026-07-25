@@ -29,11 +29,13 @@ from skulk_test_harness.client import SkulkClient
 from skulk_test_harness.dashboard_qualification import (
     DashboardQualifier,
     _captured_image_digest,  # pyright: ignore[reportPrivateUsage]
+    _JourneyProgress,  # pyright: ignore[reportPrivateUsage]
 )
 from skulk_test_harness.fleet_lock import FleetLease, LeaseOutcome
 from skulk_test_harness.fresh_install import (
     QualificationInterruptedError,
     QualificationSignalGuard,
+    _browser_vision_expectation,  # pyright: ignore[reportPrivateUsage]
     _clean_environment_command,  # pyright: ignore[reportPrivateUsage]
     _installer_command,  # pyright: ignore[reportPrivateUsage]
     _provision_model_over_api,  # pyright: ignore[reportPrivateUsage]
@@ -466,15 +468,59 @@ def test_restoration_verification_detects_every_changed_surface(
         cluster_node_count=2,
     )
 
+    # The smaller fleet is deliberately absent: it counts nodes this leg never
+    # touched, so it is reported as a warning by the caller rather than as a
+    # restoration failure. See the shrunk-fleet test below.
     assert mismatches == [
         "original checkout commit changed",
         "original checkout status changed",
         "original configuration hash changed",
         "original process arguments were not restored",
         "restored node did not report an API identity",
-        "original fleet membership did not rejoin",
         "original service manager state was not restored",
     ]
+
+
+def test_restoration_passes_when_only_the_surrounding_fleet_shrank(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A recovered target must not fail because a peer outside the leg is down.
+
+    A leg stops and starts exactly one node, so every other member is outside
+    the experiment. A peer that is rebooting, still pruning out of the pre-run
+    reading, or deliberately quiet for the duration lowers the count while this
+    target recovered perfectly. Failing here held the fleet lease on a machine
+    whose service, checkout, configuration, and arguments were all restored.
+    """
+
+    original = OriginalTargetState(
+        git_commit="commit-a",
+        git_status="clean",
+        config_sha256={"/config": "digest-a"},
+        process_arguments=["uv run skulk"],
+        service_status="exit=0\nrunning",
+        api_node_id="node-a",
+        cluster_node_count=2,
+    )
+    restored = dataclasses.replace(
+        original,
+        api_node_id="node-b",
+        cluster_node_count=1,
+    )
+    controller = SshTargetController(_physical_target())
+    monkeypatch.setattr(
+        controller,
+        "capture_original_state",
+        lambda **_kwargs: restored,
+    )
+
+    mismatches = controller.verify_restored_state(
+        original,
+        api_node_id="node-b",
+        cluster_node_count=1,
+    )
+
+    assert mismatches == []
 
 
 def test_restoration_accepts_the_new_identity_a_restart_always_produces(
@@ -514,27 +560,23 @@ def test_restoration_accepts_the_new_identity_a_restart_always_produces(
     assert mismatches == []
 
 
-def test_restored_membership_wait_uses_configured_poll_interval(
+def test_identity_wait_returns_as_soon_as_the_target_answers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    states = iter(
-        [
-            {"nodeIdentities": {"node-a": {}}, "nodeResources": {}},
-            {
-                "nodeIdentities": {
-                    "node-a": {},
-                    "node-b": {},
-                    "node-c": {},
-                },
-                "nodeResources": {},
-            },
-        ]
-    )
+    """Readiness is the target answering, not the fleet reaching a given size.
+
+    A leg starts exactly one node, so waiting for a pre-run fleet count made
+    readiness depend on peers the leg never touched. On a run where the rest of
+    the fabric was deliberately quiet, that wait could never be satisfied and
+    spent its whole window before failing a target that was already serving.
+    """
+
     sleeps: list[float] = []
+    attempts: list[int] = []
 
     class FakeClient:
         def __init__(self, _base_url: str) -> None:
-            pass
+            attempts.append(1)
 
         def __enter__(self) -> "FakeClient":
             return self
@@ -543,10 +585,13 @@ def test_restored_membership_wait_uses_configured_poll_interval(
             pass
 
         def get_node_id(self) -> str:
+            if len(attempts) == 1:
+                raise RuntimeError("service is still starting")
             return "node-a"
 
         def get_state(self) -> dict[str, object]:
-            return next(states)
+            # One node, well below the size this fleet had before the run.
+            return {"nodeIdentities": {"node-a": {}}, "nodeResources": {}}
 
     monkeypatch.setattr(fresh_install_module, "SkulkClient", FakeClient)
     monkeypatch.setattr(
@@ -559,8 +604,9 @@ def test_restored_membership_wait_uses_configured_poll_interval(
         "http://127.0.0.1:52415",
         timeout_s=1,
         poll_interval_s=0.25,
-        minimum_node_count=3,
-    ) == ("node-a", 3)
+    ) == ("node-a", 1)
+    # Exactly one retry: it polled through the unavailable API and stopped the
+    # moment an identity came back, without waiting on fleet size.
     assert sleeps == [0.25]
 
 
@@ -1508,3 +1554,76 @@ def test_first_run_consent_modal_is_answered_not_bypassed() -> None:
     )
     assert absent is False
     assert absent_dialog.clicked == []
+
+
+def test_browser_vision_expectation_is_per_model_not_per_target() -> None:
+    """A text model must be checked for the absence of a vision path.
+
+    The dashboard enables its attachment control from the selected model's own
+    image-input support, so a text model offers no image path even on a target
+    whose platform can serve vision. Treating the target's positive contract as
+    the per-model expectation demanded a vision fixture for a text model and
+    failed the whole leg on a model that had already found, downloaded,
+    launched, and chatted successfully.
+    """
+
+    vision_models = ["org/vision-model"]
+
+    assert (
+        _browser_vision_expectation("org/vision-model", vision_models=vision_models)
+        == "positive"
+    )
+    assert (
+        _browser_vision_expectation("org/text-model", vision_models=vision_models)
+        == "unavailable"
+    )
+    assert _browser_vision_expectation("org/text-model", vision_models=[]) == (
+        "unavailable"
+    )
+
+
+def test_failed_browser_journey_reports_the_progress_it_actually_made() -> None:
+    """A journey that broke at the last step must not report zero progress.
+
+    The failure path used to return an untouched outcome, so a journey that
+    found, downloaded, launched, and chatted successfully and then failed on a
+    later assertion was reported as if the very first click had failed. That
+    sent diagnosis to the wrong end of the journey entirely.
+    """
+
+    progress = _JourneyProgress(model_id="org/model")
+    progress.first_run_consent_prompted = True
+    progress.found = True
+    progress.download_started = True
+    progress.launched = True
+    progress.selected = True
+    progress.text_chat_passed = True
+
+    outcome = progress.outcome(passed=False, message="something later broke")
+
+    assert outcome.model_id == "org/model"
+    assert outcome.found is True
+    assert outcome.download_started is True
+    assert outcome.launched is True
+    assert outcome.selected is True
+    assert outcome.text_chat_passed is True
+    assert outcome.first_run_consent_prompted is True
+    assert outcome.passed is False
+    assert outcome.message == "something later broke"
+
+
+def test_untouched_browser_journey_reports_no_progress() -> None:
+    """A journey that failed before its first step still reports nothing done."""
+
+    outcome = _JourneyProgress(model_id="org/model").outcome(
+        passed=False, message="first click failed"
+    )
+
+    assert outcome.found is False
+    assert outcome.download_started is False
+    assert outcome.launched is False
+    assert outcome.selected is False
+    assert outcome.text_chat_passed is False
+    assert outcome.vision is None
+    assert outcome.false_vision_path_offered is None
+    assert outcome.passed is False

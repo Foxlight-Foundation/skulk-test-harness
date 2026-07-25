@@ -6,6 +6,7 @@ import re
 import secrets
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 from playwright.sync_api import Locator, Page, Request, sync_playwright
@@ -16,6 +17,49 @@ from skulk_test_harness.models import (
     VisionFixtureEvidence,
 )
 from skulk_test_harness.vision_fixture import VisionFixture, data_url_sha256
+
+
+@dataclass
+class _JourneyProgress:
+    """Mutable record of how far one browser journey advanced.
+
+    The reported outcome is immutable, but it has to be produced on both the
+    success and the failure path. Accumulating progress here is what lets a
+    failure say which step broke instead of reporting an untouched outcome in
+    which every step looks like it never ran.
+    """
+
+    model_id: str
+    found: bool = False
+    download_started: bool = False
+    launched: bool = False
+    selected: bool = False
+    text_chat_passed: bool = False
+    vision: VisionFixtureEvidence | None = None
+    false_vision_path_offered: bool | None = None
+    first_run_consent_prompted: bool = False
+
+    def outcome(
+        self,
+        *,
+        passed: bool,
+        message: str | None = None,
+    ) -> DashboardJourneyOutcome:
+        """Freeze the progress recorded so far into a reportable outcome."""
+
+        return DashboardJourneyOutcome(
+            model_id=self.model_id,
+            found=self.found,
+            download_started=self.download_started,
+            launched=self.launched,
+            selected=self.selected,
+            text_chat_passed=self.text_chat_passed,
+            vision=self.vision,
+            false_vision_path_offered=self.false_vision_path_offered,
+            first_run_consent_prompted=self.first_run_consent_prompted,
+            passed=passed,
+            message=message,
+        )
 
 
 class DashboardQualifier:
@@ -68,20 +112,23 @@ class DashboardQualifier:
                     )
 
             page.on("request", capture_chat_request)
-            outcome = DashboardJourneyOutcome(model_id=model_id)
+            # Progress is accumulated as the journey advances rather than
+            # assembled at the end, so a failure reports how far it actually
+            # got. Reporting the untouched initial outcome made every failure
+            # look like it happened at the first click even when find,
+            # download, launch, and chat had all succeeded.
+            progress = _JourneyProgress(model_id=model_id)
             try:
-                outcome = self._run_journey(
+                return self._run_journey(
                     page,
                     model_id=model_id,
                     vision_contract=vision_contract,
                     fixture=fixture,
                     captured_chat_requests=captured_chat_requests,
+                    progress=progress,
                 )
-                return outcome
             except Exception as exception:  # noqa: BLE001 - report browser boundary
-                return outcome.model_copy(
-                    update={"passed": False, "message": str(exception)}
-                )
+                return progress.outcome(passed=False, message=str(exception))
             finally:
                 safe_name = _safe_model_name(model_id)
                 page.screenshot(
@@ -101,17 +148,18 @@ class DashboardQualifier:
         vision_contract: str,
         fixture: VisionFixture | None,
         captured_chat_requests: list[dict[str, object]],
+        progress: _JourneyProgress,
     ) -> DashboardJourneyOutcome:
         page.goto(f"{self.api_base_url}/model-store", wait_until="networkidle")
         self._check_abort()
-        consent_prompted = self._dismiss_first_run_consent(page)
+        progress.first_run_consent_prompted = self._dismiss_first_run_consent(page)
         page.get_by_role("button", name="Find Models", exact=True).click()
         search = page.get_by_label("Search models", exact=True)
         search.fill(model_id)
         download = self._wait_for_download_action(page, model_id=model_id)
-        found = True
+        progress.found = True
         download.click()
-        download_started = True
+        progress.download_started = True
         page.get_by_role("button", name="Close", exact=True).click()
         self._wait_for_store_model(model_id)
 
@@ -122,7 +170,7 @@ class DashboardQualifier:
         launch.wait_for(state="visible", timeout=30_000)
         launch.click()
         self._wait_for_ready_instance(model_id)
-        launched = True
+        progress.launched = True
 
         page.reload(wait_until="networkidle")
         page.get_by_role(
@@ -132,7 +180,7 @@ class DashboardQualifier:
         selector = page.get_by_label("Select chat model", exact=True)
         if selector.count():
             selector.select_option(model_id)
-        selected = True
+        progress.selected = True
 
         token = f"FRESH-{secrets.token_hex(4).upper()}"
         prompt = f"Reply with this token exactly once and nothing else: {token}"
@@ -141,21 +189,13 @@ class DashboardQualifier:
         page.get_by_role("button", name="Send message", exact=True).click()
         assistant = self._wait_for_assistant(page, expected=token)
         text_chat_passed = token in assistant
+        progress.text_chat_passed = text_chat_passed
 
         if vision_contract == "unavailable":
             attach = page.get_by_role("button", name="Attach file", exact=True)
             unavailable = attach.is_disabled()
-            return DashboardJourneyOutcome(
-                model_id=model_id,
-                found=found,
-                download_started=download_started,
-                launched=launched,
-                selected=selected,
-                text_chat_passed=text_chat_passed,
-                false_vision_path_offered=not unavailable,
-                first_run_consent_prompted=consent_prompted,
-                passed=text_chat_passed and unavailable,
-            )
+            progress.false_vision_path_offered = not unavailable
+            return progress.outcome(passed=text_chat_passed and unavailable)
         if fixture is None:
             raise ValueError("positive vision browser journey requires a fixture")
 
@@ -204,17 +244,8 @@ class DashboardQualifier:
                 and attachment_retained
             ),
         )
-        return DashboardJourneyOutcome(
-            model_id=model_id,
-            found=found,
-            download_started=download_started,
-            launched=launched,
-            selected=selected,
-            text_chat_passed=text_chat_passed,
-            vision=evidence,
-            first_run_consent_prompted=consent_prompted,
-            passed=text_chat_passed and evidence.passed,
-        )
+        progress.vision = evidence
+        return progress.outcome(passed=text_chat_passed and evidence.passed)
 
     def _dismiss_first_run_consent(self, page: Page) -> bool:
         """Answer the first-run telemetry consent dialog and report whether it appeared.
