@@ -23,6 +23,7 @@ from pydantic import ValidationError
 
 import skulk_test_harness.fresh_install as fresh_install_module
 import skulk_test_harness.qualification_checks as qualification_checks_module
+from skulk_test_harness import runpod as runpod_module
 from skulk_test_harness.client import SkulkClient
 from skulk_test_harness.dashboard_qualification import (
     _captured_image_digest,  # pyright: ignore[reportPrivateUsage]
@@ -865,3 +866,106 @@ def test_cancelled_runpod_deadline_does_not_reenter_teardown() -> None:
     assert fired.is_set()
     assert terminated == []
     assert errors == []
+
+
+def test_runpod_ssh_readiness_waits_for_a_real_sshd(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A RUNNING pod whose sshd is still booting must not be handed back.
+
+    RunPod publishes the port mapping as soon as the container starts, while
+    the bootstrap is still installing and launching sshd. Trusting provider
+    metadata alone returned an endpoint that refused the controller's tunnel
+    and failed qualification on a pod that was merely slow to boot.
+    """
+
+    public_key = tmp_path / "id.pub"
+    private_key = tmp_path / "id"
+    public_key.write_text("ssh-ed25519 AAAATEST qualification")
+    private_key.write_text("private")
+    monkeypatch.setenv("RUNPOD_API_KEY", "secret")
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "desiredStatus": "RUNNING",
+                "publicIp": "203.0.113.10",
+                "portMappings": {"22": 22198},
+            },
+        )
+
+    config = RunPodFreshInstallConfig(
+        ssh_public_key_file=public_key,
+        ssh_private_key_file=private_key,
+        image_name="nvidia/cuda-node-neutral",
+        gpu_type_ids=["NVIDIA L4"],
+        poll_interval_s=0.001,
+        readiness_timeout_s=0.05,
+    )
+    http_client = httpx.Client(
+        base_url="https://rest.runpod.io/v1",
+        transport=httpx.MockTransport(handler),
+    )
+    client = RunPodClient(config, client=http_client)
+
+    banners: list[bool] = [False, False, True]
+    attempts = 0
+
+    def fake_banner(host: str, port: int, **_kwargs: object) -> bool:
+        nonlocal attempts
+        assert (host, port) == ("203.0.113.10", 22198)
+        result = banners[min(attempts, len(banners) - 1)]
+        attempts += 1
+        return result
+
+    monkeypatch.setattr(runpod_module, "_ssh_banner_ready", fake_banner)
+
+    endpoint = client.wait_for_ssh("pod-1")
+
+    assert attempts == 3, "readiness must keep polling while sshd is refusing"
+    assert (endpoint.host, endpoint.port) == ("203.0.113.10", 22198)
+
+
+def test_runpod_ssh_readiness_times_out_when_sshd_never_answers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pod that never serves SSH fails on the deadline, not on first probe."""
+
+    public_key = tmp_path / "id.pub"
+    private_key = tmp_path / "id"
+    public_key.write_text("ssh-ed25519 AAAATEST qualification")
+    private_key.write_text("private")
+    monkeypatch.setenv("RUNPOD_API_KEY", "secret")
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "desiredStatus": "RUNNING",
+                "publicIp": "203.0.113.10",
+                "portMappings": {"22": 22198},
+            },
+        )
+
+    config = RunPodFreshInstallConfig(
+        ssh_public_key_file=public_key,
+        ssh_private_key_file=private_key,
+        image_name="nvidia/cuda-node-neutral",
+        gpu_type_ids=["NVIDIA L4"],
+        poll_interval_s=0.001,
+        readiness_timeout_s=0.02,
+    )
+    http_client = httpx.Client(
+        base_url="https://rest.runpod.io/v1",
+        transport=httpx.MockTransport(handler),
+    )
+    client = RunPodClient(config, client=http_client)
+    monkeypatch.setattr(
+        runpod_module, "_ssh_banner_ready", lambda *_args, **_kwargs: False
+    )
+
+    with pytest.raises(TimeoutError, match="readiness deadline"):
+        client.wait_for_ssh("pod-1")

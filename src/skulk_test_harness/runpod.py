@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import socket
 import time
 from dataclasses import dataclass
 
@@ -112,7 +113,14 @@ class RunPodClient:
         return lease
 
     def wait_for_ssh(self, pod_id: str) -> RunPodSshEndpoint:
-        """Wait until the clean pod exposes its mapped SSH port."""
+        """Wait until the clean pod actually accepts SSH on its mapped port.
+
+        The provider reports RUNNING and publishes the port mapping as soon as
+        the container starts, but the bootstrap still has to install and launch
+        sshd. Returning on the provider record alone hands the controller an
+        endpoint that refuses the connection, so readiness is confirmed against
+        a real SSH banner rather than provider metadata.
+        """
 
         deadline = time.monotonic() + self.config.readiness_timeout_s
         while time.monotonic() < deadline:
@@ -126,6 +134,7 @@ class RunPodClient:
                 and isinstance(host, str)
                 and host
                 and port is not None
+                and _ssh_banner_ready(host, port)
             ):
                 return RunPodSshEndpoint(host=host, port=port)
             time.sleep(self.config.poll_interval_s)
@@ -153,6 +162,22 @@ class RunPodClient:
                 probe.raise_for_status()
             time.sleep(self.config.poll_interval_s)
         raise TimeoutError("RunPod still existed after the teardown deadline")
+
+
+def _ssh_banner_ready(host: str, port: int, *, timeout_s: float = 5.0) -> bool:
+    """Return whether an SSH server is answering on *host*:*port*.
+
+    A refused connection, a timeout, or a proxy that accepts the TCP session
+    without producing an ``SSH-`` identification string all mean the pod is
+    still booting, not that qualification should fail.
+    """
+
+    try:
+        with socket.create_connection((host, port), timeout=timeout_s) as connection:
+            connection.settimeout(timeout_s)
+            return connection.recv(4).startswith(b"SSH-")
+    except OSError:
+        return False
 
 
 def _sshd_bootstrap_command() -> str:
