@@ -1,4 +1,6 @@
 import asyncio
+import base64
+import hashlib
 import io
 import json
 import math
@@ -66,6 +68,7 @@ from skulk_test_harness.orchestrator import (
     _score_transcript_fidelity,
     _select_catalog_models,
     _store_registry_entries,
+    _test_applies_to_model,
     _tool_roundtrip_messages,
     _wav_from_pcm16,
     _word_error_rate,
@@ -510,14 +513,36 @@ def test_messages_for_test_builds_multimodal_content() -> None:
         {
             "role": "user",
             "content": [
-                {"type": "text", "text": "what color?"},
                 {
                     "type": "image_url",
                     "image_url": {"url": "data:image/png;base64,AAAA"},
                 },
+                {"type": "text", "text": "what color?"},
             ],
         }
     ]
+
+
+def test_prompt_test_model_scope_is_exact_and_defaults_to_all_models() -> None:
+    generic = PromptTest(name="generic", prompt="hello")
+    scoped = PromptTest(
+        name="scoped",
+        prompt="hello",
+        model_ids=["org/ModelA", "org/ModelB"],
+    )
+
+    assert _test_applies_to_model(generic, "org/Anything") is True
+    assert _test_applies_to_model(scoped, "org/ModelA") is True
+    assert _test_applies_to_model(scoped, "org/ModelC") is False
+
+    with pytest.raises(ValueError, match="must be non-empty"):
+        PromptTest(name="empty-scope", prompt="hello", model_ids=[" "])
+    with pytest.raises(ValueError, match="must be unique"):
+        PromptTest(
+            name="duplicate-scope",
+            prompt="hello",
+            model_ids=["org/ModelA", "org/ModelA"],
+        )
 
 
 def test_served_spec_selector_matches_runtime_field() -> None:
@@ -960,16 +985,182 @@ def test_chat_and_llama_concise_tests_have_reasoning_budget() -> None:
         assert concise.max_tokens >= 256
 
 
-def test_vision_smoke_fixture_expects_blue_square() -> None:
+def test_vision_suite_uses_original_card_and_strict_semantic_checks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     root = Path(__file__).parents[1]
-    test_sets = load_test_sets(root / "configs/test_sets.yaml").test_sets
-    vision = test_sets["vision"].tests[0]
-    data_plane = test_sets["vision-data-plane"].tests[0]
+    monkeypatch.chdir(root)
+    expected_hash = "2832760871d31e987ba83a3ad9366e1b4f603742e716a59976ac13f0a07c12f5"
+    correct_response = "FUE4ZG; cyan diamond"
+    wrong_code_response = "FUE42G; cyan diamond"
+    wrong_attribute_response = "FUE4ZG; magenta triangle"
+    leaked_response = f"<|im_start|> image\n{correct_response}"
 
-    assert vision.success.required_substrings == ["blue"]
-    assert "ABAAAAAQ" in vision.images[0].url
-    assert data_plane.kind == "vision_data_plane"
-    assert data_plane.success.required_substrings == ["blue"]
+    public_sets = load_test_sets(root / "configs/test_sets.yaml").test_sets
+    public_vision = public_sets["vision"].tests[0]
+    assert public_vision.name == "semantic-card-reading"
+    assert len(public_vision.success.required_regexes) == 3
+    assert (
+        _score_output(
+            "vision-model",
+            public_vision.name,
+            correct_response,
+            public_vision.success,
+        )
+        == []
+    )
+    assert _score_output(
+        "vision-model",
+        public_vision.name,
+        wrong_code_response,
+        public_vision.success,
+    )
+    assert _score_output(
+        "vision-model",
+        public_vision.name,
+        wrong_attribute_response,
+        public_vision.success,
+    )
+
+    foxlight_sets = load_test_sets(
+        root / "examples/foxlight/test_sets.yaml"
+    ).test_sets
+    foxlight_vision_tests = foxlight_sets["vision"].tests
+    assert {test.name for test in foxlight_vision_tests} == {
+        "qwen-semantic-card-reading",
+        "gemma3n-semantic-card-reading",
+        "gemma4-semantic-card-reading",
+    }
+    for vision in foxlight_vision_tests:
+        assert vision.repetitions == 2
+        assert len(vision.success.required_regexes) == 3
+        assert (
+            _score_output(
+                "vision-model",
+                vision.name,
+                correct_response,
+                vision.success,
+            )
+            == []
+        )
+        assert _score_output(
+            "vision-model",
+            vision.name,
+            wrong_code_response,
+            vision.success,
+        )
+        assert _score_output(
+            "vision-model",
+            vision.name,
+            leaked_response,
+            vision.success,
+        )
+
+    inventory_vision = foxlight_sets["vision-visible-details"].tests[0]
+    assert inventory_vision.model_ids == []
+    assert inventory_vision.repetitions == 2
+    assert (
+        _score_output(
+            "vision-model",
+            inventory_vision.name,
+            correct_response,
+            inventory_vision.success,
+        )
+        == []
+    )
+    assert _score_output(
+        "vision-model",
+        inventory_vision.name,
+        wrong_attribute_response,
+        inventory_vision.success,
+    )
+    assert _score_output(
+        "vision-model",
+        inventory_vision.name,
+        leaked_response,
+        inventory_vision.success,
+    )
+
+    structured_identity = foxlight_sets["vision-structured-identity"].tests[0]
+    assert structured_identity.model_ids == []
+    assert structured_identity.repetitions == 2
+    assert (
+        _score_output(
+            "vision-model",
+            structured_identity.name,
+            correct_response,
+            structured_identity.success,
+        )
+        == []
+    )
+    assert _score_output(
+        "vision-model",
+        structured_identity.name,
+        wrong_code_response,
+        structured_identity.success,
+    )
+    assert _score_output(
+        "vision-model",
+        structured_identity.name,
+        leaked_response,
+        structured_identity.success,
+    )
+
+    for test_sets in (public_sets, foxlight_sets):
+        vision_tests = list(test_sets["vision"].tests)
+        if "vision-visible-details" in test_sets:
+            vision_tests.extend(test_sets["vision-visible-details"].tests)
+        if "vision-structured-identity" in test_sets:
+            vision_tests.extend(test_sets["vision-structured-identity"].tests)
+        for vision in vision_tests:
+            assert vision.images[0].input_path == Path(
+                "fixtures/vision/semantic-qualification-card.png"
+            )
+            messages = _messages_for_test(vision)
+            content = messages[-1]["content"]
+            assert isinstance(content, list)
+            image_part = content[0]
+            image_url = image_part["image_url"]["url"]
+            assert isinstance(image_url, str)
+            prefix, encoded = image_url.split(",", maxsplit=1)
+            assert prefix == "data:image/png;base64"
+            assert (
+                hashlib.sha256(base64.b64decode(encoded)).hexdigest()
+                == expected_hash
+            )
+
+        data_plane = test_sets["vision-data-plane"].tests[0]
+        assert data_plane.kind == "vision_data_plane"
+        assert len(data_plane.success.required_regexes) == 3
+
+
+def test_foxlight_vision_model_set_spans_three_families() -> None:
+    root = Path(__file__).parents[1]
+    model_sets = load_model_sets(root / "examples/foxlight/model_sets.yaml").model_sets
+
+    assert model_sets["vision"].models == [
+        "mlx-community/Qwen3-VL-4B-Instruct-4bit",
+        "mlx-community/Qwen3.5-2B-4bit",
+        "mlx-community/gemma-3n-E2B-it-4bit",
+        "mlx-community/gemma-4-e2b-it-8bit",
+    ]
+    foxlight_test_sets = load_test_sets(
+        root / "examples/foxlight/test_sets.yaml"
+    ).test_sets
+    scoped_models = {
+        model_id
+        for test in foxlight_test_sets["vision"].tests
+        for model_id in test.model_ids
+    }
+    assert scoped_models == set(model_sets["vision"].models)
+    inventory_selector = model_sets["vision-inventory"].selectors[0]
+    assert inventory_selector.capabilities_any == ["vision"]
+    assert inventory_selector.max_models is None
+
+    public_model_sets = load_model_sets(root / "configs/model_sets.yaml").model_sets
+    public_selector = public_model_sets["vision"].selectors[0]
+    assert public_selector.capabilities_any == ["vision"]
+    assert public_selector.max_models is None
 
 
 def test_default_placement_appearance_timeout_handles_large_cached_models() -> None:
@@ -3128,6 +3319,50 @@ def test_clear_deferred_placement_issues_keeps_real_run_errors() -> None:
     assert [(issue.model_id, issue.message) for issue in report.issues] == [
         ("m/Foo", "Model run failed; continuing to next model"),
         ("m/Bar", "No usable placement preview found before execution"),
+    ]
+
+
+def test_model_lifecycle_reports_when_every_test_excludes_model(
+    tmp_path: Path,
+) -> None:
+    client = _FakeClient()
+    runner = _runner()
+    runner._ensure_model_placed = lambda *_a, **_k: PlacementResult(  # type: ignore[method-assign]
+        model_id="m/Foo",
+        instance_id="inst-1",
+        created_by_harness=True,
+        ready=True,
+    )
+    spec = RunSpec(model_set="m", test_set="scoped", mode="execute")
+    report = RunReport.start("run-1", spec, [])
+
+    placed = runner._run_model_lifecycle(
+        client,  # type: ignore[arg-type]
+        ModelRef(model_id="m/Foo", source="explicit"),
+        spec,
+        report,
+        HarnessTestSet(
+            name="scoped",
+            tests=[
+                PromptTest(
+                    name="other-model-only",
+                    prompt="hello",
+                    model_ids=["m/Bar"],
+                )
+            ],
+        ),
+        ReportWriter(tmp_path),
+        {},
+    )
+
+    assert placed is True
+    assert report.results == []
+    assert [(issue.severity, issue.model_id, issue.message) for issue in report.issues] == [
+        (
+            "error",
+            "m/Foo",
+            "No tests in the selected test set apply to this model",
+        )
     ]
 
 

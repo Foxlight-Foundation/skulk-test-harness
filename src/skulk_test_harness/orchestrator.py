@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import concurrent.futures
 import io
 import json
@@ -44,6 +45,7 @@ from skulk_test_harness.models import (
     OwnerTopology,
     PlacementPolicy,
     PlacementResult,
+    PromptImage,
     PromptTest,
     RunReport,
     RunSpec,
@@ -259,7 +261,22 @@ class HarnessRunner:
             # test does not pin enable_thinking, default it OFF so the model
             # answers instead of emitting an all-reasoning, length-capped reply.
             thinking_default = False if thinking_toggles.get(model.model_id) else None
-            for test in test_set.tests:
+            applicable_tests = [
+                test
+                for test in test_set.tests
+                if _test_applies_to_model(test, model.model_id)
+            ]
+            if test_set.tests and not applicable_tests:
+                report.issues.append(
+                    Issue(
+                        severity="error",
+                        model_id=model.model_id,
+                        message="No tests in the selected test set apply to this model",
+                        evidence={"test_set": test_set.name},
+                    )
+                )
+                writer.write(report)
+            for test in applicable_tests:
                 for repetition in range(1, test.repetitions + 1):
                     result = self._run_test(
                         client,
@@ -4380,6 +4397,12 @@ def _expanded_prompt(test: PromptTest) -> str:
     return test.prompt * test.prompt_repetitions
 
 
+def _test_applies_to_model(test: PromptTest, model_id: str) -> bool:
+    """Return whether a test's optional exact-model scope includes a model."""
+
+    return not test.model_ids or model_id in test.model_ids
+
+
 def _messages_for_test(test: PromptTest) -> list[dict[str, object]]:
     messages: list[dict[str, object]] = []
     if test.system:
@@ -4388,14 +4411,35 @@ def _messages_for_test(test: PromptTest) -> list[dict[str, object]]:
     if not test.images:
         messages.append({"role": "user", "content": prompt})
         return messages
-    content: list[dict[str, object]] = [{"type": "text", "text": prompt}]
+    # Match the built-in dashboard and MLX-VLM's reference message formatter:
+    # image parts precede the question so order-sensitive families such as
+    # Gemma receive the same prompt shape in qualification and production UI.
+    content: list[dict[str, object]] = []
     for image in test.images:
-        image_url: dict[str, object] = {"url": image.url}
+        image_url: dict[str, object] = {"url": _prompt_image_url(image)}
         if image.detail is not None:
             image_url["detail"] = image.detail
         content.append({"type": "image_url", "image_url": image_url})
+    content.append({"type": "text", "text": prompt})
     messages.append({"role": "user", "content": content})
     return messages
+
+
+def _prompt_image_url(image: PromptImage) -> str:
+    """Return a request-ready URL, encoding a local fixture when configured."""
+    if image.url is not None:
+        return image.url
+    assert image.input_path is not None
+    image_path = (
+        image.input_path
+        if image.input_path.is_absolute()
+        else Path.cwd() / image.input_path
+    )
+    media_type = image.media_type or mimetypes.guess_type(image_path)[0]
+    if media_type is None or not media_type.startswith("image/"):
+        raise ValueError(f"Unable to determine image media type for {image_path}")
+    encoded = base64.b64encode(image_path.read_bytes()).decode("ascii")
+    return f"data:{media_type};base64,{encoded}"
 
 
 def _resolve_audio_input_path(path: Path) -> Path:

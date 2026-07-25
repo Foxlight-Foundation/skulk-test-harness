@@ -121,11 +121,11 @@ model_sets:
 
   vision:
     name: vision
-    description: Vision-capable models discovered from catalog/store metadata.
+    description: Every model whose resolved catalog metadata declares vision input.
     selectors:
       - source: both
-        id_regex: "(vision|vl|multimodal)"
-        max_models: 5
+        capabilities_any:
+          - vision
 
   served-spec-draft-simple:
     name: served-spec-draft-simple

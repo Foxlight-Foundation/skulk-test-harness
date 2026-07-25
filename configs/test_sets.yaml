@@ -537,21 +537,36 @@ test_sets:
 
   vision:
     name: vision
-    description: Multimodal chat coverage using an OpenAI-style image_url part.
+    description: >
+      Semantic multimodal coverage using an original qualification card with an
+      exact large code plus independently visible color and shape attributes.
     tests:
-      - name: image-caption-smoke
+      - name: semantic-card-reading
         kind: chat
-        system: You are a careful vision assistant.
-        prompt: What is the dominant color in this image? Answer in one word.
-        max_tokens: 64
+        system: Report only evidence visible in the supplied image.
+        prompt: >-
+          Read the large six-character code. Then name the colored shape.
+          Answer exactly: CODE; COLOR SHAPE.
+        max_tokens: 128
         temperature: 0
         enable_thinking: false
         images:
-          - url: data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFUlEQVR42mNgYPhPIhrVMKph2GoAAJLb/wHQPqPSAAAAAElFTkSuQmCC
+          - input_path: fixtures/vision/semantic-qualification-card.png
+            media_type: image/png
         success:
-          min_chars: 3
-          required_substrings:
-            - blue
+          min_chars: 16
+          required_regexes:
+            - "(?i)\\bFUE4ZG\\b"
+            - "(?i)\\bcyan\\b"
+            - "(?i)\\bdiamond\\b"
+          forbidden_substrings:
+            - bedroom
+            - furniture
+            - potted plant
+            - "<|im_start|>"
+            - "<|im_end|>"
+            - "<|image|>"
+            - "<start_of_turn>"
 
   vision-data-plane:
     name: vision-data-plane
@@ -562,16 +577,25 @@ test_sets:
       - name: image-local-remote-routing
         kind: vision_data_plane
         system: You are a careful vision assistant.
-        prompt: What is the dominant color in this image? Answer in one word.
-        max_tokens: 64
+        prompt: >-
+          Read the large six-character code. Then name the colored shape.
+          Answer exactly: CODE; COLOR SHAPE.
+        max_tokens: 128
         temperature: 0
         enable_thinking: false
         images:
-          - url: data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFUlEQVR42mNgYPhPIhrVMKph2GoAAJLb/wHQPqPSAAAAAElFTkSuQmCC
+          - input_path: fixtures/vision/semantic-qualification-card.png
+            media_type: image/png
         success:
-          min_chars: 3
-          required_substrings:
-            - blue
+          min_chars: 16
+          required_regexes:
+            - "(?i)\\bFUE4ZG\\b"
+            - "(?i)\\bcyan\\b"
+            - "(?i)\\bdiamond\\b"
+          forbidden_substrings:
+            - bedroom
+            - furniture
+            - potted plant
 
   served-speculation:
     name: served-speculation

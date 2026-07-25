@@ -943,22 +943,168 @@ test_sets:
   vision:
     name: vision
     description: >
-      Multimodal chat coverage. Sends an OpenAI-style image_url content part and
-      asserts the model answers coherently.
+      Semantic multimodal coverage across Qwen3-VL, Qwen3.5, Gemma 3n, and
+      Gemma 4 using an original qualification card. Every architecture must
+      report the exact large code plus the independently visible color and
+      shape; prompts are scoped only where small-model instruction behavior
+      requires different phrasing.
     tests:
-      - name: image-caption-smoke
+      - name: qwen-semantic-card-reading
         kind: chat
-        system: You are a careful vision assistant.
-        prompt: What is the dominant color in this image? Answer in one word.
-        max_tokens: 64
+        model_ids:
+          - mlx-community/Qwen3-VL-4B-Instruct-4bit
+          - mlx-community/Qwen3.5-2B-4bit
+        system: Report only evidence visible in the supplied image.
+        prompt: >-
+          Read the large six-character code. Then name the colored shape.
+          Answer exactly: CODE; COLOR SHAPE.
+        max_tokens: 320
         temperature: 0
         enable_thinking: false
+        repetitions: 2
         images:
-          - url: data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFUlEQVR42mNgYPhPIhrVMKph2GoAAJLb/wHQPqPSAAAAAElFTkSuQmCC
+          - input_path: fixtures/vision/semantic-qualification-card.png
+            media_type: image/png
         success:
-          min_chars: 3
-          required_substrings:
-            - blue
+          min_chars: 16
+          required_regexes:
+            - "(?i)\\bFUE4ZG\\b"
+            - "(?i)\\bcyan\\b"
+            - "(?i)\\bdiamond\\b"
+          forbidden_substrings:
+            - bedroom
+            - furniture
+            - potted plant
+            - "<|im_start|>"
+            - "<|im_end|>"
+            - "<|image|>"
+            - "<start_of_turn>"
+
+      - name: gemma3n-semantic-card-reading
+        kind: chat
+        model_ids:
+          - mlx-community/gemma-3n-E2B-it-4bit
+        prompt: >-
+          What is the large six-character code? What color and shape are below
+          it? Answer exactly: CODE; COLOR SHAPE.
+        max_tokens: 192
+        temperature: 0
+        enable_thinking: false
+        repetitions: 2
+        images:
+          - input_path: fixtures/vision/semantic-qualification-card.png
+            media_type: image/png
+        success:
+          min_chars: 16
+          required_regexes:
+            - "(?i)\\bFUE4ZG\\b"
+            - "(?i)\\bcyan\\b"
+            - "(?i)\\bdiamond\\b"
+          forbidden_substrings:
+            - bedroom
+            - furniture
+            - potted plant
+            - "<|im_start|>"
+            - "<|im_end|>"
+            - "<|image|>"
+            - "<start_of_turn>"
+
+      - name: gemma4-semantic-card-reading
+        kind: chat
+        model_ids:
+          - mlx-community/gemma-4-e2b-it-8bit
+        prompt: >-
+          Transcribe the large code and describe the colored shape below it.
+          Answer exactly: CODE; COLOR SHAPE.
+        # This small checkpoint emits a verbose analysis before the visible
+        # answer even with thinking disabled; leave room for all three facts.
+        max_tokens: 320
+        temperature: 0
+        enable_thinking: false
+        repetitions: 2
+        images:
+          - input_path: fixtures/vision/semantic-qualification-card.png
+            media_type: image/png
+        success:
+          min_chars: 16
+          required_regexes:
+            - "(?i)\\bFUE4ZG\\b"
+            - "(?i)\\bcyan\\b"
+            - "(?i)\\bdiamond\\b"
+          forbidden_substrings:
+            - bedroom
+            - furniture
+            - potted plant
+            - "<|im_start|>"
+            - "<|im_end|>"
+            - "<|image|>"
+            - "<start_of_turn>"
+
+  vision-visible-details:
+    name: vision-visible-details
+    description: >
+      Inventory-wide vision-path qualification using an exact code plus color
+      and shape facts grounded in the card pixels.
+    tests:
+      - name: semantic-card-visible-details
+        kind: chat
+        prompt: >-
+          Read the large code and describe the colored shape. Include the code,
+          color, and shape in one short sentence.
+        max_tokens: 320
+        temperature: 0
+        enable_thinking: false
+        repetitions: 2
+        images:
+          - input_path: fixtures/vision/semantic-qualification-card.png
+            media_type: image/png
+        success:
+          min_chars: 16
+          required_regexes:
+            - "(?i)\\bFUE4ZG\\b"
+            - "(?i)\\bcyan\\b"
+            - "(?i)\\bdiamond\\b"
+          forbidden_substrings:
+            - bedroom
+            - furniture
+            - potted plant
+            - "<|im_start|>"
+            - "<|im_end|>"
+            - "<|image|>"
+            - "<start_of_turn>"
+
+  vision-structured-identity:
+    name: vision-structured-identity
+    description: >
+      Structured card semantics for checkpoints whose small instruction model
+      answers this form reliably. Code, color, and shape are all required.
+    tests:
+      - name: semantic-card-structured-answer
+        kind: chat
+        prompt: >-
+          What large code, color, and shape are visible?
+          Answer exactly: CODE; COLOR; SHAPE.
+        max_tokens: 192
+        temperature: 0
+        enable_thinking: false
+        repetitions: 2
+        images:
+          - input_path: fixtures/vision/semantic-qualification-card.png
+            media_type: image/png
+        success:
+          min_chars: 16
+          required_regexes:
+            - "(?i)\\bFUE4ZG\\b"
+            - "(?i)\\bcyan\\b"
+            - "(?i)\\bdiamond\\b"
+          forbidden_substrings:
+            - bedroom
+            - furniture
+            - potted plant
+            - "<|im_start|>"
+            - "<|im_end|>"
+            - "<|image|>"
+            - "<start_of_turn>"
 
   vision-data-plane:
     name: vision-data-plane
@@ -969,16 +1115,25 @@ test_sets:
       - name: image-local-remote-routing
         kind: vision_data_plane
         system: You are a careful vision assistant.
-        prompt: What is the dominant color in this image? Answer in one word.
-        max_tokens: 64
+        prompt: >-
+          Read the large six-character code. Then name the colored shape.
+          Answer exactly: CODE; COLOR SHAPE.
+        max_tokens: 128
         temperature: 0
         enable_thinking: false
         images:
-          - url: data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFUlEQVR42mNgYPhPIhrVMKph2GoAAJLb/wHQPqPSAAAAAElFTkSuQmCC
+          - input_path: fixtures/vision/semantic-qualification-card.png
+            media_type: image/png
         success:
-          min_chars: 3
-          required_substrings:
-            - blue
+          min_chars: 16
+          required_regexes:
+            - "(?i)\\bFUE4ZG\\b"
+            - "(?i)\\bcyan\\b"
+            - "(?i)\\bdiamond\\b"
+          forbidden_substrings:
+            - bedroom
+            - furniture
+            - potted plant
 
   served-speculation:
     name: served-speculation
