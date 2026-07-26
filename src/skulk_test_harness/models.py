@@ -48,6 +48,10 @@ FreshInstallTargetKind = Literal["physical", "runpod"]
 ServiceManager = Literal["launchd", "systemd", "command"]
 FreshInstallStageStatus = Literal["pending", "running", "passed", "failed", "skipped"]
 DataTransport = Literal["zenoh", "gossipsub"]
+# Whether a clean install on this target is expected to serve the web UI. A
+# machine with no Node toolchain ships as an API-only node by design, so that
+# outcome is a contract to assert rather than a failure or a skip.
+DashboardContract = Literal["required", "absent"]
 
 
 class HarnessBaseModel(BaseModel):
@@ -180,6 +184,15 @@ class FreshInstallTarget(HarnessBaseModel):
         default=None,
         description="Optional private-key path. Never copied into reports.",
     )
+    accept_unknown_host_key: bool = Field(
+        default=False,
+        description=(
+            "Trust an unknown SSH host key on first contact. Only ever set for "
+            "an ephemeral provider-created pod, whose host key is generated at "
+            "boot and cannot be known in advance. Inventory targets leave this "
+            "false so a changed host key on real hardware still fails loudly."
+        ),
+    )
     service_manager: ServiceManager = Field(
         default="command",
         description="How the pre-existing Skulk service is controlled.",
@@ -227,6 +240,14 @@ class FreshInstallTarget(HarnessBaseModel):
     )
     vision_contract: Literal["positive", "unavailable"] = Field(
         description="Required vision behavior; never converted into an adaptive skip.",
+    )
+    dashboard_contract: DashboardContract = Field(
+        default="required",
+        description=(
+            "Whether a clean install here must serve the web UI. Set 'absent' "
+            "only for a target with no Node toolchain, where the installer "
+            "skips the dashboard build by design; both outcomes are asserted."
+        ),
     )
     text_models: list[str] = Field(
         default_factory=list,
@@ -1546,6 +1567,11 @@ class DashboardJourneyOutcome(HarnessBaseModel):
     text_chat_passed: bool = False
     vision: VisionFixtureEvidence | None = None
     false_vision_path_offered: bool | None = None
+    # Whether the shipped first-run telemetry consent dialog appeared and was
+    # answered with "Not now". A clean machine sees it and a long-lived
+    # operator browser does not, so recording it keeps the difference visible
+    # in the report instead of only surfacing as an unexplained click failure.
+    first_run_consent_prompted: bool = False
     passed: bool = False
     message: str | None = None
 

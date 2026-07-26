@@ -281,14 +281,23 @@ class SshTargetController:
             failures.append("original configuration hash changed")
         if restored.process_arguments != original.process_arguments:
             failures.append("original process arguments were not restored")
-        if original.api_node_id and restored.api_node_id != original.api_node_id:
-            failures.append("original API identity was not restored")
-        if (
-            original.cluster_node_count is not None
-            and restored.cluster_node_count is not None
-            and restored.cluster_node_count < original.cluster_node_count
-        ):
-            failures.append("original fleet membership did not rejoin")
+        # Deliberately no equality check on the API node id. Skulk regenerates
+        # its node identity on every process start and never persists it, so a
+        # restored service is guaranteed to report a different one. Requiring a
+        # match failed every physical leg on a fully recovered machine. What
+        # restoration actually means here is that the service answers again from
+        # the original checkout and configuration, which the presence check
+        # below and the checkout, config, argument, and service-state checks
+        # above cover.
+        if original.api_node_id and not restored.api_node_id:
+            failures.append("restored node did not report an API identity")
+        # Deliberately no failure on a smaller fleet either. A leg stops and
+        # starts exactly one node, so every other member is outside the
+        # experiment: a peer rebooting, a stopped peer still pruning out of the
+        # pre-run reading, or a fleet deliberately quieted for the duration all
+        # produce a lower count while this target recovered perfectly. Treating
+        # that as a critical restoration failure held the fleet lease on a
+        # healthy machine. The caller records the change as a warning instead.
         if self.target.service_status_command and restored.service_status is None:
             failures.append("restored service status could not be read")
         if (
@@ -307,6 +316,7 @@ class SshTargetController:
             "BatchMode=yes",
             "-o",
             "ConnectTimeout=15",
+            *self._host_key_options(),
             "-p",
             str(self.target.ssh_port),
         ]
@@ -318,12 +328,36 @@ class SshTargetController:
         prefix = [
             "scp",
             "-q",
+            *self._host_key_options(),
             "-P",
             str(self.target.ssh_port),
         ]
         if self.target.ssh_identity_file is not None:
             prefix.extend(["-i", str(self.target.ssh_identity_file.expanduser())])
         return prefix
+
+    def _host_key_options(self) -> list[str]:
+        """Return this target's SSH host-key policy.
+
+        Inventory hardware keeps the caller's normal strict checking, so a
+        changed host key on a real fleet node still stops the run. An ephemeral
+        provider pod generates its host key at boot and the provider reuses
+        address/port pairs across pods, so its key is accepted on first contact
+        and deliberately never written to the controller's known-hosts file.
+        """
+
+        if not self.target.accept_unknown_host_key:
+            return []
+        return [
+            "-o",
+            "StrictHostKeyChecking=accept-new",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-o",
+            "GlobalKnownHostsFile=/dev/null",
+            "-o",
+            "LogLevel=ERROR",
+        ]
 
 
 def _available_local_port() -> int:

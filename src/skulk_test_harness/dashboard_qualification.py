@@ -3,19 +3,87 @@
 from __future__ import annotations
 
 import re
-import secrets
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 from playwright.sync_api import Locator, Page, Request, sync_playwright
 
 from skulk_test_harness.client import SkulkClient
+from skulk_test_harness.echo_phrase import echo_matched, echo_phrase, echo_prompt
 from skulk_test_harness.models import (
     DashboardJourneyOutcome,
     VisionFixtureEvidence,
 )
 from skulk_test_harness.vision_fixture import VisionFixture, data_url_sha256
+
+
+@dataclass
+class _JourneyProgress:
+    """Mutable record of how far one browser journey advanced.
+
+    The reported outcome is immutable, but it has to be produced on both the
+    success and the failure path. Accumulating progress here is what lets a
+    failure say which step broke instead of reporting an untouched outcome in
+    which every step looks like it never ran.
+    """
+
+    model_id: str
+    found: bool = False
+    download_started: bool = False
+    launched: bool = False
+    selected: bool = False
+    text_chat_passed: bool = False
+    vision: VisionFixtureEvidence | None = None
+    false_vision_path_offered: bool | None = None
+    first_run_consent_prompted: bool = False
+    text_chat_response: str | None = None
+    vision_response: str | None = None
+
+    def failure_message(self) -> str | None:
+        """Explain a failure the booleans alone cannot, or return None.
+
+        A journey that reaches its assertions and fails them raises nothing,
+        so without this the report carries a bare ``passed: false``. The
+        response text is what distinguishes a model declining the prompt, or
+        answering the wrong question, from a genuinely broken path.
+        """
+
+        parts: list[str] = []
+        if self.text_chat_response is not None:
+            parts.append(
+                "chat response did not contain the requested phrase; "
+                f"the model replied: {self.text_chat_response!r}"
+            )
+        if self.vision_response is not None:
+            parts.append(
+                "vision response did not match the fixture; "
+                f"the model replied: {self.vision_response!r}"
+            )
+        return "; ".join(parts) if parts else None
+
+    def outcome(
+        self,
+        *,
+        passed: bool,
+        message: str | None = None,
+    ) -> DashboardJourneyOutcome:
+        """Freeze the progress recorded so far into a reportable outcome."""
+
+        return DashboardJourneyOutcome(
+            model_id=self.model_id,
+            found=self.found,
+            download_started=self.download_started,
+            launched=self.launched,
+            selected=self.selected,
+            text_chat_passed=self.text_chat_passed,
+            vision=self.vision,
+            false_vision_path_offered=self.false_vision_path_offered,
+            first_run_consent_prompted=self.first_run_consent_prompted,
+            passed=passed,
+            message=message,
+        )
 
 
 class DashboardQualifier:
@@ -68,20 +136,23 @@ class DashboardQualifier:
                     )
 
             page.on("request", capture_chat_request)
-            outcome = DashboardJourneyOutcome(model_id=model_id)
+            # Progress is accumulated as the journey advances rather than
+            # assembled at the end, so a failure reports how far it actually
+            # got. Reporting the untouched initial outcome made every failure
+            # look like it happened at the first click even when find,
+            # download, launch, and chat had all succeeded.
+            progress = _JourneyProgress(model_id=model_id)
             try:
-                outcome = self._run_journey(
+                return self._run_journey(
                     page,
                     model_id=model_id,
                     vision_contract=vision_contract,
                     fixture=fixture,
                     captured_chat_requests=captured_chat_requests,
+                    progress=progress,
                 )
-                return outcome
             except Exception as exception:  # noqa: BLE001 - report browser boundary
-                return outcome.model_copy(
-                    update={"passed": False, "message": str(exception)}
-                )
+                return progress.outcome(passed=False, message=str(exception))
             finally:
                 safe_name = _safe_model_name(model_id)
                 page.screenshot(
@@ -101,16 +172,18 @@ class DashboardQualifier:
         vision_contract: str,
         fixture: VisionFixture | None,
         captured_chat_requests: list[dict[str, object]],
+        progress: _JourneyProgress,
     ) -> DashboardJourneyOutcome:
         page.goto(f"{self.api_base_url}/model-store", wait_until="networkidle")
         self._check_abort()
+        progress.first_run_consent_prompted = self._dismiss_first_run_consent(page)
         page.get_by_role("button", name="Find Models", exact=True).click()
         search = page.get_by_label("Search models", exact=True)
         search.fill(model_id)
         download = self._wait_for_download_action(page, model_id=model_id)
-        found = True
+        progress.found = True
         download.click()
-        download_started = True
+        progress.download_started = True
         page.get_by_role("button", name="Close", exact=True).click()
         self._wait_for_store_model(model_id)
 
@@ -121,7 +194,7 @@ class DashboardQualifier:
         launch.wait_for(state="visible", timeout=30_000)
         launch.click()
         self._wait_for_ready_instance(model_id)
-        launched = True
+        progress.launched = True
 
         page.reload(wait_until="networkidle")
         page.get_by_role(
@@ -131,31 +204,40 @@ class DashboardQualifier:
         selector = page.get_by_label("Select chat model", exact=True)
         if selector.count():
             selector.select_option(model_id)
-        selected = True
+        progress.selected = True
 
-        token = f"FRESH-{secrets.token_hex(4).upper()}"
-        prompt = f"Reply with this token exactly once and nothing else: {token}"
+        phrase = echo_phrase()
         message = page.get_by_label("Chat message", exact=True)
-        message.fill(prompt)
+        message.fill(echo_prompt(phrase))
         page.get_by_role("button", name="Send message", exact=True).click()
-        assistant = self._wait_for_assistant(page, expected=token)
-        text_chat_passed = token in assistant
+        assistant = self._wait_for_assistant(page, expected=phrase)
+        # Case-insensitive, matching the waiter. The waiter accepts a
+        # case-insensitive match and returns, so a case-sensitive assertion
+        # here would reject a response the wait had already declared good.
+        text_chat_passed = echo_matched(phrase, assistant)
+        progress.text_chat_passed = text_chat_passed
+        if not text_chat_passed:
+            # Quote the response. A chat failure is otherwise indistinguishable
+            # from a hang, and the reason is usually in what the model said.
+            progress.text_chat_response = assistant.strip()[:400]
 
         if vision_contract == "unavailable":
             attach = page.get_by_role("button", name="Attach file", exact=True)
             unavailable = attach.is_disabled()
-            return DashboardJourneyOutcome(
-                model_id=model_id,
-                found=found,
-                download_started=download_started,
-                launched=launched,
-                selected=selected,
-                text_chat_passed=text_chat_passed,
-                false_vision_path_offered=not unavailable,
+            progress.false_vision_path_offered = not unavailable
+            return progress.outcome(
                 passed=text_chat_passed and unavailable,
+                message=progress.failure_message(),
             )
         if fixture is None:
             raise ValueError("positive vision browser journey requires a fixture")
+
+        # The vision turn gets its own conversation. Sharing one with the text
+        # turn left "repeat this phrase back exactly and say nothing else"
+        # standing in context, and a 4B model kept obeying it: shown the
+        # fixture, it answered with the previous turn's echo phrase instead of
+        # reading the image. That measured instruction carryover, not vision.
+        message = self._start_new_conversation(page, model_id=model_id)
 
         fixture_path = self.artifact_directory / f"{_safe_model_name(model_id)}.png"
         fixture.write(fixture_path)
@@ -175,12 +257,15 @@ class DashboardQualifier:
         )
         retained_attachment.wait_for(state="visible", timeout=30_000)
         attachment_retained = retained_attachment.is_visible()
-        response = self._wait_for_assistant(
-            page,
-            expected=fixture.code,
-            after_count=1,
-        )
+        # Zero, not one: the vision turn is the first exchange of its own
+        # conversation, so there is no earlier assistant message to skip past.
+        response = self._wait_for_assistant(page, expected=fixture.code)
         code_matched, attribute_matched = fixture.response_matches(response)
+        if not (code_matched and attribute_matched):
+            # Same reasoning as the text chat: without the response text a
+            # vision failure cannot be told apart from a broken image path,
+            # and the digest match already proves the bytes arrived.
+            progress.vision_response = response.strip()[:400]
         vision_requests = captured_chat_requests[captured_before:]
         image_digest = _captured_image_digest(vision_requests)
         evidence = VisionFixtureEvidence(
@@ -202,16 +287,76 @@ class DashboardQualifier:
                 and attachment_retained
             ),
         )
-        return DashboardJourneyOutcome(
-            model_id=model_id,
-            found=found,
-            download_started=download_started,
-            launched=launched,
-            selected=selected,
-            text_chat_passed=text_chat_passed,
-            vision=evidence,
+        progress.vision = evidence
+        return progress.outcome(
             passed=text_chat_passed and evidence.passed,
+            message=progress.failure_message(),
         )
+
+    def _dismiss_first_run_consent(self, page: Page) -> bool:
+        """Answer the first-run telemetry consent dialog and report whether it appeared.
+
+        A genuinely fresh install shows a modal asking about optional field
+        telemetry, and it is a real modal: it covers the page and intercepts
+        every pointer event until answered. A long-lived operator browser
+        stamped its no-nag marker months ago, so this is invisible on a
+        developer fleet and blocks the entire journey on a clean machine.
+
+        "Not now" is the deliberate choice here. It dismisses the dialog and
+        leaves fleet consent at ``unasked``, so a throwaway qualification node
+        never enables collection and never publishes anything. Answering by
+        clicking is also the point: this drives the same control a new user
+        does rather than reaching around the UI to seed browser storage.
+        """
+
+        dialog = page.get_by_role("dialog").filter(
+            has=page.get_by_text("Help make Skulk better?", exact=False)
+        )
+        try:
+            dialog.wait_for(state="visible", timeout=10_000)
+        except Exception:  # noqa: BLE001 - absence is a valid, reportable outcome
+            # Consent already decided in skulk.yaml, or this browser profile
+            # was asked before. Either way there is nothing to answer.
+            return False
+        dialog.get_by_role("button", name="Not now", exact=True).click()
+        dialog.wait_for(state="hidden", timeout=10_000)
+        return True
+
+    def _start_new_conversation(self, page: Page, *, model_id: str) -> Locator:
+        """Open a fresh conversation and return its message box.
+
+        Each capability check has to be judged on its own answer. Sharing one
+        conversation let the text turn's standing instruction ("repeat this
+        phrase back exactly and say nothing else") govern the vision turn as
+        well, so the model answered an image prompt with the earlier echo
+        phrase. That is ordinary multi-turn behavior, not a defect, which is
+        exactly why the qualification must not stack the two checks in one
+        thread.
+
+        Clicking the control a user would click also keeps this honest: it
+        exercises the new-conversation path rather than reaching around the UI
+        to reset state.
+        """
+
+        page.get_by_role("button", name="+ New", exact=True).click()
+        # A new conversation may come up with no model selected, so re-select
+        # before asserting anything about the reply.
+        selector = page.get_by_label("Select chat model", exact=True)
+        if selector.count():
+            selector.select_option(model_id)
+        message = page.get_by_label("Chat message", exact=True)
+        message.wait_for(state="visible", timeout=30_000)
+        # The turn only means anything against an empty thread.
+        assistant = page.get_by_label("Assistant message", exact=True)
+        deadline = time.monotonic() + 30
+        while assistant.count() and time.monotonic() < deadline:
+            page.wait_for_timeout(250)
+        if assistant.count():
+            raise RuntimeError(
+                "new conversation still shows prior assistant messages; the "
+                "vision turn would inherit the text turn's instructions"
+            )
+        return message
 
     def _wait_for_store_model(self, model_id: str) -> None:
         deadline = time.monotonic() + self.model_ready_timeout_s

@@ -10,15 +10,16 @@ import socket
 import subprocess
 import threading
 import time
+from collections.abc import Sequence
 from contextlib import AbstractContextManager
 from datetime import UTC, datetime
 from pathlib import Path
 from types import FrameType
-from typing import BinaryIO
+from typing import BinaryIO, Literal
 
 import httpx
 
-from skulk_test_harness.client import SkulkClient
+from skulk_test_harness.client import SkulkApiError, SkulkClient
 from skulk_test_harness.dashboard_qualification import DashboardQualifier
 from skulk_test_harness.fleet_lock import FleetLockStore
 from skulk_test_harness.lease_heartbeat import (
@@ -49,8 +50,22 @@ from skulk_test_harness.target_control import (
 from skulk_test_harness.vision_fixture import generate_vision_fixture
 
 
-class QualificationInterruptedError(RuntimeError):
-    """Raised when a termination signal requests orderly restoration."""
+class QualificationInterruptedError(BaseException):
+    """Raised when a termination signal requests orderly restoration.
+
+    Deliberately a ``BaseException``, for the same reason ``KeyboardInterrupt``
+    is one. This is raised from a signal handler, so it lands wherever the
+    interpreter happens to be executing, and the qualification is full of
+    ``except Exception`` boundaries that exist to turn a browser or subprocess
+    failure into a reported outcome. Inheriting from ``Exception`` let those
+    boundaries swallow an operator's termination request and carry on: a
+    signal arriving inside the consent-dialog probe was read as "no dialog",
+    and one arriving anywhere in the browser journey was reported as a failed
+    leg before the run continued to the next one. On a path that provisions
+    billable cloud machines and destroys local state, an ignored stop request
+    is not acceptable. ``finally`` blocks still run, so orderly restoration is
+    unaffected.
+    """
 
 
 class QualificationSignalGuard(AbstractContextManager["QualificationSignalGuard"]):
@@ -318,6 +333,7 @@ class FreshInstallQualifier:
                         target=target,
                         original=snapshot.original,
                         api_base_url=f"http://127.0.0.1:{local_port}",
+                        report=report,
                         journal=journal,
                     )
                     restoration_succeeded = isolation_restored and service_restored
@@ -395,7 +411,7 @@ class FreshInstallQualifier:
                 )
             report = report.finish(
                 passed=(
-                    not report.issues
+                    not _blocking_issues(report)
                     and restoration_succeeded
                     and not release_failed
                     and not report.critical_recovery_required
@@ -453,6 +469,9 @@ class FreshInstallQualifier:
                 ssh_user="root",
                 ssh_port=endpoint.port,
                 ssh_identity_file=self.fresh.runpod.ssh_private_key_file,
+                # The pod generates its host key at boot, so there is nothing to
+                # have pinned in advance. Inventory hardware never gets this.
+                accept_unknown_host_key=True,
                 service_manager="command",
                 service_stop_command="true",
                 service_start_command="true",
@@ -461,6 +480,7 @@ class FreshInstallQualifier:
                 expected_backends=target.expected_backends,
                 expected_data_transport=target.expected_data_transport,
                 vision_contract=target.vision_contract,
+                dashboard_contract=target.dashboard_contract,
                 text_models=target.text_models,
                 vision_models=target.vision_models,
             )
@@ -529,7 +549,7 @@ class FreshInstallQualifier:
             report.restoration_succeeded = None
             report.teardown_succeeded = teardown_succeeded
             report = report.finish(
-                passed=not report.issues and teardown_succeeded
+                passed=not _blocking_issues(report) and teardown_succeeded
             )
             journal.report = report
             journal.persist()
@@ -718,33 +738,52 @@ class FreshInstallQualifier:
             stream_read_timeout_s=self.config.stream_read_timeout_s,
         ) as client:
             thinking_toggles = client.resolved_thinking_toggle_by_model()
+            card_image_input = client.resolved_image_input_by_model()
             for model_id in models:
                 enable_thinking = (
                     False if thinking_toggles.get(model_id, False) else None
                 )
-                with journal.stage(f"dashboard user journey: {model_id}"):
-                    browser_fixture = (
-                        generate_vision_fixture()
-                        if model_id in target.vision_models
-                        else None
-                    )
-                    outcome = dashboard.qualify(
-                        model_id=model_id,
-                        vision_contract=(
-                            "positive"
-                            if model_id in target.vision_models
-                            else target.vision_contract
-                        ),
-                        fixture=browser_fixture,
-                    )
-                    report.browser.append(outcome)
-                    journal.persist()
-                    if not outcome.passed:
-                        raise RuntimeError(
-                            outcome.message
-                            or f"dashboard journey failed for {model_id}"
+                # The browser journey is what provisions the model on a target
+                # that serves the UI: it finds, downloads, launches, and then
+                # chats. A headless node has no UI to drive, so it provisions
+                # the same model through the API the dashboard itself calls.
+                # Skipping provisioning entirely would leave the parity check
+                # below asking a node to serve a model it never mounted.
+                if target.dashboard_contract == "required":
+                    with journal.stage(f"dashboard user journey: {model_id}"):
+                        expectation = _browser_vision_expectation(
+                            model_id,
+                            vision_models=target.vision_models,
+                            card_image_input=card_image_input.get(model_id),
                         )
-                    _check_heartbeat(heartbeat)
+                        browser_fixture = (
+                            generate_vision_fixture()
+                            if expectation == "positive"
+                            else None
+                        )
+                        outcome = dashboard.qualify(
+                            model_id=model_id,
+                            vision_contract=expectation,
+                            fixture=browser_fixture,
+                        )
+                        report.browser.append(outcome)
+                        journal.persist()
+                        if not outcome.passed:
+                            raise RuntimeError(
+                                outcome.message
+                                or f"dashboard journey failed for {model_id}"
+                            )
+                        _check_heartbeat(heartbeat)
+                else:
+                    with journal.stage(f"headless model provisioning: {model_id}"):
+                        _provision_model_over_api(
+                            client,
+                            model_id=model_id,
+                            model_ready_timeout_s=self.fresh.model_ready_timeout_s,
+                            poll_interval_s=self.fresh.poll_interval_s,
+                            heartbeat=heartbeat,
+                        )
+                        _check_heartbeat(heartbeat)
 
                 with journal.stage(f"direct API parity: {model_id}"):
                     if not qualify_direct_text(
@@ -795,16 +834,22 @@ class FreshInstallQualifier:
         target: FreshInstallTarget,
         original: OriginalTargetState,
         api_base_url: str,
+        report: FreshInstallQualificationReport,
         journal: _LifecycleJournal,
     ) -> bool:
-        with journal.stage("restore original selected-target service"):
+        with journal.stage("restore original selected-target service") as stage:
             assert target.service_start_command is not None
             controller.run(target.service_start_command, timeout_s=120)
+            # Readiness is the target answering again, which is exactly what
+            # restarting its service controls. It deliberately does not wait for
+            # the fleet to return to its pre-run size: that size counts nodes
+            # this leg never touched, so a peer that was rebooting, pruning, or
+            # deliberately quiet made the wait unsatisfiable and timed out on a
+            # machine that had already recovered.
             node_id, node_count = _wait_for_api_identity(
                 api_base_url,
                 timeout_s=self.fresh.readiness_timeout_s,
                 poll_interval_s=self.fresh.poll_interval_s,
-                minimum_node_count=original.cluster_node_count,
             )
             mismatches = controller.verify_restored_state(
                 original,
@@ -813,7 +858,91 @@ class FreshInstallQualifier:
             )
             if mismatches:
                 raise RuntimeError("; ".join(mismatches))
+            # A restarted node always carries a new identity because Skulk never
+            # persists node_id, so both are recorded rather than compared. An
+            # operator reading the report can still see exactly which identity
+            # left and which one rejoined.
+            stage.message = (
+                f"restored: node identity {original.api_node_id} -> {node_id}, "
+                f"fleet {node_count} nodes"
+            )
+            if (
+                original.cluster_node_count is not None
+                and node_count < original.cluster_node_count
+            ):
+                # Recorded, not fatal. This leg stops and starts exactly one
+                # node, so a smaller fleet is a statement about peers outside
+                # the experiment. Failing here would hold the fleet lease and
+                # declare a fully recovered machine broken because someone
+                # else's node was down.
+                report.issues.append(
+                    Issue(
+                        severity="warning",
+                        message=(
+                            "restored fleet is smaller than before the run: "
+                            f"{original.cluster_node_count} -> {node_count} "
+                            "nodes; the target itself restored cleanly"
+                        ),
+                    )
+                )
         return True
+
+
+def _blocking_issues(report: FreshInstallQualificationReport) -> list[Issue]:
+    """Return only the issues that should fail a leg.
+
+    A qualification records two different kinds of finding. An ``error`` is a
+    release gate saying the candidate or the machine is not acceptable. A
+    ``warning`` is a condition worth an operator's attention that does not
+    make the leg's verdict false, such as the fleet coming back with fewer
+    members than it had before the run because peers outside the experiment
+    were down the whole time.
+
+    Failing on any issue at all collapsed that distinction: a leg whose every
+    stage passed, whose target restored cleanly, and whose only finding was
+    that exact fleet-size warning was reported as a failed release gate. The
+    warning had already been deliberately downgraded from a fatal restoration
+    failure for this reason, so counting it here undid the downgrade and left
+    only the label changed.
+    """
+
+    return [issue for issue in report.issues if issue.severity == "error"]
+
+
+def _browser_vision_expectation(
+    model_id: str,
+    *,
+    vision_models: Sequence[str],
+    card_image_input: bool | None,
+) -> Literal["positive", "unavailable"]:
+    """Return what the browser journey must prove about vision for one model.
+
+    The expectation is per model, not per target. The dashboard enables its
+    attachment control from the selected model's own image-input support, so a
+    text model must offer no image path even on a target whose platform can
+    serve vision. Passing a target's ``positive`` contract straight through for
+    a text model demanded a vision check on a model that has no vision, and
+    failed the leg on a fixture that could not exist for it.
+
+    The shipped card is the authority. ``card_image_input`` is what the release
+    itself declares for this model, and the inventory's ``vision_models`` list
+    is the operator's statement of intent; a disagreement means one of the two
+    is wrong and is raised as its own error. Deriving the expectation from an
+    inventory list alone let a hand-maintained list drift from the card, and
+    the leg then failed on a UI assertion that was itself incorrect instead of
+    naming the real problem.
+    """
+
+    declared_vision = model_id in vision_models
+    if card_image_input is not None and card_image_input != declared_vision:
+        raise RuntimeError(
+            f"vision classification disagrees for {model_id}: the shipped card "
+            f"reports supports_image_input={card_image_input} but the "
+            f"qualification inventory lists it as a "
+            f"{'vision' if declared_vision else 'text'} model. Fix whichever is "
+            "wrong before qualifying this model."
+        )
+    return "positive" if declared_vision else "unavailable"
 
 
 def _installer_provenance(
@@ -907,6 +1036,7 @@ def _wait_for_runtime_contract(
                     expected_backends=target.expected_backends,
                     expected_transport=target.expected_data_transport,
                     expected_commit=expected_commit,
+                    dashboard_contract=target.dashboard_contract,
                 )
             except Exception as exception:  # noqa: BLE001 - startup is eventually consistent
                 last_error = exception
@@ -919,9 +1049,14 @@ def _wait_for_api_identity(
     *,
     timeout_s: float,
     poll_interval_s: float,
-    minimum_node_count: int | None = None,
 ) -> tuple[str, int]:
-    """Wait for API identity and return its observed cluster size."""
+    """Wait for the API to answer with an identity and report its fleet size.
+
+    Readiness is deliberately the target answering, not the fleet reaching a
+    given size. A leg starts exactly one node, so gating this wait on a
+    pre-run fleet count made it depend on peers the leg never touched and
+    timed out on targets that had already recovered.
+    """
 
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
@@ -936,9 +1071,7 @@ def _wait_for_api_identity(
                 ids.update(identities)
             if isinstance(resources, dict):
                 ids.update(resources)
-            node_count = len(ids)
-            if minimum_node_count is None or node_count >= minimum_node_count:
-                return node_id, node_count
+            return node_id, len(ids)
         except Exception:  # noqa: BLE001 - service is starting
             pass
         time.sleep(poll_interval_s)
@@ -964,6 +1097,119 @@ def _wait_for_http(
             pass
         time.sleep(poll_interval_s)
     raise TimeoutError(f"HTTP endpoint did not become ready: {url}")
+
+
+_COMPLETED_DOWNLOAD_STATES = frozenset(
+    {"complete", "completed", "ready", "succeeded"}
+)
+_FAILED_DOWNLOAD_STATES = frozenset({"failed", "error"})
+
+
+def _provision_model_over_api(
+    client: SkulkClient,
+    *,
+    model_id: str,
+    model_ready_timeout_s: float,
+    poll_interval_s: float,
+    heartbeat: AuthoritativeLeaseHeartbeat | None,
+) -> None:
+    """Download and mount one model through the API the dashboard itself calls.
+
+    A target that ships without the web UI still has to prove that a brand-new
+    machine can go from nothing to a served model. This walks the same
+    endpoints the browser journey drives (download into the node's store, place
+    an instance, wait for a ready runner) so the headless leg exercises the
+    identical product path rather than a weaker one.
+
+    A model the release already ships a card for is never re-added. ``POST
+    /models/add`` fetches a card from Hugging Face and stores it as a *custom*
+    card, which then overrides the shipped one, so adding it here would
+    qualify a card the release does not ship. This mirrors what the dashboard
+    does: it offers "Download" for a model already in the catalog and "Add and
+    download" only for one that is not.
+
+    Every step is fatal. This is a release gate, so a model that cannot be
+    fetched or mounted must fail the leg rather than degrade into a parity
+    check against a model that was never there.
+    """
+
+    card_error: str | None = None
+    catalog = {
+        str(entry.get("id"))
+        for entry in client.list_models()
+        if isinstance(entry.get("id"), str)
+    }
+    if model_id not in catalog:
+        try:
+            client.add_model_card(model_id)
+        except (SkulkApiError, httpx.HTTPError) as exception:
+            # Only fatal if the download below also fails: the catalog read
+            # could be stale, and the download is the step that actually
+            # decides whether this model can be provisioned.
+            card_error = str(exception)
+    try:
+        client.request_store_download(model_id)
+    except (SkulkApiError, httpx.HTTPError) as exception:
+        detail = str(exception)
+        if card_error:
+            detail = f"{detail} (after card add failed: {card_error})"
+        raise RuntimeError(
+            f"could not request a download for {model_id}: {detail}"
+        ) from exception
+
+    deadline = time.monotonic() + model_ready_timeout_s
+    while True:
+        _check_heartbeat(heartbeat)
+        status = client.get_store_download_status(model_id) or {}
+        state = str(status.get("status") or status.get("state") or "").lower()
+        if state in _COMPLETED_DOWNLOAD_STATES:
+            break
+        if state in _FAILED_DOWNLOAD_STATES:
+            raise RuntimeError(f"store download failed for {model_id}: {status}")
+        if time.monotonic() >= deadline:
+            raise TimeoutError(
+                f"store download did not complete for {model_id}: last state {state!r}"
+            )
+        time.sleep(poll_interval_s)
+
+    offered = client.get_placement_previews(model_id)
+    # A preview carrying an error is an option the planner examined and
+    # rejected (it does not fit, or the node cannot serve it), and the API is
+    # free to list one ahead of a viable option. Taking the first entry blindly
+    # would place against a rejected option and fail a target that was in fact
+    # offering a working placement further down the list. Every other placement
+    # path in this harness filters the same way.
+    previews = [preview for preview in offered if preview.get("error") in (None, "")]
+    if not previews:
+        raise RuntimeError(f"no viable placement preview was offered for {model_id}: {offered}")
+    preview = previews[0]
+    placed = client.place_model(
+        model_id=model_id,
+        sharding=str(preview.get("sharding") or "auto"),
+        instance_meta=str(preview.get("instance_meta") or "TextInstance"),
+        min_nodes=1,
+        excluded_nodes=[],
+    )
+    if placed is None:
+        raise RuntimeError(f"placement request was refused for {model_id}")
+
+    ready_deadline = time.monotonic() + model_ready_timeout_s
+    while True:
+        _check_heartbeat(heartbeat)
+        placements = client.find_placements_for_model(model_id)
+        if any(placement.ready for placement in placements):
+            return
+        failures = [
+            message
+            for placement in placements
+            if placement.terminal_failure
+            for message in placement.runner_failure_messages
+        ]
+        if failures:
+            raise RuntimeError(f"runner failed for {model_id}: {'; '.join(failures)}")
+        if time.monotonic() >= ready_deadline:
+            raise TimeoutError(f"placement never became ready for {model_id}")
+        time.sleep(poll_interval_s)
 
 
 def _wait_for_no_placement(

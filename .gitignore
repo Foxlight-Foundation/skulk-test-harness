@@ -31,3 +31,9 @@ skulk-harness.*.yaml
 # do not show as untracked noise)
 .autopublish-results
 .autopublish-results-off
+
+# Fresh-install recovery archives. These are private per-target snapshots of a
+# real machine's checkout state and configuration files, pulled back to the
+# controller so a failed qualification can be undone. They must never be
+# committed.
+fresh-install-snapshots/

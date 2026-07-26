@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import secrets
-
 import httpx
 
 from skulk_test_harness.client import SkulkClient
+from skulk_test_harness.echo_phrase import echo_matched, echo_phrase, echo_prompt
 from skulk_test_harness.models import (
+    DashboardContract,
     DataTransport,
     InstallProvenance,
     VisionFixtureEvidence,
@@ -21,6 +21,7 @@ def assert_fresh_runtime_contract(
     expected_backends: list[str],
     expected_transport: DataTransport,
     expected_commit: str | None,
+    dashboard_contract: DashboardContract = "required",
 ) -> InstallProvenance:
     """Validate topology, backend, transport, dashboard, and commit truth."""
 
@@ -58,9 +59,10 @@ def assert_fresh_runtime_contract(
     resolved_commit = runtime.get("skulkCommit", runtime.get("skulk_commit"))
     if not isinstance(resolved_commit, str):
         resolved_commit = None
-    if expected_commit and resolved_commit != expected_commit:
+    if expected_commit and not _commit_matches(expected_commit, resolved_commit):
         raise RuntimeError(
-            "fresh install runtime commit did not match the pinned candidate"
+            "fresh install runtime commit did not match the pinned candidate: "
+            f"pinned {expected_commit}, runtime reported {resolved_commit}"
         )
     response = httpx.get(client.base_url, timeout=client.request_timeout_s)
     dashboard_present = (
@@ -68,8 +70,17 @@ def assert_fresh_runtime_contract(
         and "<html" in response.text.lower()
         and 'id="root"' in response.text
     )
-    if not dashboard_present:
+    # A node with no Node toolchain is a shipped shape, not a degraded one: the
+    # installer skips the dashboard build and the API serves without the web UI.
+    # The target declares which of the two it is, and both are asserted, so an
+    # unexpectedly missing dashboard still fails and "absent" never becomes a
+    # quiet skip that would also pass on a broken build.
+    if dashboard_contract == "required" and not dashboard_present:
         raise RuntimeError("fresh install did not serve the production dashboard build")
+    if dashboard_contract == "absent" and dashboard_present:
+        raise RuntimeError(
+            "fresh install served a dashboard on a target declared headless"
+        )
     return InstallProvenance(
         mode="fresh_install",
         environment="fresh_install",
@@ -79,7 +90,7 @@ def assert_fresh_runtime_contract(
         detected_backends=sorted(detected_backends),
         data_transport=expected_transport,
         node_count=1,
-        dashboard_build_present=True,
+        dashboard_build_present=dashboard_present,
     )
 
 
@@ -91,23 +102,16 @@ def qualify_direct_text(
 ) -> bool:
     """Require the direct API to echo an unpredictable token."""
 
-    token = f"API-{secrets.token_hex(4).upper()}"
+    phrase = echo_phrase()
     execution = client.stream_chat(
         model_id=model_id,
-        messages=[
-            {
-                "role": "user",
-                "content": (
-                    "Reply with this token exactly once and nothing else: " + token
-                ),
-            }
-        ],
+        messages=[{"role": "user", "content": echo_prompt(phrase)}],
         max_tokens=64,
         temperature=0.0,
         top_p=1.0,
         enable_thinking=enable_thinking,
     )
-    return token in execution.text
+    return echo_matched(phrase, execution.text)
 
 
 def qualify_direct_vision(
@@ -152,6 +156,32 @@ def qualify_direct_vision(
         request_image_sha256=fixture.sha256,
         passed=code_matched and attribute_matched,
     )
+
+
+_MINIMUM_ABBREVIATED_COMMIT_LENGTH = 7
+
+
+def _commit_matches(expected: str, resolved: str | None) -> bool:
+    """Return whether a runtime commit identifies the pinned candidate build.
+
+    A qualification pins a full 40-character SHA, but the node reports
+    ``git rev-parse --short HEAD``, so an equality test can never succeed.
+    Skulk itself compares builds by abbreviation, so this applies the same
+    contract: the shorter identifier must be a prefix of the longer one and
+    at least as long as git's minimum abbreviation. A node that cannot read
+    its own commit reports ``unknown``, which never matches.
+    """
+
+    if resolved is None:
+        return False
+    pinned = expected.strip().lower()
+    reported = resolved.strip().lower()
+    if not pinned or not reported or reported == "unknown":
+        return False
+    shorter, longer = sorted((pinned, reported), key=len)
+    if len(shorter) < _MINIMUM_ABBREVIATED_COMMIT_LENGTH:
+        return False
+    return longer.startswith(shorter)
 
 
 def _object(value: object) -> dict[str, object]:

@@ -19,20 +19,29 @@ from typing import BinaryIO, cast
 
 import httpx
 import pytest
+from playwright.sync_api import Page
 from pydantic import ValidationError
 
+import skulk_test_harness.dashboard_qualification as dashboard_qualification_module
 import skulk_test_harness.fresh_install as fresh_install_module
 import skulk_test_harness.qualification_checks as qualification_checks_module
+from skulk_test_harness import runpod as runpod_module
 from skulk_test_harness.client import SkulkClient
 from skulk_test_harness.dashboard_qualification import (
+    DashboardQualifier,
     _captured_image_digest,  # pyright: ignore[reportPrivateUsage]
+    _JourneyProgress,  # pyright: ignore[reportPrivateUsage]
 )
+from skulk_test_harness.echo_phrase import echo_matched, echo_phrase, echo_prompt
 from skulk_test_harness.fleet_lock import FleetLease, LeaseOutcome
 from skulk_test_harness.fresh_install import (
     QualificationInterruptedError,
     QualificationSignalGuard,
+    _blocking_issues,  # pyright: ignore[reportPrivateUsage]
+    _browser_vision_expectation,  # pyright: ignore[reportPrivateUsage]
     _clean_environment_command,  # pyright: ignore[reportPrivateUsage]
     _installer_command,  # pyright: ignore[reportPrivateUsage]
+    _provision_model_over_api,  # pyright: ignore[reportPrivateUsage]
     _run_remote_logged_command,  # pyright: ignore[reportPrivateUsage]
     _self_safe_process_pattern,  # pyright: ignore[reportPrivateUsage]
     _wait_for_api_identity,  # pyright: ignore[reportPrivateUsage]
@@ -42,12 +51,15 @@ from skulk_test_harness.lease_heartbeat import (
     LeaseHeartbeatError,
 )
 from skulk_test_harness.models import (
+    DashboardContract,
     FleetLock,
     FreshInstallConfig,
     FreshInstallQualificationReport,
     FreshInstallTarget,
     HarnessConfig,
     InstallProvenance,
+    Issue,
+    PlacementResult,
     RunPodFreshInstallConfig,
 )
 from skulk_test_harness.qualification_checks import qualify_direct_text
@@ -199,12 +211,12 @@ def test_direct_text_check_matches_dashboard_thinking_default(
     class FakeClient:
         def stream_chat(self, **kwargs: object) -> SimpleNamespace:
             calls.append(kwargs)
-            return SimpleNamespace(text="API-CAFEBABE")
+            return SimpleNamespace(text="amber harbor 4821")
 
     monkeypatch.setattr(
-        qualification_checks_module.secrets,
-        "token_hex",
-        lambda _length: "CAFEBABE",
+        qualification_checks_module,
+        "echo_phrase",
+        lambda: "amber harbor 4821",
     )
 
     assert qualify_direct_text(
@@ -219,8 +231,8 @@ def test_direct_text_check_matches_dashboard_thinking_default(
                 {
                     "role": "user",
                     "content": (
-                        "Reply with this token exactly once and nothing else: "
-                        "API-CAFEBABE"
+                        "Repeat this phrase back exactly and say nothing else: "
+                        "amber harbor 4821"
                     ),
                 }
             ],
@@ -390,6 +402,42 @@ def test_signal_guard_turns_sigterm_into_recoverable_exception() -> None:
         QualificationSignalGuard._handle(signal.SIGTERM, None)  # pyright: ignore[reportPrivateUsage]
 
 
+def test_interruption_survives_the_broad_handlers_that_report_outcomes() -> None:
+    """An operator's stop request must outrank every report-the-failure boundary.
+
+    The qualification wraps browser work, subprocess work, and probes in
+    ``except Exception`` so a failure becomes a reported outcome rather than a
+    traceback. An interruption caught by one of those would let a billable,
+    destructive run continue past the stop request.
+    """
+
+    assert not issubclass(QualificationInterruptedError, Exception)
+
+    caught_by_boundary = False
+    try:
+        try:
+            QualificationSignalGuard._handle(signal.SIGINT, None)  # pyright: ignore[reportPrivateUsage]
+        except Exception:  # noqa: BLE001 - the boundary shape under test
+            caught_by_boundary = True
+    except QualificationInterruptedError:
+        pass
+    assert not caught_by_boundary
+
+
+def test_interruption_still_lets_finally_restore_state() -> None:
+    """BaseException does not skip cleanup, so orderly restoration is unaffected."""
+
+    restored = False
+    try:
+        try:
+            QualificationSignalGuard._handle(signal.SIGTERM, None)  # pyright: ignore[reportPrivateUsage]
+        finally:
+            restored = True
+    except QualificationInterruptedError:
+        pass
+    assert restored
+
+
 def test_recovery_snapshot_is_mode_600_and_contains_manifest_and_config(
     tmp_path: Path,
 ) -> None:
@@ -441,7 +489,10 @@ def test_restoration_verification_detects_every_changed_surface(
         config_sha256={"/config": "digest-b"},
         process_arguments=["different command"],
         service_status="exit=1\nstopped",
-        api_node_id="node-b",
+        # A node that never answered at all reports no identity. That is the
+        # identity failure worth catching; a *different* identity is what a
+        # healthy restart always produces and is asserted separately.
+        api_node_id=None,
         cluster_node_count=2,
     )
     controller = SshTargetController(_physical_target())
@@ -453,42 +504,119 @@ def test_restoration_verification_detects_every_changed_surface(
 
     mismatches = controller.verify_restored_state(
         original,
-        api_node_id="node-b",
+        api_node_id=None,
         cluster_node_count=2,
     )
 
+    # The smaller fleet is deliberately absent: it counts nodes this leg never
+    # touched, so it is reported as a warning by the caller rather than as a
+    # restoration failure. See the shrunk-fleet test below.
     assert mismatches == [
         "original checkout commit changed",
         "original checkout status changed",
         "original configuration hash changed",
         "original process arguments were not restored",
-        "original API identity was not restored",
-        "original fleet membership did not rejoin",
+        "restored node did not report an API identity",
         "original service manager state was not restored",
     ]
 
 
-def test_restored_membership_wait_uses_configured_poll_interval(
+def test_restoration_passes_when_only_the_surrounding_fleet_shrank(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    states = iter(
-        [
-            {"nodeIdentities": {"node-a": {}}, "nodeResources": {}},
-            {
-                "nodeIdentities": {
-                    "node-a": {},
-                    "node-b": {},
-                    "node-c": {},
-                },
-                "nodeResources": {},
-            },
-        ]
+    """A recovered target must not fail because a peer outside the leg is down.
+
+    A leg stops and starts exactly one node, so every other member is outside
+    the experiment. A peer that is rebooting, still pruning out of the pre-run
+    reading, or deliberately quiet for the duration lowers the count while this
+    target recovered perfectly. Failing here held the fleet lease on a machine
+    whose service, checkout, configuration, and arguments were all restored.
+    """
+
+    original = OriginalTargetState(
+        git_commit="commit-a",
+        git_status="clean",
+        config_sha256={"/config": "digest-a"},
+        process_arguments=["uv run skulk"],
+        service_status="exit=0\nrunning",
+        api_node_id="node-a",
+        cluster_node_count=2,
     )
+    restored = dataclasses.replace(
+        original,
+        api_node_id="node-b",
+        cluster_node_count=1,
+    )
+    controller = SshTargetController(_physical_target())
+    monkeypatch.setattr(
+        controller,
+        "capture_original_state",
+        lambda **_kwargs: restored,
+    )
+
+    mismatches = controller.verify_restored_state(
+        original,
+        api_node_id="node-b",
+        cluster_node_count=1,
+    )
+
+    assert mismatches == []
+
+
+def test_restoration_accepts_the_new_identity_a_restart_always_produces(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fully restored node reports a different node id and must still pass.
+
+    Skulk regenerates its node identity on every process start and never
+    persists it, so stopping and starting the service guarantees a new one.
+    Comparing identities for equality failed every physical leg on a machine
+    that had actually recovered.
+    """
+
+    original = OriginalTargetState(
+        git_commit="commit-a",
+        git_status="clean",
+        config_sha256={"/config": "digest-a"},
+        process_arguments=["uv run skulk"],
+        service_status="exit=0\nrunning",
+        api_node_id="node-before-restart",
+        cluster_node_count=5,
+    )
+    restored = dataclasses.replace(original, api_node_id="node-after-restart")
+    controller = SshTargetController(_physical_target())
+    monkeypatch.setattr(
+        controller,
+        "capture_original_state",
+        lambda **_kwargs: restored,
+    )
+
+    mismatches = controller.verify_restored_state(
+        original,
+        api_node_id="node-after-restart",
+        cluster_node_count=5,
+    )
+
+    assert mismatches == []
+
+
+def test_identity_wait_returns_as_soon_as_the_target_answers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Readiness is the target answering, not the fleet reaching a given size.
+
+    A leg starts exactly one node, so waiting for a pre-run fleet count made
+    readiness depend on peers the leg never touched. On a run where the rest of
+    the fabric was deliberately quiet, that wait could never be satisfied and
+    spent its whole window before failing a target that was already serving.
+    """
+
     sleeps: list[float] = []
+    attempts: list[int] = []
 
     class FakeClient:
         def __init__(self, _base_url: str) -> None:
-            pass
+            attempts.append(1)
 
         def __enter__(self) -> "FakeClient":
             return self
@@ -497,10 +625,13 @@ def test_restored_membership_wait_uses_configured_poll_interval(
             pass
 
         def get_node_id(self) -> str:
+            if len(attempts) == 1:
+                raise RuntimeError("service is still starting")
             return "node-a"
 
         def get_state(self) -> dict[str, object]:
-            return next(states)
+            # One node, well below the size this fleet had before the run.
+            return {"nodeIdentities": {"node-a": {}}, "nodeResources": {}}
 
     monkeypatch.setattr(fresh_install_module, "SkulkClient", FakeClient)
     monkeypatch.setattr(
@@ -513,8 +644,9 @@ def test_restored_membership_wait_uses_configured_poll_interval(
         "http://127.0.0.1:52415",
         timeout_s=1,
         poll_interval_s=0.25,
-        minimum_node_count=3,
-    ) == ("node-a", 3)
+    ) == ("node-a", 1)
+    # Exactly one retry: it polled through the unavailable API and stopped the
+    # moment an identity came back, without waiting on fleet size.
     assert sleeps == [0.25]
 
 
@@ -865,3 +997,983 @@ def test_cancelled_runpod_deadline_does_not_reenter_teardown() -> None:
     assert fired.is_set()
     assert terminated == []
     assert errors == []
+
+
+def test_runpod_ssh_readiness_waits_for_a_real_sshd(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A RUNNING pod whose sshd is still booting must not be handed back.
+
+    RunPod publishes the port mapping as soon as the container starts, while
+    the bootstrap is still installing and launching sshd. Trusting provider
+    metadata alone returned an endpoint that refused the controller's tunnel
+    and failed qualification on a pod that was merely slow to boot.
+    """
+
+    public_key = tmp_path / "id.pub"
+    private_key = tmp_path / "id"
+    public_key.write_text("ssh-ed25519 AAAATEST qualification")
+    private_key.write_text("private")
+    monkeypatch.setenv("RUNPOD_API_KEY", "secret")
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "desiredStatus": "RUNNING",
+                "publicIp": "203.0.113.10",
+                "portMappings": {"22": 22198},
+            },
+        )
+
+    config = RunPodFreshInstallConfig(
+        ssh_public_key_file=public_key,
+        ssh_private_key_file=private_key,
+        image_name="nvidia/cuda-node-neutral",
+        gpu_type_ids=["NVIDIA L4"],
+        poll_interval_s=0.001,
+        readiness_timeout_s=0.05,
+    )
+    http_client = httpx.Client(
+        base_url="https://rest.runpod.io/v1",
+        transport=httpx.MockTransport(handler),
+    )
+    client = RunPodClient(config, client=http_client)
+
+    banners: list[bool] = [False, False, True]
+    attempts = 0
+
+    def fake_banner(host: str, port: int, **_kwargs: object) -> bool:
+        nonlocal attempts
+        assert (host, port) == ("203.0.113.10", 22198)
+        result = banners[min(attempts, len(banners) - 1)]
+        attempts += 1
+        return result
+
+    monkeypatch.setattr(runpod_module, "_ssh_banner_ready", fake_banner)
+
+    endpoint = client.wait_for_ssh("pod-1")
+
+    assert attempts == 3, "readiness must keep polling while sshd is refusing"
+    assert (endpoint.host, endpoint.port) == ("203.0.113.10", 22198)
+
+
+def test_runpod_ssh_readiness_times_out_when_sshd_never_answers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pod that never serves SSH fails on the deadline, not on first probe."""
+
+    public_key = tmp_path / "id.pub"
+    private_key = tmp_path / "id"
+    public_key.write_text("ssh-ed25519 AAAATEST qualification")
+    private_key.write_text("private")
+    monkeypatch.setenv("RUNPOD_API_KEY", "secret")
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "desiredStatus": "RUNNING",
+                "publicIp": "203.0.113.10",
+                "portMappings": {"22": 22198},
+            },
+        )
+
+    config = RunPodFreshInstallConfig(
+        ssh_public_key_file=public_key,
+        ssh_private_key_file=private_key,
+        image_name="nvidia/cuda-node-neutral",
+        gpu_type_ids=["NVIDIA L4"],
+        poll_interval_s=0.001,
+        readiness_timeout_s=0.02,
+    )
+    http_client = httpx.Client(
+        base_url="https://rest.runpod.io/v1",
+        transport=httpx.MockTransport(handler),
+    )
+    client = RunPodClient(config, client=http_client)
+    monkeypatch.setattr(
+        runpod_module, "_ssh_banner_ready", lambda *_args, **_kwargs: False
+    )
+
+    with pytest.raises(TimeoutError, match="readiness deadline"):
+        client.wait_for_ssh("pod-1")
+
+
+def test_ssh_host_key_policy_is_strict_for_inventory_and_lenient_for_pods(
+    tmp_path: Path,
+) -> None:
+    """Only an ephemeral pod may trust an unknown host key.
+
+    A provider pod's host key is generated at boot and its address/port pairs
+    are recycled between pods, so strict checking rejected the controller's
+    very first connection. Real fleet hardware keeps strict checking, because
+    there a changed host key is a signal worth stopping on.
+    """
+
+    inventory = _physical_target()
+    ephemeral = FreshInstallTarget(
+        kind="physical",
+        platform="nvidia",
+        hardware_class="nvidia-cuda",
+        eligible=True,
+        ssh_host="203.0.113.10",
+        ssh_user="root",
+        ssh_port=22198,
+        ssh_identity_file=tmp_path / "pod-key",
+        accept_unknown_host_key=True,
+        service_manager="command",
+        service_stop_command="true",
+        service_start_command="true",
+        isolation_enter_command="true",
+        isolation_exit_command="true",
+        expected_backends=["llama_server", "llama_server-cuda"],
+        vision_contract="unavailable",
+        text_models=["unsloth/Llama-3.2-1B-Instruct-GGUF"],
+    )
+
+    strict_prefix = SshTargetController(inventory)._ssh_prefix()  # pyright: ignore[reportPrivateUsage]
+    lenient_prefix = SshTargetController(ephemeral)._ssh_prefix()  # pyright: ignore[reportPrivateUsage]
+    lenient_scp = SshTargetController(ephemeral)._scp_prefix()  # pyright: ignore[reportPrivateUsage]
+
+    assert "StrictHostKeyChecking=accept-new" not in strict_prefix
+    assert "UserKnownHostsFile=/dev/null" not in strict_prefix
+    assert "StrictHostKeyChecking=accept-new" in lenient_prefix
+    assert "UserKnownHostsFile=/dev/null" in lenient_prefix
+    assert "UserKnownHostsFile=/dev/null" in lenient_scp
+
+
+class _StubContractClient:
+    """Minimal API stand-in for the fresh-runtime contract assertions."""
+
+    def __init__(self, reported_commit: str | None = None) -> None:
+        self.base_url = "http://127.0.0.1:52415"
+        self.request_timeout_s = 5.0
+        self.reported_commit = reported_commit
+
+    def get_state(self) -> dict[str, object]:
+        """Return one node advertising the expected backend and transport."""
+
+        return {
+            "nodeResources": {
+                "node-a": {
+                    "backends": ["llama_server", "llama_server-vulkan"],
+                    "dataTransport": "zenoh",
+                }
+            },
+            "nodeIdentities": {"node-a": {}},
+        }
+
+    def get_diagnostics_node(self) -> dict[str, object]:
+        """Return runtime provenance carrying this stub's reported commit."""
+
+        return {"runtime": {"skulkCommit": self.reported_commit}}
+
+
+@pytest.mark.parametrize(
+    ("contract", "served", "expected_failure"),
+    [
+        ("required", True, None),
+        ("required", False, "did not serve the production dashboard build"),
+        ("absent", False, None),
+        ("absent", True, "declared headless"),
+    ],
+)
+def test_dashboard_contract_asserts_both_shipped_shapes(
+    monkeypatch: pytest.MonkeyPatch,
+    contract: str,
+    served: bool,
+    expected_failure: str | None,
+) -> None:
+    """A headless node is a shipped shape, and both outcomes are asserted.
+
+    The installer skips the dashboard build on a target with no Node toolchain,
+    so demanding the web UI everywhere fails a supported install. Declaring the
+    absence keeps it a contract rather than a skip: an unexpectedly missing
+    dashboard still fails, and so does one that appears where none should.
+    """
+
+    body = '<html><body><div id="root"></div></body></html>' if served else "not found"
+
+    def fake_get(url: str, timeout: float | None = None) -> httpx.Response:
+        return httpx.Response(200 if served else 404, text=body)
+
+    monkeypatch.setattr(qualification_checks_module.httpx, "get", fake_get)
+    client = cast(SkulkClient, _StubContractClient())
+
+    if expected_failure is None:
+        provenance = qualification_checks_module.assert_fresh_runtime_contract(
+            client,
+            expected_backends=["llama_server"],
+            expected_transport="zenoh",
+            expected_commit=None,
+            dashboard_contract=cast(DashboardContract, contract),
+        )
+        assert provenance.dashboard_build_present is served
+        return
+
+    with pytest.raises(RuntimeError, match=expected_failure):
+        qualification_checks_module.assert_fresh_runtime_contract(
+            client,
+            expected_backends=["llama_server"],
+            expected_transport="zenoh",
+            expected_commit=None,
+            dashboard_contract=cast(DashboardContract, contract),
+        )
+
+
+@pytest.mark.parametrize(
+    ("reported_commit", "matches"),
+    [
+        ("32fffb7", True),
+        ("32fffb7a36f9872b361c20ef47888f452211a8b6", True),
+        ("32FFFB7", True),
+        ("32fffb8", False),
+        ("32fff", False),
+        ("unknown", False),
+        (None, False),
+    ],
+)
+def test_pinned_commit_matches_the_runtime_abbreviation(
+    monkeypatch: pytest.MonkeyPatch,
+    reported_commit: str | None,
+    matches: bool,
+) -> None:
+    """A pinned full SHA must match the node's abbreviated commit.
+
+    Qualification pins a 40-character SHA, but a node reports
+    `git rev-parse --short HEAD`, so an equality test could never succeed and
+    every leg stalled until the readiness deadline. Skulk compares builds by
+    abbreviation, and this applies the same contract: prefix match, no shorter
+    than git's minimum abbreviation, and never a match on an unknown commit.
+    """
+
+    pinned = "32fffb7a36f9872b361c20ef47888f452211a8b6"
+
+    def fake_get(url: str, timeout: float | None = None) -> httpx.Response:
+        return httpx.Response(
+            200, text='<html><body><div id="root"></div></body></html>'
+        )
+
+    monkeypatch.setattr(qualification_checks_module.httpx, "get", fake_get)
+    client = cast(SkulkClient, _StubContractClient(reported_commit))
+
+    if matches:
+        provenance = qualification_checks_module.assert_fresh_runtime_contract(
+            client,
+            expected_backends=["llama_server"],
+            expected_transport="zenoh",
+            expected_commit=pinned,
+        )
+        # The report records what the node actually said, not the pinned value.
+        assert provenance.resolved_commit == reported_commit
+        return
+
+    with pytest.raises(RuntimeError, match="did not match the pinned candidate"):
+        qualification_checks_module.assert_fresh_runtime_contract(
+            client,
+            expected_backends=["llama_server"],
+            expected_transport="zenoh",
+            expected_commit=pinned,
+        )
+
+
+class _StubProvisionClient:
+    """Record the store and placement calls a headless provisioning leg makes."""
+
+    def __init__(
+        self,
+        *,
+        download_states: list[str],
+        placement_ready: bool = True,
+        card_add_error: Exception | None = None,
+        download_request_error: Exception | None = None,
+        previews: list[dict[str, object]] | None = None,
+        catalog_model_ids: list[str] | None = None,
+    ) -> None:
+        self.calls: list[str] = []
+        self._catalog_model_ids = catalog_model_ids or []
+        self._download_states = iter(download_states)
+        self._placement_ready = placement_ready
+        self._card_add_error = card_add_error
+        self._download_request_error = download_request_error
+        default_preview: dict[str, object] = {
+            "sharding": "single",
+            "instance_meta": "TextInstance",
+        }
+        self._previews = previews if previews is not None else [default_preview]
+        self.placement_request: dict[str, object] | None = None
+
+    def list_models(self) -> list[dict[str, object]]:
+        self.calls.append("list_models")
+        return [{"id": model_id} for model_id in self._catalog_model_ids]
+
+    def add_model_card(self, model_id: str) -> dict[str, object] | None:
+        self.calls.append("add_model_card")
+        if self._card_add_error is not None:
+            raise self._card_add_error
+        return {"model_id": model_id}
+
+    def request_store_download(self, model_id: str) -> dict[str, object] | None:
+        self.calls.append("request_store_download")
+        if self._download_request_error is not None:
+            raise self._download_request_error
+        return {"model_id": model_id}
+
+    def get_store_download_status(self, model_id: str) -> dict[str, object] | None:
+        self.calls.append("get_store_download_status")
+        return {"status": next(self._download_states)}
+
+    def get_placement_previews(self, model_id: str) -> list[dict[str, object]]:
+        self.calls.append("get_placement_previews")
+        return self._previews
+
+    def place_model(self, **kwargs: object) -> dict[str, object] | None:
+        self.calls.append("place_model")
+        self.placement_request = dict(kwargs)
+        return {"instance_id": "instance-a"}
+
+    def find_placements_for_model(self, model_id: str) -> list[PlacementResult]:
+        self.calls.append("find_placements_for_model")
+        return [
+            PlacementResult(
+                model_id=model_id,
+                instance_id="instance-a",
+                ready=self._placement_ready,
+                terminal_failure=not self._placement_ready,
+                runner_failure_messages=(
+                    [] if self._placement_ready else ["runner exited"]
+                ),
+            )
+        ]
+
+
+def test_headless_provisioning_walks_the_same_path_the_dashboard_drives() -> None:
+    """A target with no web UI must still download, place, and mount the model.
+
+    The browser journey is what provisions the model on a target that serves
+    the UI. A headless node has no UI to drive, so it walks the identical
+    store-download-then-place endpoints rather than skipping provisioning and
+    asking the direct-API parity check to serve a model that was never mounted.
+    """
+
+    model_id = "unsloth/Llama-3.2-1B-Instruct-GGUF"
+    client = _StubProvisionClient(
+        download_states=["downloading", "complete"],
+        catalog_model_ids=[model_id],
+    )
+
+    _provision_model_over_api(
+        cast(SkulkClient, client),
+        model_id=model_id,
+        model_ready_timeout_s=30,
+        poll_interval_s=0,
+        heartbeat=None,
+    )
+
+    assert client.calls == [
+        "list_models",
+        "request_store_download",
+        "get_store_download_status",
+        "get_store_download_status",
+        "get_placement_previews",
+        "place_model",
+        "find_placements_for_model",
+    ]
+    assert client.placement_request == {
+        "model_id": model_id,
+        "sharding": "single",
+        "instance_meta": "TextInstance",
+        "min_nodes": 1,
+        "excluded_nodes": [],
+    }
+
+
+def test_headless_provisioning_never_overrides_a_shipped_card() -> None:
+    """A model the release ships a card for must not be re-added from the hub.
+
+    ``POST /models/add`` stores a Hugging Face card as a *custom* card, which
+    then overrides the shipped one. Adding it here would qualify a card the
+    release does not ship. This mirrors the dashboard, which offers "Download"
+    for a catalog model and "Add and download" only for one that is not.
+    """
+
+    shipped = _StubProvisionClient(
+        download_states=["complete"],
+        catalog_model_ids=["unsloth/Llama-3.2-1B-Instruct-GGUF"],
+    )
+    _provision_model_over_api(
+        cast(SkulkClient, shipped),
+        model_id="unsloth/Llama-3.2-1B-Instruct-GGUF",
+        model_ready_timeout_s=30,
+        poll_interval_s=0,
+        heartbeat=None,
+    )
+    assert "add_model_card" not in shipped.calls
+
+    uncarded = _StubProvisionClient(
+        download_states=["complete"],
+        catalog_model_ids=["some/other-model"],
+    )
+    _provision_model_over_api(
+        cast(SkulkClient, uncarded),
+        model_id="unsloth/Llama-3.2-1B-Instruct-GGUF",
+        model_ready_timeout_s=30,
+        poll_interval_s=0,
+        heartbeat=None,
+    )
+    assert "add_model_card" in uncarded.calls
+
+
+def test_headless_provisioning_failures_fail_the_leg() -> None:
+    """Provisioning is a release gate, so no step may degrade into a warning."""
+
+    unreachable = httpx.ConnectError("store unreachable")
+    download_refused = _StubProvisionClient(
+        download_states=[],
+        card_add_error=unreachable,
+        download_request_error=unreachable,
+    )
+    with pytest.raises(RuntimeError, match="after card add failed"):
+        _provision_model_over_api(
+            cast(SkulkClient, download_refused),
+            model_id="model",
+            model_ready_timeout_s=30,
+            poll_interval_s=0,
+            heartbeat=None,
+        )
+
+    download_failed = _StubProvisionClient(download_states=["failed"])
+    with pytest.raises(RuntimeError, match="store download failed"):
+        _provision_model_over_api(
+            cast(SkulkClient, download_failed),
+            model_id="model",
+            model_ready_timeout_s=30,
+            poll_interval_s=0,
+            heartbeat=None,
+        )
+
+    runner_failed = _StubProvisionClient(
+        download_states=["complete"], placement_ready=False
+    )
+    with pytest.raises(RuntimeError, match="runner failed"):
+        _provision_model_over_api(
+            cast(SkulkClient, runner_failed),
+            model_id="model",
+            model_ready_timeout_s=30,
+            poll_interval_s=0,
+            heartbeat=None,
+        )
+
+    no_preview = _StubProvisionClient(download_states=["complete"], previews=[])
+    with pytest.raises(RuntimeError, match="no viable placement preview"):
+        _provision_model_over_api(
+            cast(SkulkClient, no_preview),
+            model_id="model",
+            model_ready_timeout_s=30,
+            poll_interval_s=0,
+            heartbeat=None,
+        )
+
+    only_rejected = _StubProvisionClient(
+        download_states=["complete"],
+        previews=[{"sharding": "single", "error": "does not fit"}],
+    )
+    with pytest.raises(RuntimeError, match="no viable placement preview"):
+        _provision_model_over_api(
+            cast(SkulkClient, only_rejected),
+            model_id="model",
+            model_ready_timeout_s=30,
+            poll_interval_s=0,
+            heartbeat=None,
+        )
+
+
+def test_headless_provisioning_skips_previews_the_planner_rejected() -> None:
+    """A rejected preview listed first must not shadow a viable one behind it.
+
+    ``/instance/previews`` lists options the planner examined, and an option it
+    rejected carries an error. Taking the first entry blindly would place
+    against a rejected option and fail a target that was in fact offering a
+    working placement, which is the exact false-failure class this gate exists
+    to avoid.
+    """
+
+    rejected: dict[str, object] = {
+        "sharding": "pipeline",
+        "instance_meta": "TextInstance",
+        "error": "model does not fit on the available nodes",
+    }
+    viable: dict[str, object] = {
+        "sharding": "single",
+        "instance_meta": "TextInstance",
+    }
+    client = _StubProvisionClient(
+        download_states=["complete"], previews=[rejected, viable]
+    )
+
+    _provision_model_over_api(
+        cast(SkulkClient, client),
+        model_id="model",
+        model_ready_timeout_s=30,
+        poll_interval_s=0,
+        heartbeat=None,
+    )
+
+    assert client.placement_request is not None
+    assert client.placement_request["sharding"] == "single"
+
+
+class _StubConsentDialog:
+    """Stand in for the Playwright locator of the first-run consent modal."""
+
+    def __init__(self, *, visible: bool) -> None:
+        self._visible = visible
+        self._pending_click = ""
+        self.clicked: list[str] = []
+        self.waited_states: list[str] = []
+
+    def wait_for(self, *, state: str, timeout: float) -> None:
+        self.waited_states.append(state)
+        if state == "visible" and not self._visible:
+            raise TimeoutError("consent dialog never appeared")
+
+    def get_by_role(self, role: str, *, name: str, exact: bool) -> "_StubConsentDialog":
+        self._pending_click = f"{role}:{name}"
+        return self
+
+    def click(self) -> None:
+        self.clicked.append(self._pending_click)
+
+
+class _StubConsentPage:
+    def __init__(self, dialog: _StubConsentDialog) -> None:
+        self._dialog = dialog
+
+    def get_by_role(self, role: str) -> "_StubConsentPage":
+        return self
+
+    def get_by_text(self, text: str, *, exact: bool) -> str:
+        return text
+
+    def filter(self, *, has: object) -> _StubConsentDialog:
+        return self._dialog
+
+
+def test_first_run_consent_modal_is_answered_not_bypassed() -> None:
+    """A clean machine shows a blocking consent modal that the journey answers.
+
+    The modal covers the page and intercepts every pointer event until it is
+    answered, so a fresh install fails at the first click without this. A
+    long-lived operator browser stamped its marker long ago and never sees it,
+    which is exactly the fleet-versus-new-user delta this records. "Not now"
+    is the deliberate answer: it leaves fleet consent unasked, so a throwaway
+    qualification node never enables collection or publishes anything.
+    """
+
+    qualifier = DashboardQualifier(
+        api_base_url="http://example.invalid",
+        artifact_directory=Path("unused"),
+        poll_interval_s=1,
+        model_ready_timeout_s=1,
+    )
+
+    prompted_dialog = _StubConsentDialog(visible=True)
+    prompted = qualifier._dismiss_first_run_consent(  # pyright: ignore[reportPrivateUsage]
+        cast(Page, _StubConsentPage(prompted_dialog))
+    )
+    assert prompted is True
+    assert prompted_dialog.clicked == ["button:Not now"]
+    assert prompted_dialog.waited_states == ["visible", "hidden"]
+
+    absent_dialog = _StubConsentDialog(visible=False)
+    absent = qualifier._dismiss_first_run_consent(  # pyright: ignore[reportPrivateUsage]
+        cast(Page, _StubConsentPage(absent_dialog))
+    )
+    assert absent is False
+    assert absent_dialog.clicked == []
+
+
+def _report_with(issues: list[Issue]) -> FreshInstallQualificationReport:
+    """Build a minimal finished report carrying the given issues."""
+
+    return FreshInstallQualificationReport(
+        qualification_id="fresh-candidate-test",
+        profile="candidate",
+        platform="apple",
+        hardware_class="test-class",
+        started_at=datetime.now(UTC),
+        install=InstallProvenance(
+            mode="fresh_install",
+            environment="fresh_install",
+            data_transport="zenoh",
+            node_count=1,
+        ),
+        issues=issues,
+    )
+
+
+def test_a_warning_does_not_fail_a_leg_that_otherwise_passed() -> None:
+    """Only an error is a release gate; a warning is operator information.
+
+    The fleet-size comparison was deliberately downgraded from a fatal
+    restoration failure to a warning so a healthy target would stop being
+    declared broken by the state of machines outside the experiment. Failing
+    on any issue at all undid that: a leg whose every stage passed, whose
+    target restored cleanly, and whose only finding was that warning was
+    still reported as a failed release gate. This pins the distinction the
+    downgrade was supposed to make.
+    """
+
+    warned = _report_with(
+        [
+            Issue(
+                severity="warning",
+                message=(
+                    "restored fleet is smaller than before the run: 2 -> 1 "
+                    "nodes; the target itself restored cleanly"
+                ),
+            )
+        ]
+    )
+    assert _blocking_issues(warned) == []
+
+    informational = _report_with([Issue(severity="info", message="noted")])
+    assert _blocking_issues(informational) == []
+
+    failed = _report_with(
+        [
+            Issue(severity="warning", message="fleet came back smaller"),
+            Issue(severity="error", message="fresh-install leg failed"),
+        ]
+    )
+    blocking = _blocking_issues(failed)
+    assert [issue.severity for issue in blocking] == ["error"]
+
+
+class _StubConversationLocator:
+    """Stand in for a Playwright locator used by the conversation reset."""
+
+    def __init__(self, *, matches: int = 1) -> None:
+        self.matches = matches
+        self.clicks = 0
+        self.selected: list[str] = []
+        self.waited_states: list[str] = []
+
+    def count(self) -> int:
+        return self.matches
+
+    def click(self) -> None:
+        self.clicks += 1
+
+    def select_option(self, value: str) -> None:
+        self.selected.append(value)
+
+    def wait_for(self, *, state: str, timeout: float) -> None:
+        self.waited_states.append(state)
+
+
+class _StubConversationPage:
+    """A dashboard page whose prior thread clears, or does not."""
+
+    def __init__(self, *, stale_replies: int, clears: bool) -> None:
+        self.new_button = _StubConversationLocator()
+        self.model_selector = _StubConversationLocator()
+        self.message_box = _StubConversationLocator()
+        self.assistant = _StubConversationLocator(matches=stale_replies)
+        self._clears = clears
+        self.idle_polls = 0
+
+    def get_by_role(
+        self, role: str, *, name: str, exact: bool
+    ) -> _StubConversationLocator:
+        assert (role, name, exact) == ("button", "+ New", True)
+        return self.new_button
+
+    def get_by_label(self, label: str, *, exact: bool) -> _StubConversationLocator:
+        assert exact is True
+        if label == "Select chat model":
+            return self.model_selector
+        if label == "Chat message":
+            return self.message_box
+        if label == "Assistant message":
+            return self.assistant
+        raise AssertionError(f"unexpected label {label!r}")
+
+    def wait_for_timeout(self, milliseconds: float) -> None:
+        self.idle_polls += 1
+        if self._clears:
+            self.assistant.matches = 0
+
+
+def test_vision_turn_starts_its_own_conversation() -> None:
+    """Each capability check must be judged on its own answer.
+
+    Stacking the vision turn onto the text turn's thread left the earlier
+    instruction ("repeat this phrase back exactly and say nothing else")
+    standing, and a 4B model obeyed it: shown the image fixture, it answered
+    with the previous turn's echo phrase. The leg failed reporting a vision
+    defect on a run whose image bytes had provably arrived intact. Resetting
+    through the control a user would click keeps the check honest, and
+    re-selecting the model covers a new conversation coming up unselected.
+    """
+
+    qualifier = DashboardQualifier(
+        api_base_url="http://example.invalid",
+        artifact_directory=Path("unused"),
+        poll_interval_s=1,
+        model_ready_timeout_s=1,
+    )
+
+    page = _StubConversationPage(stale_replies=2, clears=True)
+    message = qualifier._start_new_conversation(  # pyright: ignore[reportPrivateUsage]
+        cast(Page, page), model_id="org/vision-model"
+    )
+
+    assert page.new_button.clicks == 1
+    assert page.model_selector.selected == ["org/vision-model"]
+    assert cast(object, message) is page.message_box
+    assert page.message_box.waited_states == ["visible"]
+
+
+def test_a_conversation_that_never_clears_fails_loudly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reset that silently kept the old thread would measure the wrong thing.
+
+    Without this the vision turn would run against the text turn's context
+    again and the failure would once more be reported as a vision defect.
+    """
+
+    ticks = iter(range(0, 600, 10))
+    monkeypatch.setattr(
+        dashboard_qualification_module.time, "monotonic", lambda: float(next(ticks))
+    )
+
+    page = _StubConversationPage(stale_replies=1, clears=False)
+    qualifier = DashboardQualifier(
+        api_base_url="http://example.invalid",
+        artifact_directory=Path("unused"),
+        poll_interval_s=1,
+        model_ready_timeout_s=1,
+    )
+
+    with pytest.raises(RuntimeError, match="prior assistant messages"):
+        qualifier._start_new_conversation(  # pyright: ignore[reportPrivateUsage]
+            cast(Page, page), model_id="org/vision-model"
+        )
+
+
+def test_browser_vision_expectation_is_per_model_not_per_target() -> None:
+    """A text model must be checked for the absence of a vision path.
+
+    The dashboard enables its attachment control from the selected model's own
+    image-input support, so a text model offers no image path even on a target
+    whose platform can serve vision. Treating the target's positive contract as
+    the per-model expectation demanded a vision fixture for a text model and
+    failed the whole leg on a model that had already found, downloaded,
+    launched, and chatted successfully.
+    """
+
+    vision_models = ["org/vision-model"]
+
+    assert (
+        _browser_vision_expectation(
+            "org/vision-model",
+            vision_models=vision_models,
+            card_image_input=True,
+        )
+        == "positive"
+    )
+    assert (
+        _browser_vision_expectation(
+            "org/text-model",
+            vision_models=vision_models,
+            card_image_input=False,
+        )
+        == "unavailable"
+    )
+    # A model the catalog did not report on falls back to the inventory.
+    assert (
+        _browser_vision_expectation(
+            "org/text-model", vision_models=[], card_image_input=None
+        )
+        == "unavailable"
+    )
+
+
+def test_vision_classification_disagreement_is_named_not_asserted_around() -> None:
+    """A card that disagrees with the inventory must fail by saying so.
+
+    The shipped card is the authority for what a model can accept, and the
+    inventory list is the operator's statement of intent. When they disagreed,
+    deriving the expectation from the list alone made the journey assert
+    something untrue about the interface and fail on the assertion, pointing
+    diagnosis at the dashboard instead of at the misclassification. This is a
+    real case: a small model whose shipped card declares native multimodal
+    support was listed as a text model, and the leg failed claiming the
+    dashboard offered a false vision path when the card says it is a vision
+    model.
+    """
+
+    with pytest.raises(RuntimeError, match="vision classification disagrees"):
+        _browser_vision_expectation(
+            "org/actually-a-vision-model",
+            vision_models=[],
+            card_image_input=True,
+        )
+    with pytest.raises(RuntimeError, match="vision classification disagrees"):
+        _browser_vision_expectation(
+            "org/actually-a-text-model",
+            vision_models=["org/actually-a-text-model"],
+            card_image_input=False,
+        )
+
+
+def test_failed_browser_journey_reports_the_progress_it_actually_made() -> None:
+    """A journey that broke at the last step must not report zero progress.
+
+    The failure path used to return an untouched outcome, so a journey that
+    found, downloaded, launched, and chatted successfully and then failed on a
+    later assertion was reported as if the very first click had failed. That
+    sent diagnosis to the wrong end of the journey entirely.
+    """
+
+    progress = _JourneyProgress(model_id="org/model")
+    progress.first_run_consent_prompted = True
+    progress.found = True
+    progress.download_started = True
+    progress.launched = True
+    progress.selected = True
+    progress.text_chat_passed = True
+
+    outcome = progress.outcome(passed=False, message="something later broke")
+
+    assert outcome.model_id == "org/model"
+    assert outcome.found is True
+    assert outcome.download_started is True
+    assert outcome.launched is True
+    assert outcome.selected is True
+    assert outcome.text_chat_passed is True
+    assert outcome.first_run_consent_prompted is True
+    assert outcome.passed is False
+    assert outcome.message == "something later broke"
+
+
+def test_untouched_browser_journey_reports_no_progress() -> None:
+    """A journey that failed before its first step still reports nothing done."""
+
+    outcome = _JourneyProgress(model_id="org/model").outcome(
+        passed=False, message="first click failed"
+    )
+
+    assert outcome.found is False
+    assert outcome.download_started is False
+    assert outcome.launched is False
+    assert outcome.selected is False
+    assert outcome.text_chat_passed is False
+    assert outcome.vision is None
+    assert outcome.false_vision_path_offered is None
+    assert outcome.passed is False
+
+
+def test_echo_phrase_does_not_look_like_a_credential() -> None:
+    """The echo phrase must not read as a secret to a safety-tuned model.
+
+    A hex nonce (``FRESH-3D8C32F7``) was refused outright by a 1B instruct
+    model, which failed a qualification leg on an install that was working
+    perfectly. The phrase is ordinary language for that reason, so this
+    asserts the property rather than the exact wording.
+    """
+
+    for _ in range(50):
+        phrase = echo_phrase()
+        words = phrase.split(" ")
+        assert len(words) == 3
+        assert words[0].isalpha() and words[1].isalpha()
+        assert words[0] != words[1]
+        assert words[2].isdigit() and len(words[2]) == 4
+        # No hex-nonce run, and none of the words that cue "secret".
+        assert not re.search(r"[0-9a-f]{8}", phrase, re.IGNORECASE)
+        assert "-" not in phrase
+        assert not re.search(r"token|key|secret|code", phrase, re.IGNORECASE)
+
+    assert "token" not in echo_prompt("amber harbor 1234").lower()
+
+
+def test_echo_phrase_is_unpredictable() -> None:
+    """A stale or replayed response must not be able to satisfy the check."""
+
+    assert len({echo_phrase() for _ in range(200)}) > 150
+
+
+def test_echo_match_accepts_a_recapitalized_reply() -> None:
+    """A model that capitalizes its reply has still proven the chat path works.
+
+    The browser waiter already returns on a case-insensitive match, so a
+    case-sensitive assertion afterwards would reject a response the wait had
+    declared good.
+    """
+
+    assert echo_matched("amber harbor 4821", "Amber Harbor 4821")
+    assert echo_matched("amber harbor 4821", "Sure! amber harbor 4821")
+    assert not echo_matched("amber harbor 4821", "amber harbor 4822")
+
+
+def test_failed_text_chat_reports_what_the_model_actually_said() -> None:
+    """A refused prompt must be distinguishable from a broken chat path.
+
+    Both produce ``text_chat_passed: false``. Only the response text says
+    which one happened, and reading it out of a screenshot is not diagnosis.
+    """
+
+    progress = _JourneyProgress(model_id="org/model")
+    progress.text_chat_response = "I can't assist with that request."
+
+    message = progress.failure_message()
+
+    assert message is not None
+    assert "I can't assist with that request." in message
+    assert progress.outcome(passed=False, message=message).message == message
+
+
+def test_passing_text_chat_carries_no_failure_message() -> None:
+    """A journey that met its assertions reports no explanation."""
+
+    assert _JourneyProgress(model_id="org/model").failure_message() is None
+
+
+def test_failed_vision_reports_what_the_model_actually_said() -> None:
+    """A vision miss must be distinguishable from a broken image path.
+
+    The image digest already proves the bytes arrived, so what remains
+    unexplained is the answer itself. Reading it out of a screenshot is not
+    diagnosis: shown the fixture, a model once replied with the previous
+    turn's echo phrase, and only the response text revealed that the two
+    checks were sharing a conversation.
+    """
+
+    progress = _JourneyProgress(model_id="org/model")
+    progress.vision_response = "quartz cobalt 2911 square"
+
+    message = progress.failure_message()
+
+    assert message is not None
+    assert "quartz cobalt 2911 square" in message
+    assert "vision response" in message
+
+
+def test_both_chat_and_vision_failures_are_reported_together() -> None:
+    """One failing check must not hide the other."""
+
+    progress = _JourneyProgress(model_id="org/model")
+    progress.text_chat_response = "I can't assist with that."
+    progress.vision_response = "a blue triangle"
+
+    message = progress.failure_message()
+
+    assert message is not None
+    assert "I can't assist with that." in message
+    assert "a blue triangle" in message
