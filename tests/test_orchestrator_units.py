@@ -1007,6 +1007,7 @@ def test_vision_suite_uses_original_card_and_strict_semantic_checks(
     public_sets = load_test_sets(root / "configs/test_sets.yaml").test_sets
     public_vision = public_sets["vision"].tests[0]
     assert public_vision.name == "semantic-card-reading"
+    assert "amber, cyan, magenta, or lime" in public_vision.prompt
     assert len(public_vision.success.required_regexes) == 3
     assert (
         _score_output(
@@ -1041,6 +1042,7 @@ def test_vision_suite_uses_original_card_and_strict_semantic_checks(
     }
     for vision in foxlight_vision_tests:
         assert vision.repetitions == 2
+        assert "amber, cyan, magenta, or lime" in vision.prompt
         assert len(vision.success.required_regexes) == 3
         assert (
             _score_output(

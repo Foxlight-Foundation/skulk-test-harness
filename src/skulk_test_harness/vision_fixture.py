@@ -55,7 +55,9 @@ class VisionFixture:
 
         return (
             "Inspect the attached qualification card. Reply with the large "
-            "six-character code, then the colored shape as '<color> <shape>'."
+            "six-character code, then the colored shape as '<color> <shape>'. "
+            "Choose the color name from amber, cyan, magenta, or lime, and the "
+            "shape name from circle, diamond, or triangle."
         )
 
     def response_matches(self, response: str) -> tuple[bool, bool]:
