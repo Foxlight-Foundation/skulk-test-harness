@@ -953,6 +953,13 @@ def test_llama_cpp_suite_and_gguf_set_load() -> None:
     test_sets = load_test_sets(root / "examples/foxlight/test_sets.yaml").test_sets
 
     assert model_sets["gguf-llama-cpp"].models == ["unsloth/Llama-3.2-1B-Instruct-GGUF"]
+    assert model_sets["gguf-big"].models == [
+        "Qwen/Qwen2.5-7B-Instruct-GGUF",
+        "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF",
+        "bartowski/Llama-3.3-70B-Instruct-GGUF",
+        "bartowski/openai_gpt-oss-120b-GGUF",
+    ]
+    assert "unsloth/gemma-4-31B-it-GGUF" not in model_sets["gguf-big"].models
     suite = test_sets["llama-cpp"]
     names = {test.name for test in suite.tests}
     assert {
