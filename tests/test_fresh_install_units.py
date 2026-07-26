@@ -233,7 +233,8 @@ def test_direct_text_check_matches_dashboard_thinking_default(
                 {
                     "role": "user",
                     "content": (
-                        "Repeat this phrase back exactly and say nothing else: "
+                        "Please tell me the complete text on this ordinary "
+                        "inventory label: "
                         "amber harbor 4821"
                     ),
                 }
@@ -1903,6 +1904,8 @@ def test_echo_phrase_does_not_look_like_a_credential() -> None:
         assert not re.search(r"token|key|secret|code", phrase, re.IGNORECASE)
 
     assert "token" not in echo_prompt("amber harbor 1234").lower()
+    assert "exactly" not in echo_prompt("amber harbor 1234").lower()
+    assert "say nothing else" not in echo_prompt("amber harbor 1234").lower()
 
 
 def test_echo_phrase_is_unpredictable() -> None:
