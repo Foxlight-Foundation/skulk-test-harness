@@ -347,7 +347,14 @@ class DashboardQualifier:
         message = page.get_by_label("Chat message", exact=True)
         message.wait_for(state="visible", timeout=30_000)
         # The turn only means anything against an empty thread.
-        assistant = page.get_by_label("Assistant message", exact=True)
+        # Conversation history remains mounted in the dashboard while only the
+        # selected thread is visible. Counting every labelled assistant card
+        # can therefore select a hidden reply from another conversation and
+        # judge it against the current turn. Scope the waiter to what a user
+        # can actually see in the active thread.
+        assistant = page.get_by_label(
+            "Assistant message", exact=True
+        ).filter(visible=True)
         deadline = time.monotonic() + 30
         while assistant.count() and time.monotonic() < deadline:
             page.wait_for_timeout(250)
@@ -423,7 +430,11 @@ class DashboardQualifier:
         after_count: int = 0,
     ) -> str:
         deadline = time.monotonic() + 1800
-        assistant = page.get_by_label("Assistant message", exact=True)
+        # The dashboard keeps hidden conversations mounted. Only visible
+        # assistant cards belong to the active thread being qualified.
+        assistant = page.get_by_label(
+            "Assistant message", exact=True
+        ).filter(visible=True)
         saw_cancel_control = False
         last_text: str | None = None
         stable_without_cancel_polls = 0

@@ -1699,6 +1699,10 @@ class _StubConversationLocator:
     def count(self) -> int:
         return self.matches
 
+    def filter(self, *, visible: bool) -> "_StubConversationLocator":
+        assert visible is True
+        return self
+
     def click(self) -> None:
         self.clicks += 1
 
@@ -1751,6 +1755,10 @@ class _StubStreamingAssistant:
     def count(self) -> int:
         return 1
 
+    def filter(self, *, visible: bool) -> "_StubStreamingAssistant":
+        assert visible is True
+        return self
+
     def nth(self, index: int) -> "_StubStreamingAssistant":
         assert index == 0
         return self
@@ -1794,6 +1802,67 @@ class _StubStreamingPage:
         self.polls += 1
 
 
+class _StubHiddenHistoryAssistant:
+    """Assistant locator with a current reply plus hidden conversation history."""
+
+    def __init__(self, *, current_only: bool = False) -> None:
+        self.current_only = current_only
+
+    def filter(self, *, visible: bool) -> "_StubHiddenHistoryAssistant":
+        assert visible is True
+        return _StubHiddenHistoryAssistant(current_only=True)
+
+    def count(self) -> int:
+        return 1 if self.current_only else 2
+
+    def nth(self, index: int) -> "_StubHiddenHistoryAssistantMessage":
+        if self.current_only:
+            assert index == 0
+            return _StubHiddenHistoryAssistantMessage("PVNA7M amber circle")
+        assert index in (0, 1)
+        return _StubHiddenHistoryAssistantMessage(
+            "PVNA7M amber circle" if index == 0 else "old unrelated reply"
+        )
+
+
+class _StubHiddenHistoryAssistantMessage:
+    """One assistant message from the visible or hidden conversation."""
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+    def inner_text(self) -> str:
+        return self.text
+
+
+class _StubHiddenHistoryPage:
+    """Page that keeps a prior conversation mounted but hidden."""
+
+    def __init__(self) -> None:
+        self.assistant = _StubHiddenHistoryAssistant()
+        self.cancel = _StubAbsentCancel()
+
+    def get_by_label(self, label: str, *, exact: bool) -> _StubHiddenHistoryAssistant:
+        assert (label, exact) == ("Assistant message", True)
+        return self.assistant
+
+    def get_by_role(
+        self, role: str, *, name: str, exact: bool
+    ) -> "_StubAbsentCancel":
+        assert (role, name, exact) == ("button", "Cancel generation", True)
+        return self.cancel
+
+    def wait_for_timeout(self, milliseconds: float) -> None:
+        assert milliseconds == 500
+
+
+class _StubAbsentCancel:
+    """Cancel control after the current response has completed."""
+
+    def count(self) -> int:
+        return 0
+
+
 def test_assistant_wait_requires_stream_completion() -> None:
     """Seeing the hidden code must not capture a partial vision response."""
 
@@ -1812,6 +1881,25 @@ def test_assistant_wait_requires_stream_completion() -> None:
 
     assert page.polls == 2
     assert response == "UJUEUC cyan circle"
+
+
+def test_assistant_wait_ignores_hidden_conversation_history() -> None:
+    """The active reply must win over mounted cards from hidden threads."""
+
+    qualifier = DashboardQualifier(
+        api_base_url="http://example.invalid",
+        artifact_directory=Path("unused"),
+        poll_interval_s=1,
+        model_ready_timeout_s=1,
+    )
+    page = _StubHiddenHistoryPage()
+
+    response = qualifier._wait_for_assistant(  # pyright: ignore[reportPrivateUsage]
+        cast(Page, page),
+        expected="PVNA7M",
+    )
+
+    assert response == "PVNA7M amber circle"
 
 
 def test_vision_turn_starts_its_own_conversation() -> None:
