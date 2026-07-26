@@ -172,12 +172,18 @@ def test_random_vision_fixture_has_exact_judge_free_contract(tmp_path: Path) -> 
     assert first.sha256 != second.sha256
     assert first.code != second.code
     assert first.code not in first.prompt
-    assert "amber, cyan, magenta, or lime" in first.prompt
+    assert "orange, cyan, magenta, or lime" in first.prompt
     assert "circle, diamond, or triangle" in first.prompt
     assert data_url_sha256(first.data_url) == first.sha256
     assert first.response_matches(
         f"{first.code}\n{first.color} {first.shape}"
     ) == (True, True)
+    assert first.response_match_details(
+        f"{first.code}\n{first.color} {first.shape}"
+    ) == (True, True, True)
+    assert first.response_match_details(
+        f"{first.code}\nblue {first.shape}"
+    ) == (True, False, True)
     assert first.response_matches("a plausible blue bedroom") == (False, False)
     path = tmp_path / "fixture.png"
     first.write(path)
@@ -192,8 +198,8 @@ def test_circle_fixture_is_geometrically_circular(
     def choose_fixture_value(options: str | tuple[str, ...]) -> str:
         if isinstance(options, tuple) and "circle" in options:
             return "circle"
-        if isinstance(options, tuple) and "amber" in options:
-            return "amber"
+        if isinstance(options, tuple) and "orange" in options:
+            return "orange"
         return options[0]
 
     monkeypatch.setattr(
@@ -202,11 +208,11 @@ def test_circle_fixture_is_geometrically_circular(
     )
     fixture = generate_vision_fixture()
     image = Image.open(io.BytesIO(fixture.png)).convert("RGB")
-    amber_pixels = Image.new("1", image.size)
-    amber_pixels.putdata(
+    orange_pixels = Image.new("1", image.size)
+    orange_pixels.putdata(
         [pixel == (245, 158, 11) for pixel in image.get_flattened_data()]
     )
-    bounds = amber_pixels.getbbox()
+    bounds = orange_pixels.getbbox()
 
     assert fixture.shape == "circle"
     assert bounds is not None
