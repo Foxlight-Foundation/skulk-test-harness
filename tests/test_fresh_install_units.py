@@ -252,11 +252,13 @@ def test_direct_text_check_matches_dashboard_thinking_default(
         lambda: "amber harbor 4821",
     )
 
-    assert qualify_direct_text(
+    outcome = qualify_direct_text(
         cast(SkulkClient, FakeClient()),
         model_id="org/toggle-model",
         enable_thinking=False,
     )
+    assert outcome.passed is True
+    assert outcome.response == "amber harbor 4821"
     assert calls == [
         {
             "model_id": "org/toggle-model",
@@ -264,9 +266,8 @@ def test_direct_text_check_matches_dashboard_thinking_default(
                 {
                     "role": "user",
                     "content": (
-                        "Write one friendly sentence that uses every item "
-                        "in this list: "
-                        "amber harbor 4821"
+                        "Write one friendly sentence that includes this place "
+                        "name and room number: Amber Harbor, room 4821."
                     ),
                 }
             ],
@@ -2094,10 +2095,12 @@ def test_echo_phrase_does_not_look_like_a_credential() -> None:
         assert "-" not in phrase
         assert not re.search(r"token|key|secret|code", phrase, re.IGNORECASE)
 
-    assert "token" not in echo_prompt("amber harbor 1234").lower()
-    assert "exactly" not in echo_prompt("amber harbor 1234").lower()
-    assert "say nothing else" not in echo_prompt("amber harbor 1234").lower()
-    assert "complete text" not in echo_prompt("amber harbor 1234").lower()
+    prompt = echo_prompt("amber harbor 1234")
+    assert prompt.endswith("Amber Harbor, room 1234.")
+    assert "token" not in prompt.lower()
+    assert "exactly" not in prompt.lower()
+    assert "say nothing else" not in prompt.lower()
+    assert "complete text" not in prompt.lower()
 
 
 def test_echo_phrase_is_unpredictable() -> None:

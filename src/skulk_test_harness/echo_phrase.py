@@ -37,7 +37,8 @@ _ECHO_WORDS = (
 )
 
 ECHO_INSTRUCTION = (
-    "Write one friendly sentence that uses every item in this list: "
+    "Write one friendly sentence that includes this place name and room "
+    "number: "
 )
 
 
@@ -54,9 +55,12 @@ def echo_phrase() -> str:
 
 
 def echo_prompt(phrase: str) -> str:
-    """Return the full user message asking a model to repeat ``phrase``."""
+    """Return a natural writing task containing every randomized item."""
 
-    return ECHO_INSTRUCTION + phrase
+    first, second, room = phrase.split()
+    return (
+        f"{ECHO_INSTRUCTION}{first.title()} {second.title()}, room {room}."
+    )
 
 
 def echo_matched(phrase: str, response: str) -> bool:

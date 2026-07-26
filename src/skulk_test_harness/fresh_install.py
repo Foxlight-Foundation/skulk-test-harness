@@ -786,13 +786,15 @@ class FreshInstallQualifier:
                         _check_heartbeat(heartbeat)
 
                 with journal.stage(f"direct API parity: {model_id}"):
-                    if not qualify_direct_text(
+                    text_outcome = qualify_direct_text(
                         client,
                         model_id=model_id,
                         enable_thinking=enable_thinking,
-                    ):
+                    )
+                    if not text_outcome.passed:
                         raise RuntimeError(
-                            f"direct text API parity failed for {model_id}"
+                            f"direct text API parity failed for {model_id}; "
+                            f"the model replied: {text_outcome.response!r}"
                         )
                     if model_id in target.vision_models:
                         api_fixture = generate_vision_fixture()

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import httpx
 
 from skulk_test_harness.client import SkulkClient
@@ -13,6 +15,14 @@ from skulk_test_harness.models import (
     VisionFixtureEvidence,
 )
 from skulk_test_harness.vision_fixture import VisionFixture
+
+
+@dataclass(frozen=True)
+class DirectTextQualification:
+    """Result and bounded diagnostic evidence for a direct text request."""
+
+    passed: bool
+    response: str
 
 
 def assert_fresh_runtime_contract(
@@ -99,8 +109,8 @@ def qualify_direct_text(
     *,
     model_id: str,
     enable_thinking: bool | None,
-) -> bool:
-    """Require the direct API to echo an unpredictable token."""
+) -> DirectTextQualification:
+    """Require the direct API response to retain all randomized prompt items."""
 
     phrase = echo_phrase()
     execution = client.stream_chat(
@@ -111,7 +121,10 @@ def qualify_direct_text(
         top_p=1.0,
         enable_thinking=enable_thinking,
     )
-    return echo_matched(phrase, execution.text)
+    return DirectTextQualification(
+        passed=echo_matched(phrase, execution.text),
+        response=execution.text.strip()[:400],
+    )
 
 
 def qualify_direct_vision(
