@@ -960,10 +960,12 @@ def _qualify_served_engine(
 ) -> ServedEngineEvidence:
     """Verify effective served-engine flags, overlap, and post-load survival."""
 
-    before = controller.run("ps -axo command=", timeout_s=30).stdout
-    observed_parallel, kv_unified_observed = _llama_server_process_contract(
+    before = controller.run("ps -axo pid=,command=", timeout_s=30).stdout
+    before_pid, observed_parallel, kv_unified_observed = (
+        _llama_server_process_contract(
         before,
         installation_root=installation_root,
+        )
     )
     _run_served_engine_overlap_probe(
         api_base_url=api_base_url,
@@ -978,13 +980,14 @@ def _qualify_served_engine(
         backend=contract.backend,
         request_timeout_s=request_timeout_s,
     )
-    after = controller.run("ps -axo command=", timeout_s=30).stdout
-    after_parallel, after_kv_unified = _llama_server_process_contract(
+    after = controller.run("ps -axo pid=,command=", timeout_s=30).stdout
+    after_pid, after_parallel, after_kv_unified = _llama_server_process_contract(
         after,
         installation_root=installation_root,
     )
     runner_survived = (
-        after_parallel == observed_parallel
+        after_pid == before_pid
+        and after_parallel == observed_parallel
         and after_kv_unified == kv_unified_observed
     )
     passed = (
@@ -1013,25 +1016,29 @@ def _llama_server_process_contract(
     process_listing: str,
     *,
     installation_root: str,
-) -> tuple[int, bool]:
-    """Return effective parallel slots and unified-KV state from one child."""
+) -> tuple[int, int, bool]:
+    """Return process identity, parallel slots, and unified-KV state."""
 
-    candidates: list[list[str]] = []
+    candidates: list[tuple[int, list[str]]] = []
     for line in process_listing.splitlines():
         if installation_root not in line:
             continue
+        raw_pid, separator, raw_command = line.strip().partition(" ")
+        if not separator:
+            continue
         try:
-            arguments = shlex.split(line)
+            pid = int(raw_pid)
+            arguments = shlex.split(raw_command.strip())
         except ValueError:
             continue
         if any(Path(argument).name == "llama-server" for argument in arguments):
-            candidates.append(arguments)
+            candidates.append((pid, arguments))
     if len(candidates) != 1:
         raise RuntimeError(
             "expected exactly one fresh llama-server child, observed "
             f"{len(candidates)}"
         )
-    arguments = candidates[0]
+    pid, arguments = candidates[0]
     parallel: int | None = None
     for index, argument in enumerate(arguments):
         if argument == "--parallel" and index + 1 < len(arguments):
@@ -1050,7 +1057,7 @@ def _llama_server_process_contract(
                 ) from exception
     if parallel is None:
         raise RuntimeError("fresh llama-server child omitted --parallel")
-    return parallel, "--kv-unified" in arguments
+    return pid, parallel, "--kv-unified" in arguments
 
 
 def _run_served_engine_overlap_probe(

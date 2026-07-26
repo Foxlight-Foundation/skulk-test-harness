@@ -45,6 +45,7 @@ from skulk_test_harness.fresh_install import (
     _installer_command,  # pyright: ignore[reportPrivateUsage]
     _llama_server_process_contract,  # pyright: ignore[reportPrivateUsage]
     _provision_model_over_api,  # pyright: ignore[reportPrivateUsage]
+    _qualify_served_engine,  # pyright: ignore[reportPrivateUsage]
     _run_remote_logged_command,  # pyright: ignore[reportPrivateUsage]
     _runpod_ephemeral_target,  # pyright: ignore[reportPrivateUsage]
     _self_safe_process_pattern,  # pyright: ignore[reportPrivateUsage]
@@ -191,7 +192,7 @@ def test_served_engine_contract_must_name_an_expected_backend() -> None:
 
 def test_llama_server_process_contract_reads_effective_flags() -> None:
     listing = (
-        "/tmp/skulk-fresh.abc/home/.cache/skulk/llama-server "
+        "  4321 /tmp/skulk-fresh.abc/home/.cache/skulk/llama-server "
         "--model /tmp/skulk-fresh.abc/home/model.gguf "
         "--parallel 16 --kv-unified\n"
     )
@@ -199,14 +200,14 @@ def test_llama_server_process_contract_reads_effective_flags() -> None:
     assert _llama_server_process_contract(
         listing,
         installation_root="/tmp/skulk-fresh.abc",
-    ) == (16, True)
+    ) == (4321, 16, True)
 
 
 def test_llama_server_process_contract_rejects_ambiguous_children() -> None:
     listing = "\n".join(
         [
-            "/tmp/skulk-fresh.abc/home/bin/llama-server --parallel 16",
-            "/tmp/skulk-fresh.abc/home/bin/llama-server --parallel 16",
+            "4321 /tmp/skulk-fresh.abc/home/bin/llama-server --parallel 16",
+            "4322 /tmp/skulk-fresh.abc/home/bin/llama-server --parallel 16",
         ]
     )
 
@@ -215,6 +216,60 @@ def test_llama_server_process_contract_rejects_ambiguous_children() -> None:
             listing,
             installation_root="/tmp/skulk-fresh.abc",
         )
+
+
+def test_served_engine_probe_detects_runner_replacement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    listings = [
+        (
+            "4321 /tmp/skulk-fresh.abc/home/bin/llama-server "
+            "--parallel 16 --kv-unified"
+        ),
+        (
+            "9876 /tmp/skulk-fresh.abc/home/bin/llama-server "
+            "--parallel 16 --kv-unified"
+        ),
+    ]
+
+    class FakeController:
+        def run(
+            self,
+            _command: str,
+            *,
+            timeout_s: float | None = None,
+        ) -> subprocess.CompletedProcess[str]:
+            del timeout_s
+            return subprocess.CompletedProcess([], 0, listings.pop(0), "")
+
+    monkeypatch.setattr(
+        fresh_install_module,
+        "_run_served_engine_overlap_probe",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        fresh_install_module,
+        "_served_engine_envelope",
+        lambda **_kwargs: (4, True),
+    )
+
+    evidence = _qualify_served_engine(
+        controller=cast(SshTargetController, FakeController()),
+        installation_root="/tmp/skulk-fresh.abc",
+        api_base_url="http://example.invalid",
+        model_id="model",
+        contract=ServedEngineContract(
+            backend="llama_server-vulkan",
+            parallel=16,
+            kv_unified=True,
+            probe_concurrency=4,
+        ),
+        request_timeout_s=1,
+        stream_read_timeout_s=1,
+    )
+
+    assert evidence.runner_survived is False
+    assert evidence.passed is False
 
 
 def test_served_engine_envelope_requires_matching_backend_and_model(
