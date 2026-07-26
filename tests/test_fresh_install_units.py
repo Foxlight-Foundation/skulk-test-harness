@@ -233,8 +233,8 @@ def test_direct_text_check_matches_dashboard_thinking_default(
                 {
                     "role": "user",
                     "content": (
-                        "Please tell me the complete text on this ordinary "
-                        "inventory label: "
+                        "Write one friendly sentence that uses every item "
+                        "in this list: "
                         "amber harbor 4821"
                     ),
                 }
@@ -1906,6 +1906,7 @@ def test_echo_phrase_does_not_look_like_a_credential() -> None:
     assert "token" not in echo_prompt("amber harbor 1234").lower()
     assert "exactly" not in echo_prompt("amber harbor 1234").lower()
     assert "say nothing else" not in echo_prompt("amber harbor 1234").lower()
+    assert "complete text" not in echo_prompt("amber harbor 1234").lower()
 
 
 def test_echo_phrase_is_unpredictable() -> None:
@@ -1924,7 +1925,12 @@ def test_echo_match_accepts_a_recapitalized_reply() -> None:
 
     assert echo_matched("amber harbor 4821", "Amber Harbor 4821")
     assert echo_matched("amber harbor 4821", "Sure! amber harbor 4821")
+    assert echo_matched(
+        "amber harbor 4821",
+        "The harbor looked amber when flight 4821 arrived.",
+    )
     assert not echo_matched("amber harbor 4821", "amber harbor 4822")
+    assert not echo_matched("amber harbor 4821", "amber harbor 14821")
 
 
 def test_failed_text_chat_reports_what_the_model_actually_said() -> None:

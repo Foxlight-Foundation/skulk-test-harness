@@ -9,16 +9,16 @@ a credential, and a safety-tuned 1B model refused to repeat one at all:
     that could be used for malicious purposes.
 
 That failed a qualification leg whose install, download, launch, streaming,
-and rendering had every one of them worked. A later ``repeat exactly and say
-nothing else`` instruction triggered the same kind of refusal even with
-ordinary words. The check only needs a phrase the run picks unpredictably and
-the response repeats, so secret-looking data and command-like wording buy
-nothing and cost false failures on exactly the small aligned models a fresh
-install is most likely to start with.
+and rendering had every one of them worked. Later verbatim-copy instructions
+triggered the same kind of refusal even with ordinary words. The check only
+needs unpredictable terms to survive the whole request and response path, so a
+benign creative-writing task proves that without asking the model to reproduce
+credential-like or extracted text.
 """
 
 from __future__ import annotations
 
+import re
 import secrets
 
 _ECHO_WORDS = (
@@ -37,7 +37,7 @@ _ECHO_WORDS = (
 )
 
 ECHO_INSTRUCTION = (
-    "Please tell me the complete text on this ordinary inventory label: "
+    "Write one friendly sentence that uses every item in this list: "
 )
 
 
@@ -60,11 +60,15 @@ def echo_prompt(phrase: str) -> str:
 
 
 def echo_matched(phrase: str, response: str) -> bool:
-    """Report whether ``response`` repeats ``phrase``.
+    """Report whether ``response`` contains every unpredictable phrase item.
 
-    Case-insensitive: a model that capitalizes the start of its reply has
-    still demonstrated the whole chat path works, which is what this check
-    exists to prove.
+    The creative-writing prompt need not keep the terms adjacent. Requiring
+    each complete, case-insensitive word still prevents a stale response from
+    satisfying the check while allowing natural punctuation and prose.
     """
 
-    return phrase.upper() in response.upper()
+    return all(
+        re.search(rf"(?<!\w){re.escape(item)}(?!\w)", response, re.IGNORECASE)
+        is not None
+        for item in phrase.split()
+    )
