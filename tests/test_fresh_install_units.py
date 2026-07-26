@@ -1742,6 +1742,78 @@ class _StubConversationPage:
             self.assistant.matches = 0
 
 
+class _StubStreamingAssistant:
+    """Assistant locator whose text grows while generation is active."""
+
+    def __init__(self, page: "_StubStreamingPage") -> None:
+        self.page = page
+
+    def count(self) -> int:
+        return 1
+
+    def nth(self, index: int) -> "_StubStreamingAssistant":
+        assert index == 0
+        return self
+
+    def inner_text(self) -> str:
+        if self.page.polls < 2:
+            return "UJUEUC"
+        return "UJUEUC cyan circle"
+
+
+class _StubStreamingCancel:
+    """Cancel control that disappears only after the final stream update."""
+
+    def __init__(self, page: "_StubStreamingPage") -> None:
+        self.page = page
+
+    def count(self) -> int:
+        return 1 if self.page.polls < 2 else 0
+
+
+class _StubStreamingPage:
+    """Dashboard page exposing a partial answer before generation completes."""
+
+    def __init__(self) -> None:
+        self.polls = 0
+        self.assistant = _StubStreamingAssistant(self)
+        self.cancel = _StubStreamingCancel(self)
+
+    def get_by_label(self, label: str, *, exact: bool) -> _StubStreamingAssistant:
+        assert (label, exact) == ("Assistant message", True)
+        return self.assistant
+
+    def get_by_role(
+        self, role: str, *, name: str, exact: bool
+    ) -> _StubStreamingCancel:
+        assert (role, name, exact) == ("button", "Cancel generation", True)
+        return self.cancel
+
+    def wait_for_timeout(self, milliseconds: float) -> None:
+        assert milliseconds == 500
+        self.polls += 1
+
+
+def test_assistant_wait_requires_stream_completion() -> None:
+    """Seeing the hidden code must not capture a partial vision response."""
+
+    qualifier = DashboardQualifier(
+        api_base_url="http://example.invalid",
+        artifact_directory=Path("unused"),
+        poll_interval_s=1,
+        model_ready_timeout_s=1,
+    )
+    page = _StubStreamingPage()
+
+    response = qualifier._wait_for_assistant(  # pyright: ignore[reportPrivateUsage]
+        cast(Page, page),
+        expected="UJUEUC",
+    )
+
+    assert page.polls == 2
+    assert response == "UJUEUC cyan circle"
+
+
 def test_vision_turn_starts_its_own_conversation() -> None:
     """Each capability check must be judged on its own answer.
 

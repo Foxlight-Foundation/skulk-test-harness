@@ -424,20 +424,34 @@ class DashboardQualifier:
     ) -> str:
         deadline = time.monotonic() + 1800
         assistant = page.get_by_label("Assistant message", exact=True)
+        saw_cancel_control = False
+        last_text: str | None = None
+        stable_without_cancel_polls = 0
         while time.monotonic() < deadline:
             self._check_abort()
             count = assistant.count()
             if count > after_count:
                 text = assistant.nth(count - 1).inner_text()
-                if expected.upper() in text.upper():
-                    return text
                 cancel = page.get_by_role(
                     "button", name="Cancel generation", exact=True
                 )
-                if cancel.count() == 0:
+                if cancel.count() > 0:
+                    saw_cancel_control = True
+                    stable_without_cancel_polls = 0
+                elif saw_cancel_control:
                     return text
+                elif text == last_text:
+                    stable_without_cancel_polls += 1
+                    if stable_without_cancel_polls >= 1:
+                        return text
+                else:
+                    stable_without_cancel_polls = 0
+                last_text = text
             page.wait_for_timeout(500)
-        raise TimeoutError("dashboard assistant response did not complete")
+        raise TimeoutError(
+            "dashboard assistant response did not complete while waiting for "
+            f"{expected!r}"
+        )
 
     def _check_abort(self) -> None:
         """Surface a lease or external lifecycle failure during browser waits."""
