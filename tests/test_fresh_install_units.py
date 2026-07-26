@@ -172,7 +172,7 @@ def test_random_vision_fixture_has_exact_judge_free_contract(tmp_path: Path) -> 
     assert first.sha256 != second.sha256
     assert first.code != second.code
     assert first.code not in first.prompt
-    assert "orange, cyan, magenta, or lime" in first.prompt
+    assert "red, blue, green, or orange" in first.prompt
     assert "circle, diamond, or triangle" in first.prompt
     assert data_url_sha256(first.data_url) == first.sha256
     assert first.response_matches(
@@ -210,7 +210,7 @@ def test_circle_fixture_is_geometrically_circular(
     image = Image.open(io.BytesIO(fixture.png)).convert("RGB")
     orange_pixels = Image.new("1", image.size)
     orange_pixels.putdata(
-        [pixel == (245, 158, 11) for pixel in image.get_flattened_data()]
+        [pixel == (255, 128, 0) for pixel in image.get_flattened_data()]
     )
     bounds = orange_pixels.getbbox()
 
