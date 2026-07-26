@@ -36,6 +36,7 @@ from skulk_test_harness.models import (
     ModelRef,
     ModelSelector,
     ModelSet,
+    PlacementPolicy,
     PlacementResult,
     PromptImage,
     PromptTest,
@@ -3263,6 +3264,80 @@ def test_ensure_model_placed_fast_fails_when_instance_never_appears() -> None:
     # single responsibility of _run_model_lifecycle, so no issue is appended here.
     assert placement.unavailable_reason == "never_appeared"
     assert placement.instance_id is None
+
+
+def test_ensure_model_placed_reports_unverified_requested_sharding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _PlacementClient(_FakeClient):
+        def get_placement_previews(
+            self, model_id: str, *, excluded_node_ids=None
+        ) -> list[dict[str, object]]:
+            del model_id, excluded_node_ids
+            return [
+                {
+                    "sharding": "Tensor",
+                    "instance_meta": "MlxRing",
+                    "instance": {
+                        "MlxRingInstance": {
+                            "shardAssignments": {
+                                "modelId": "m/Foo",
+                                "nodeToRunner": {
+                                    "node-a": "runner-a",
+                                    "node-b": "runner-b",
+                                },
+                                "runnerToShard": {
+                                    "runner-a": {"TensorShardMetadata": {}},
+                                    "runner-b": {"TensorShardMetadata": {}},
+                                },
+                            }
+                        }
+                    },
+                }
+            ]
+
+        def place_model(self, **_kwargs: object) -> None:
+            return None
+
+    client = _PlacementClient(models=[{"id": "m/Foo"}])
+    runner = _runner()
+    monkeypatch.setattr(
+        runner,
+        "_wait_for_model_ready",
+        lambda *_args, **_kwargs: PlacementResult(
+            model_id="m/Foo",
+            instance_id="instance-a",
+            sharding=None,
+            instance_meta="MlxRingInstance",
+            ready=True,
+        ),
+    )
+    report = _report()
+    spec = RunSpec(
+        model_set="m",
+        test_set="t",
+        mode="execute",
+        placement=PlacementPolicy(
+            strategy="exact",
+            sharding="Tensor",
+            instance_meta="MlxRing",
+            min_nodes=2,
+        ),
+    )
+
+    placement = runner._ensure_model_placed(client, "m/Foo", spec, report)  # type: ignore[arg-type]
+
+    assert placement is not None
+    assert placement.ready is True
+    assert placement.sharding is None
+    assert [(issue.severity, issue.message) for issue in report.issues] == [
+        ("error", "Live placement did not verify the requested sharding mode")
+    ]
+    assert report.issues[0].evidence == {
+        "requested_sharding": "Tensor",
+        "observed_sharding": "unverifiable",
+        "instance_id": "instance-a",
+    }
 
 
 def test_ensure_store_download_reports_transport_timeout() -> None:

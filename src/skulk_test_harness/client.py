@@ -1221,6 +1221,7 @@ class SkulkClient:
                     runner_ids=list(runner_to_shard)
                     if isinstance(runner_to_shard, dict)
                     else [],
+                    sharding=_observed_sharding(assignments),
                     instance_meta=tag,
                     reused_existing=True,
                     ready=ready,
@@ -1284,6 +1285,7 @@ class SkulkClient:
             runner_ids=list(runner_to_shard)
             if isinstance(runner_to_shard, dict)
             else [],
+            sharding=_observed_sharding(assignments),
             instance_meta=tag,
             ready=ready,
             terminal_failure=bool(runner_failure_messages),
@@ -2571,6 +2573,36 @@ def _instance_runner_summary(
         elif tag not in {"RunnerReady", "RunnerRunning"}:
             ready = False
     return ready, failure_messages
+
+
+def _observed_sharding(assignments: dict[str, object]) -> str | None:
+    """Infer the live sharding contract from assigned runner metadata.
+
+    Skulk persists the effective placement mode in each tagged shard assignment
+    rather than as a sibling ``sharding`` field on the instance. Returning
+    ``None`` for empty, unknown, or mixed metadata makes an unverifiable
+    placement fail qualification instead of being reported as the requested
+    mode without evidence.
+    """
+
+    runner_to_shard = assignments.get("runnerToShard")
+    if not isinstance(runner_to_shard, dict) or not runner_to_shard:
+        return None
+    shard_tags: set[str] = set()
+    for raw_shard in runner_to_shard.values():
+        parsed = unwrap_tagged(raw_shard)
+        if parsed is None:
+            return None
+        shard_tags.add(parsed[0])
+    if shard_tags == {"TensorShardMetadata"}:
+        return "Tensor"
+    if shard_tags <= {
+        "PipelineShardMetadata",
+        "CfgShardMetadata",
+        "RpcDonorShardMetadata",
+    }:
+        return "Pipeline"
+    return None
 
 
 def _float_or_none(value: object) -> float | None:

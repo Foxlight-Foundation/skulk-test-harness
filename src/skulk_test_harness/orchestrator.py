@@ -604,10 +604,13 @@ class HarnessRunner:
             return None
 
         min_nodes = spec.placement.min_nodes or max(1, _preview_node_count(preview))
+        requested_sharding = str(
+            preview.get("sharding") or spec.placement.sharding
+        )
         try:
             client.place_model(
                 model_id=model_id,
-                sharding=str(preview.get("sharding") or spec.placement.sharding),
+                sharding=requested_sharding,
                 instance_meta=str(
                     preview.get("instance_meta") or spec.placement.instance_meta
                 ),
@@ -625,7 +628,7 @@ class HarnessRunner:
             )
             return None
 
-        return self._wait_for_model_ready(
+        placement = self._wait_for_model_ready(
             client,
             model_id,
             spec,
@@ -634,6 +637,20 @@ class HarnessRunner:
             reused=False,
             ignore_instance_ids=preexisting_instance_ids,
         )
+        if placement.ready and placement.sharding != requested_sharding:
+            report.issues.append(
+                Issue(
+                    severity="error",
+                    model_id=model_id,
+                    message="Live placement did not verify the requested sharding mode",
+                    evidence={
+                        "requested_sharding": requested_sharding,
+                        "observed_sharding": placement.sharding or "unverifiable",
+                        "instance_id": placement.instance_id or "",
+                    },
+                )
+            )
+        return placement
 
     def _wait_for_model_ready(
         self,
