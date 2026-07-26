@@ -9,10 +9,12 @@ a credential, and a safety-tuned 1B model refused to repeat one at all:
     that could be used for malicious purposes.
 
 That failed a qualification leg whose install, download, launch, streaming,
-and rendering had every one of them worked. The check only needs a phrase the
-run picks unpredictably and the response repeats, so looking like a secret
-buys nothing and costs a false failure on exactly the small aligned models a
-fresh install is most likely to start with.
+and rendering had every one of them worked. A later ``repeat exactly and say
+nothing else`` instruction triggered the same kind of refusal even with
+ordinary words. The check only needs a phrase the run picks unpredictably and
+the response repeats, so secret-looking data and command-like wording buy
+nothing and cost false failures on exactly the small aligned models a fresh
+install is most likely to start with.
 """
 
 from __future__ import annotations
@@ -34,7 +36,9 @@ _ECHO_WORDS = (
     "beacon",
 )
 
-ECHO_INSTRUCTION = "Repeat this phrase back exactly and say nothing else: "
+ECHO_INSTRUCTION = (
+    "Please tell me the complete text on this ordinary inventory label: "
+)
 
 
 def echo_phrase() -> str:
