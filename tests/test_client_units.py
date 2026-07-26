@@ -1278,6 +1278,69 @@ def test_wait_for_instance_ready_returns_immediately_on_runner_failure(
     ]
 
 
+@pytest.mark.parametrize(
+    ("runner_to_shard", "expected_sharding"),
+    [
+        (
+            {
+                "runner-a": {"TensorShardMetadata": {}},
+                "runner-b": {"TensorShardMetadata": {}},
+            },
+            "Tensor",
+        ),
+        (
+            {
+                "runner-a": {"PipelineShardMetadata": {}},
+                "runner-b": {"RpcDonorShardMetadata": {}},
+            },
+            "Pipeline",
+        ),
+        (
+            {
+                "runner-a": {"TensorShardMetadata": {}},
+                "runner-b": {"PipelineShardMetadata": {}},
+            },
+            None,
+        ),
+    ],
+)
+def test_find_placements_reports_observed_sharding(
+    monkeypatch: pytest.MonkeyPatch,
+    runner_to_shard: dict[str, object],
+    expected_sharding: str | None,
+) -> None:
+    """Placement reports derive sharding from the live shard assignments."""
+
+    state: dict[str, object] = {
+        "instances": {
+            "instance-a": {
+                "MlxRingInstance": {
+                    "shardAssignments": {
+                        "modelId": "m/Foo",
+                        "nodeToRunner": {
+                            f"node-{index}": runner_id
+                            for index, runner_id in enumerate(runner_to_shard)
+                        },
+                        "runnerToShard": runner_to_shard,
+                    }
+                }
+            }
+        },
+        "runners": {
+            runner_id: {"RunnerReady": {}} for runner_id in runner_to_shard
+        },
+    }
+    client = SkulkClient("http://skulk.test")
+    monkeypatch.setattr(client, "get_state", lambda: state)
+    try:
+        placements = client.find_placements_for_model("m/Foo")
+    finally:
+        client.close()
+
+    assert len(placements) == 1
+    assert placements[0].sharding == expected_sharding
+
+
 def test_streaming_chat_parses_generation_stats_comment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
