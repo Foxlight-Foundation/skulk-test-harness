@@ -144,6 +144,38 @@ class FleetLock(HarnessBaseModel):
     )
 
 
+class ServedEngineContract(HarnessBaseModel):
+    """Release-blocking runtime contract for a served text engine.
+
+    Static backend detection is not enough: a fresh node can advertise
+    ``llama_server`` while launching it in serial mode. This contract verifies
+    the effective child-process flags and then proves requests overlap through
+    Skulk's own performance-envelope observations.
+    """
+
+    backend: str = Field(
+        min_length=1,
+        description=(
+            "Resolved runtime backend tag expected in performance evidence, "
+            "such as llama_server-vulkan or llama_server-cuda."
+        ),
+    )
+    parallel: int = Field(
+        default=16,
+        ge=2,
+        description="Exact shipped llama-server parallel-slot count.",
+    )
+    kv_unified: bool = Field(
+        default=True,
+        description="Whether the shipped runner must enable unified KV storage.",
+    )
+    probe_concurrency: int = Field(
+        default=4,
+        ge=2,
+        description="Safe concurrent request count used to prove live overlap.",
+    )
+
+
 class FreshInstallTarget(HarnessBaseModel):
     """One explicitly eligible target for destructive fresh-install qualification.
 
@@ -238,6 +270,13 @@ class FreshInstallTarget(HarnessBaseModel):
         default="zenoh",
         description="DATA transport shipped for this platform.",
     )
+    served_engine_contract: ServedEngineContract | None = Field(
+        default=None,
+        description=(
+            "Optional release-blocking child-process and live-concurrency "
+            "contract for a served text backend."
+        ),
+    )
     vision_contract: Literal["positive", "unavailable"] = Field(
         description="Required vision behavior; never converted into an adaptive skip.",
     )
@@ -283,6 +322,13 @@ class FreshInstallTarget(HarnessBaseModel):
             raise ValueError("positive vision targets require vision_models")
         if self.vision_contract == "unavailable" and self.vision_models:
             raise ValueError("vision-unavailable targets cannot list vision_models")
+        if (
+            self.served_engine_contract is not None
+            and self.served_engine_contract.backend not in self.expected_backends
+        ):
+            raise ValueError(
+                "served_engine_contract backend must be listed in expected_backends"
+            )
         return self
 
 
@@ -1579,10 +1625,26 @@ class DashboardJourneyOutcome(HarnessBaseModel):
     message: str | None = None
 
 
+class ServedEngineEvidence(HarnessBaseModel):
+    """Secret-free evidence that a fresh served engine is actually concurrent."""
+
+    model_id: str
+    backend: str
+    expected_parallel: int
+    observed_parallel: int
+    kv_unified_required: bool
+    kv_unified_observed: bool
+    probe_concurrency: int
+    maximum_observed_active: int
+    batching_reported: bool
+    runner_survived: bool
+    passed: bool
+
+
 class FreshInstallQualificationReport(HarnessBaseModel):
     """Complete private report for one clean-install target leg."""
 
-    schema_version: str = "1.0"
+    schema_version: str = "1.1"
     qualification_id: str
     profile: FreshInstallProfile
     platform: FreshInstallPlatform
@@ -1595,6 +1657,7 @@ class FreshInstallQualificationReport(HarnessBaseModel):
     lifecycle: list[FreshInstallLifecycleStage] = Field(default_factory=list)
     api_vision: list[VisionFixtureEvidence] = Field(default_factory=list)
     browser: list[DashboardJourneyOutcome] = Field(default_factory=list)
+    served_engines: list[ServedEngineEvidence] = Field(default_factory=list)
     snapshot_target_sha256: str | None = None
     snapshot_controller_sha256: str | None = None
     lease_renewal_expiries: list[datetime] = Field(default_factory=list)

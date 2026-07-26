@@ -145,6 +145,20 @@ fresh_install:
         - mlx-community/Qwen3-VL-4B-Instruct-4bit
 ```
 
+AMD and NVIDIA release targets also declare the effective served-engine
+contract. The qualification inspects the fresh child process, drives a bounded
+ordinary-chat burst, requires Skulk to observe overlapping work, and verifies
+that the runner survives:
+
+```yaml
+expected_backends: [llama_server, llama_server-vulkan]
+served_engine_contract:
+  backend: llama_server-vulkan
+  parallel: 16
+  kv_unified: true
+  probe_concurrency: 4
+```
+
 When `fresh-install qualify` is run without `--target`, every
 `required_platforms` entry must have at least one explicitly eligible target or
 the release matrix is refused before any lifecycle mutation begins. Repeated

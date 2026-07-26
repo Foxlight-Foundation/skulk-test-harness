@@ -43,9 +43,13 @@ from skulk_test_harness.fresh_install import (
     _browser_vision_expectation,  # pyright: ignore[reportPrivateUsage]
     _clean_environment_command,  # pyright: ignore[reportPrivateUsage]
     _installer_command,  # pyright: ignore[reportPrivateUsage]
+    _llama_server_process_contract,  # pyright: ignore[reportPrivateUsage]
     _provision_model_over_api,  # pyright: ignore[reportPrivateUsage]
+    _qualify_served_engine,  # pyright: ignore[reportPrivateUsage]
     _run_remote_logged_command,  # pyright: ignore[reportPrivateUsage]
+    _runpod_ephemeral_target,  # pyright: ignore[reportPrivateUsage]
     _self_safe_process_pattern,  # pyright: ignore[reportPrivateUsage]
+    _served_engine_envelope,  # pyright: ignore[reportPrivateUsage]
     _wait_for_api_identity,  # pyright: ignore[reportPrivateUsage]
 )
 from skulk_test_harness.lease_heartbeat import (
@@ -63,12 +67,17 @@ from skulk_test_harness.models import (
     Issue,
     PlacementResult,
     RunPodFreshInstallConfig,
+    ServedEngineContract,
+    ServedEngineEvidence,
 )
 from skulk_test_harness.qualification_checks import (
     qualify_direct_text,
     qualify_direct_vision,
 )
-from skulk_test_harness.runpod import RunPodClient
+from skulk_test_harness.reporting import (
+    _fresh_install_markdown,  # pyright: ignore[reportPrivateUsage]
+)
+from skulk_test_harness.runpod import RunPodClient, RunPodSshEndpoint
 from skulk_test_harness.target_control import (
     OriginalTargetState,
     RecoverySnapshot,
@@ -162,6 +171,168 @@ def test_target_contract_rejects_adaptive_vision_skip() -> None:
         )
 
 
+def test_served_engine_contract_must_name_an_expected_backend() -> None:
+    with pytest.raises(
+        ValidationError,
+        match="served_engine_contract backend must be listed",
+    ):
+        FreshInstallTarget(
+            kind="runpod",
+            platform="nvidia",
+            hardware_class="cuda",
+            eligible=True,
+            expected_backends=["llama_server", "llama_server-cuda"],
+            served_engine_contract=ServedEngineContract(
+                backend="llama_server-vulkan"
+            ),
+            vision_contract="unavailable",
+            text_models=["unsloth/Llama-3.2-1B-Instruct-GGUF"],
+        )
+
+
+def test_llama_server_process_contract_reads_effective_flags() -> None:
+    listing = (
+        "  4321 /tmp/skulk-fresh.abc/home/.cache/skulk/llama-server "
+        "--model /tmp/skulk-fresh.abc/home/model.gguf "
+        "--parallel 16 --kv-unified\n"
+    )
+
+    assert _llama_server_process_contract(
+        listing,
+        installation_root="/tmp/skulk-fresh.abc",
+    ) == (4321, 16, True)
+
+
+def test_llama_server_process_contract_rejects_ambiguous_children() -> None:
+    listing = "\n".join(
+        [
+            "4321 /tmp/skulk-fresh.abc/home/bin/llama-server --parallel 16",
+            "4322 /tmp/skulk-fresh.abc/home/bin/llama-server --parallel 16",
+        ]
+    )
+
+    with pytest.raises(RuntimeError, match="exactly one"):
+        _llama_server_process_contract(
+            listing,
+            installation_root="/tmp/skulk-fresh.abc",
+        )
+
+
+def test_served_engine_probe_detects_runner_replacement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    listings = [
+        (
+            "4321 /tmp/skulk-fresh.abc/home/bin/llama-server "
+            "--parallel 16 --kv-unified"
+        ),
+        (
+            "9876 /tmp/skulk-fresh.abc/home/bin/llama-server "
+            "--parallel 16 --kv-unified"
+        ),
+    ]
+
+    class FakeController:
+        def run(
+            self,
+            _command: str,
+            *,
+            timeout_s: float | None = None,
+        ) -> subprocess.CompletedProcess[str]:
+            del timeout_s
+            return subprocess.CompletedProcess([], 0, listings.pop(0), "")
+
+    monkeypatch.setattr(
+        fresh_install_module,
+        "_run_served_engine_overlap_probe",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        fresh_install_module,
+        "_served_engine_envelope",
+        lambda **_kwargs: (4, True),
+    )
+
+    evidence = _qualify_served_engine(
+        controller=cast(SshTargetController, FakeController()),
+        installation_root="/tmp/skulk-fresh.abc",
+        api_base_url="http://example.invalid",
+        model_id="model",
+        contract=ServedEngineContract(
+            backend="llama_server-vulkan",
+            parallel=16,
+            kv_unified=True,
+            probe_concurrency=4,
+        ),
+        request_timeout_s=1,
+        stream_read_timeout_s=1,
+    )
+
+    assert evidence.runner_survived is False
+    assert evidence.passed is False
+
+
+def test_served_engine_envelope_requires_matching_backend_and_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response = httpx.Response(
+        200,
+        json={
+            "envelopes": [
+                {
+                    "modelId": "model",
+                    "backend": "llama_server-vulkan",
+                    "batches": True,
+                    "buckets": [
+                        {"concurrency": 1},
+                        {"concurrency": 4},
+                    ],
+                },
+                {
+                    "modelId": "different",
+                    "backend": "llama_server-vulkan",
+                    "batches": True,
+                    "buckets": [{"concurrency": 99}],
+                },
+            ]
+        },
+        request=httpx.Request("GET", "http://example.invalid"),
+    )
+    monkeypatch.setattr(fresh_install_module.httpx, "get", lambda *_args, **_kw: response)
+
+    assert _served_engine_envelope(
+        api_base_url="http://example.invalid",
+        model_id="model",
+        backend="llama_server-vulkan",
+        request_timeout_s=1,
+    ) == (4, True)
+
+
+def test_fresh_summary_includes_publishable_served_engine_evidence() -> None:
+    report = _report_with([])
+    report.served_engines.append(
+        ServedEngineEvidence(
+            model_id="model",
+            backend="llama_server-vulkan",
+            expected_parallel=16,
+            observed_parallel=16,
+            kv_unified_required=True,
+            kv_unified_observed=True,
+            probe_concurrency=4,
+            maximum_observed_active=4,
+            batching_reported=True,
+            runner_survived=True,
+            passed=True,
+        )
+    )
+
+    summary = _fresh_install_markdown(report)
+
+    assert "parallel `16` (expected `16`)" in summary
+    assert "maximum active `4`" in summary
+    assert "survived `True`" in summary
+
+
 def test_heartbeat_must_not_exceed_one_third_of_ttl() -> None:
     with pytest.raises(ValidationError, match="one third"):
         FreshInstallConfig(lease_ttl_s=90, lease_heartbeat_s=31)
@@ -184,8 +355,11 @@ def test_random_vision_fixture_has_exact_judge_free_contract(tmp_path: Path) -> 
     assert first.response_match_details(
         f"{first.code}\n{first.color} {first.shape}"
     ) == (True, True, True)
+    wrong_color = next(
+        color for color in ("red", "blue", "green", "orange") if color != first.color
+    )
     assert first.response_match_details(
-        f"{first.code}\nblue {first.shape}"
+        f"{first.code}\n{wrong_color} {first.shape}"
     ) == (True, False, True)
     assert first.response_matches("a plausible blue bedroom") == (False, False)
     path = tmp_path / "fixture.png"
@@ -961,6 +1135,43 @@ def test_runpod_is_clean_cost_bounded_and_teardown_is_confirmed(
 
     assert lease.hourly_cost_usd == 1.25
     assert deleted == ["/v1/pods/pod-1"]
+
+
+def test_runpod_ephemeral_target_preserves_served_engine_contract(
+    tmp_path: Path,
+) -> None:
+    contract = ServedEngineContract(
+        backend="llama_server-cuda",
+        parallel=16,
+        kv_unified=True,
+        probe_concurrency=4,
+    )
+    target = FreshInstallTarget(
+        kind="runpod",
+        platform="nvidia",
+        hardware_class="nvidia-cuda",
+        eligible=True,
+        expected_backends=["llama_server", "llama_server-cuda"],
+        served_engine_contract=contract,
+        vision_contract="unavailable",
+        text_models=["unsloth/Llama-3.2-1B-Instruct-GGUF"],
+    )
+    runpod_config = RunPodFreshInstallConfig(
+        ssh_public_key_file=tmp_path / "id.pub",
+        ssh_private_key_file=tmp_path / "id",
+        image_name="nvidia/cuda-node-neutral",
+        gpu_type_ids=["NVIDIA L4"],
+    )
+
+    ephemeral = _runpod_ephemeral_target(
+        target=target,
+        runpod_config=runpod_config,
+        endpoint=RunPodSshEndpoint(host="203.0.113.10", port=22198),
+    )
+
+    assert ephemeral.served_engine_contract == contract
+    assert ephemeral.expected_backends == target.expected_backends
+    assert ephemeral.text_models == target.text_models
 
 
 def test_runpod_rejects_over_ceiling_pod_only_after_confirmed_deletion(

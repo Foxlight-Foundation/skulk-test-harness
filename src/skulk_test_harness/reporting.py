@@ -260,9 +260,30 @@ def _fresh_install_markdown(report: FreshInstallQualificationReport) -> str:
         f"- Teardown: `{report.teardown_succeeded}`",
         f"- Critical recovery required: `{report.critical_recovery_required}`",
         "",
-        "## Lifecycle",
+        "## Served engines",
         "",
     ]
+    if report.served_engines:
+        for evidence in report.served_engines:
+            lines.append(
+                f"- `{evidence.model_id}` / `{evidence.backend}`: "
+                f"parallel `{evidence.observed_parallel}` "
+                f"(expected `{evidence.expected_parallel}`), "
+                f"unified KV `{evidence.kv_unified_observed}`, "
+                f"maximum active `{evidence.maximum_observed_active}`, "
+                f"batching `{evidence.batching_reported}`, "
+                f"survived `{evidence.runner_survived}`, "
+                f"passed `{evidence.passed}`"
+            )
+    else:
+        lines.append("- Not applicable")
+    lines.extend(
+        [
+            "",
+        "## Lifecycle",
+        "",
+        ]
+    )
     for stage in report.lifecycle:
         lines.append(f"- `{stage.status}` **{stage.name}**: {stage.message or ''}")
     lines.extend(["", "## Issues", ""])

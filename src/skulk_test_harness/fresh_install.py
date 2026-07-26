@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import re
 import shlex
@@ -19,7 +20,12 @@ from typing import BinaryIO, Literal
 
 import httpx
 
-from skulk_test_harness.client import SkulkApiError, SkulkClient
+from skulk_test_harness.client import (
+    SkulkApiError,
+    SkulkClient,
+    concurrent_benchmark_client,
+    stream_chat_async,
+)
 from skulk_test_harness.dashboard_qualification import DashboardQualifier
 from skulk_test_harness.fleet_lock import FleetLockStore
 from skulk_test_harness.lease_heartbeat import (
@@ -34,6 +40,9 @@ from skulk_test_harness.models import (
     HarnessConfig,
     InstallProvenance,
     Issue,
+    RunPodFreshInstallConfig,
+    ServedEngineContract,
+    ServedEngineEvidence,
 )
 from skulk_test_harness.qualification_checks import (
     assert_fresh_runtime_contract,
@@ -41,7 +50,7 @@ from skulk_test_harness.qualification_checks import (
     qualify_direct_vision,
 )
 from skulk_test_harness.reporting import ReportWriter
-from skulk_test_harness.runpod import RunPodClient
+from skulk_test_harness.runpod import RunPodClient, RunPodSshEndpoint
 from skulk_test_harness.target_control import (
     OriginalTargetState,
     RecoverySnapshot,
@@ -460,29 +469,10 @@ class FreshInstallQualifier:
                 deadline_timer.daemon = True
                 deadline_timer.start()
                 endpoint = runpod.wait_for_ssh(pod_id)
-            ephemeral_target = FreshInstallTarget(
-                kind="physical",
-                platform="nvidia",
-                hardware_class=target.hardware_class,
-                eligible=True,
-                ssh_host=endpoint.host,
-                ssh_user="root",
-                ssh_port=endpoint.port,
-                ssh_identity_file=self.fresh.runpod.ssh_private_key_file,
-                # The pod generates its host key at boot, so there is nothing to
-                # have pinned in advance. Inventory hardware never gets this.
-                accept_unknown_host_key=True,
-                service_manager="command",
-                service_stop_command="true",
-                service_start_command="true",
-                isolation_enter_command="true",
-                isolation_exit_command="true",
-                expected_backends=target.expected_backends,
-                expected_data_transport=target.expected_data_transport,
-                vision_contract=target.vision_contract,
-                dashboard_contract=target.dashboard_contract,
-                text_models=target.text_models,
-                vision_models=target.vision_models,
+            ephemeral_target = _runpod_ephemeral_target(
+                target=target,
+                runpod_config=self.fresh.runpod,
+                endpoint=endpoint,
             )
             controller = SshTargetController(ephemeral_target)
             local_port, tunnel = controller.open_tunnel(
@@ -684,6 +674,8 @@ class FreshInstallQualifier:
 
             self._qualify_models(
                 api_base_url=api_base_url,
+                controller=controller,
+                installation_root=temporary_root,
                 target=target,
                 report=report,
                 journal=journal,
@@ -715,6 +707,8 @@ class FreshInstallQualifier:
         self,
         *,
         api_base_url: str,
+        controller: SshTargetController,
+        installation_root: str,
         target: FreshInstallTarget,
         report: FreshInstallQualificationReport,
         journal: _LifecycleJournal,
@@ -783,6 +777,34 @@ class FreshInstallQualifier:
                             poll_interval_s=self.fresh.poll_interval_s,
                             heartbeat=heartbeat,
                         )
+                        _check_heartbeat(heartbeat)
+
+                if target.served_engine_contract is not None:
+                    with journal.stage(
+                        f"served engine runtime contract: {model_id}"
+                    ):
+                        evidence = _qualify_served_engine(
+                            controller=controller,
+                            installation_root=installation_root,
+                            api_base_url=api_base_url,
+                            model_id=model_id,
+                            contract=target.served_engine_contract,
+                            request_timeout_s=self.config.request_timeout_s,
+                            stream_read_timeout_s=self.config.stream_read_timeout_s,
+                        )
+                        report.served_engines.append(evidence)
+                        journal.persist()
+                        if not evidence.passed:
+                            raise RuntimeError(
+                                "fresh served-engine contract failed for "
+                                f"{model_id}: expected --parallel "
+                                f"{evidence.expected_parallel}, observed "
+                                f"{evidence.observed_parallel}; expected "
+                                f"kv-unified={evidence.kv_unified_required}, "
+                                f"observed={evidence.kv_unified_observed}; "
+                                "maximum live concurrency "
+                                f"{evidence.maximum_observed_active}"
+                            )
                         _check_heartbeat(heartbeat)
 
                 with journal.stage(f"direct API parity: {model_id}"):
@@ -889,6 +911,242 @@ class FreshInstallQualifier:
                     )
                 )
         return True
+
+
+def _runpod_ephemeral_target(
+    *,
+    target: FreshInstallTarget,
+    runpod_config: RunPodFreshInstallConfig,
+    endpoint: RunPodSshEndpoint,
+) -> FreshInstallTarget:
+    """Convert one declared RunPod contract into its ephemeral SSH target."""
+
+    return FreshInstallTarget(
+        kind="physical",
+        platform="nvidia",
+        hardware_class=target.hardware_class,
+        eligible=True,
+        ssh_host=endpoint.host,
+        ssh_user="root",
+        ssh_port=endpoint.port,
+        ssh_identity_file=runpod_config.ssh_private_key_file,
+        # The pod generates its host key at boot, so there is nothing to have
+        # pinned in advance. Inventory hardware never gets this exception.
+        accept_unknown_host_key=True,
+        service_manager="command",
+        service_stop_command="true",
+        service_start_command="true",
+        isolation_enter_command="true",
+        isolation_exit_command="true",
+        expected_backends=target.expected_backends,
+        expected_data_transport=target.expected_data_transport,
+        served_engine_contract=target.served_engine_contract,
+        vision_contract=target.vision_contract,
+        dashboard_contract=target.dashboard_contract,
+        text_models=target.text_models,
+        vision_models=target.vision_models,
+    )
+
+
+def _qualify_served_engine(
+    *,
+    controller: SshTargetController,
+    installation_root: str,
+    api_base_url: str,
+    model_id: str,
+    contract: ServedEngineContract,
+    request_timeout_s: float,
+    stream_read_timeout_s: float,
+) -> ServedEngineEvidence:
+    """Verify effective served-engine flags, overlap, and post-load survival."""
+
+    before = controller.run("ps -axo pid=,command=", timeout_s=30).stdout
+    before_pid, observed_parallel, kv_unified_observed = (
+        _llama_server_process_contract(
+        before,
+        installation_root=installation_root,
+        )
+    )
+    _run_served_engine_overlap_probe(
+        api_base_url=api_base_url,
+        model_id=model_id,
+        concurrency=contract.probe_concurrency,
+        request_timeout_s=request_timeout_s,
+        stream_read_timeout_s=stream_read_timeout_s,
+    )
+    maximum_observed_active, batching_reported = _served_engine_envelope(
+        api_base_url=api_base_url,
+        model_id=model_id,
+        backend=contract.backend,
+        request_timeout_s=request_timeout_s,
+    )
+    after = controller.run("ps -axo pid=,command=", timeout_s=30).stdout
+    after_pid, after_parallel, after_kv_unified = _llama_server_process_contract(
+        after,
+        installation_root=installation_root,
+    )
+    runner_survived = (
+        after_pid == before_pid
+        and after_parallel == observed_parallel
+        and after_kv_unified == kv_unified_observed
+    )
+    passed = (
+        observed_parallel == contract.parallel
+        and kv_unified_observed == contract.kv_unified
+        and maximum_observed_active >= 2
+        and batching_reported
+        and runner_survived
+    )
+    return ServedEngineEvidence(
+        model_id=model_id,
+        backend=contract.backend,
+        expected_parallel=contract.parallel,
+        observed_parallel=observed_parallel,
+        kv_unified_required=contract.kv_unified,
+        kv_unified_observed=kv_unified_observed,
+        probe_concurrency=contract.probe_concurrency,
+        maximum_observed_active=maximum_observed_active,
+        batching_reported=batching_reported,
+        runner_survived=runner_survived,
+        passed=passed,
+    )
+
+
+def _llama_server_process_contract(
+    process_listing: str,
+    *,
+    installation_root: str,
+) -> tuple[int, int, bool]:
+    """Return process identity, parallel slots, and unified-KV state."""
+
+    candidates: list[tuple[int, list[str]]] = []
+    for line in process_listing.splitlines():
+        if installation_root not in line:
+            continue
+        raw_pid, separator, raw_command = line.strip().partition(" ")
+        if not separator:
+            continue
+        try:
+            pid = int(raw_pid)
+            arguments = shlex.split(raw_command.strip())
+        except ValueError:
+            continue
+        if any(Path(argument).name == "llama-server" for argument in arguments):
+            candidates.append((pid, arguments))
+    if len(candidates) != 1:
+        raise RuntimeError(
+            "expected exactly one fresh llama-server child, observed "
+            f"{len(candidates)}"
+        )
+    pid, arguments = candidates[0]
+    parallel: int | None = None
+    for index, argument in enumerate(arguments):
+        if argument == "--parallel" and index + 1 < len(arguments):
+            try:
+                parallel = int(arguments[index + 1])
+            except ValueError as exception:
+                raise RuntimeError(
+                    "fresh llama-server --parallel value was not an integer"
+                ) from exception
+        elif argument.startswith("--parallel="):
+            try:
+                parallel = int(argument.partition("=")[2])
+            except ValueError as exception:
+                raise RuntimeError(
+                    "fresh llama-server --parallel value was not an integer"
+                ) from exception
+    if parallel is None:
+        raise RuntimeError("fresh llama-server child omitted --parallel")
+    return pid, parallel, "--kv-unified" in arguments
+
+
+def _run_served_engine_overlap_probe(
+    *,
+    api_base_url: str,
+    model_id: str,
+    concurrency: int,
+    request_timeout_s: float,
+    stream_read_timeout_s: float,
+) -> None:
+    """Drive a bounded simultaneous burst through the ordinary chat endpoint."""
+
+    async def run() -> None:
+        async with concurrent_benchmark_client(
+            api_base_url,
+            concurrency=concurrency,
+        ) as client:
+            executions = await asyncio.gather(
+                *(
+                    stream_chat_async(
+                        client,
+                        model_id=model_id,
+                        messages=[
+                            {
+                                "role": "user",
+                                "content": (
+                                    "Write the lowercase letter x exactly 96 "
+                                    "times. Do not add spaces or commentary."
+                                ),
+                            }
+                        ],
+                        max_tokens=128,
+                        temperature=0.0,
+                        top_p=1.0,
+                        request_timeout_s=request_timeout_s,
+                        stream_read_timeout_s=stream_read_timeout_s,
+                    )
+                    for _ in range(concurrency)
+                )
+            )
+        if any(not execution.text.strip() for execution in executions):
+            raise RuntimeError("served-engine overlap probe returned an empty response")
+
+    asyncio.run(run())
+
+
+def _served_engine_envelope(
+    *,
+    api_base_url: str,
+    model_id: str,
+    backend: str,
+    request_timeout_s: float,
+) -> tuple[int, bool]:
+    """Return maximum observed live concurrency and batching truth."""
+
+    response = httpx.get(
+        api_base_url.rstrip("/") + "/v1/diagnostics/performance-envelopes",
+        timeout=request_timeout_s,
+    )
+    response.raise_for_status()
+    body = response.json()
+    if not isinstance(body, dict):
+        raise RuntimeError("performance-envelope endpoint returned a non-object")
+    raw_envelopes = body.get("envelopes")
+    if not isinstance(raw_envelopes, list):
+        raise RuntimeError("performance-envelope endpoint omitted envelopes")
+    maximum = 0
+    batches = False
+    for raw_envelope in raw_envelopes:
+        if not isinstance(raw_envelope, dict):
+            continue
+        envelope_model = raw_envelope.get(
+            "modelId",
+            raw_envelope.get("model_id"),
+        )
+        envelope_backend = raw_envelope.get("backend")
+        if envelope_model != model_id or envelope_backend != backend:
+            continue
+        batches = batches or raw_envelope.get("batches") is True
+        raw_buckets = raw_envelope.get("buckets")
+        if not isinstance(raw_buckets, list):
+            continue
+        for raw_bucket in raw_buckets:
+            if not isinstance(raw_bucket, dict):
+                continue
+            concurrency = raw_bucket.get("concurrency")
+            if isinstance(concurrency, int) and not isinstance(concurrency, bool):
+                maximum = max(maximum, concurrency)
+    return maximum, batches
 
 
 def _blocking_issues(report: FreshInstallQualificationReport) -> list[Issue]:
