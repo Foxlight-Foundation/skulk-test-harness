@@ -170,6 +170,8 @@ def test_random_vision_fixture_has_exact_judge_free_contract(tmp_path: Path) -> 
     assert first.sha256 != second.sha256
     assert first.code != second.code
     assert first.code not in first.prompt
+    assert "amber, cyan, magenta, or lime" in first.prompt
+    assert "circle, diamond, or triangle" in first.prompt
     assert data_url_sha256(first.data_url) == first.sha256
     assert first.response_matches(
         f"{first.code}\n{first.color} {first.shape}"

@@ -546,7 +546,8 @@ test_sets:
         system: Report only evidence visible in the supplied image.
         prompt: >-
           Read the large six-character code. Then name the colored shape.
-          Answer exactly: CODE; COLOR SHAPE.
+          Choose the color from amber, cyan, magenta, or lime, and the shape
+          from circle, diamond, or triangle. Answer exactly: CODE; COLOR SHAPE.
         max_tokens: 128
         temperature: 0
         enable_thinking: false
@@ -579,7 +580,8 @@ test_sets:
         system: You are a careful vision assistant.
         prompt: >-
           Read the large six-character code. Then name the colored shape.
-          Answer exactly: CODE; COLOR SHAPE.
+          Choose the color from amber, cyan, magenta, or lime, and the shape
+          from circle, diamond, or triangle. Answer exactly: CODE; COLOR SHAPE.
         max_tokens: 128
         temperature: 0
         enable_thinking: false
