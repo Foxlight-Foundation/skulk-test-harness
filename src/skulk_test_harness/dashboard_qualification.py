@@ -260,7 +260,10 @@ class DashboardQualifier:
         # Zero, not one: the vision turn is the first exchange of its own
         # conversation, so there is no earlier assistant message to skip past.
         response = self._wait_for_assistant(page, expected=fixture.code)
-        code_matched, attribute_matched = fixture.response_matches(response)
+        code_matched, color_matched, shape_matched = (
+            fixture.response_match_details(response)
+        )
+        attribute_matched = color_matched and shape_matched
         if not (code_matched and attribute_matched):
             # Same reasoning as the text chat: without the response text a
             # vision failure cannot be told apart from a broken image path,
@@ -276,6 +279,8 @@ class DashboardQualifier:
             expected_color=fixture.color,
             response_matched_code=code_matched,
             response_matched_attribute=attribute_matched,
+            response_matched_color=color_matched,
+            response_matched_shape=shape_matched,
             request_image_sha256=image_digest,
             thumbnail_visible_before_submit=thumbnail_visible,
             attachment_retained_after_submit=attachment_retained,

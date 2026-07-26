@@ -13,7 +13,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 _ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 _COLORS: dict[str, tuple[int, int, int]] = {
-    "amber": (245, 158, 11),
+    "orange": (245, 158, 11),
     "cyan": (6, 182, 212),
     "magenta": (217, 70, 239),
     "lime": (132, 204, 22),
@@ -56,19 +56,26 @@ class VisionFixture:
         return (
             "Inspect the attached qualification card. Reply with the large "
             "six-character code, then the colored shape as '<color> <shape>'. "
-            "Choose the color name from amber, cyan, magenta, or lime, and the "
+            "Choose the color name from orange, cyan, magenta, or lime, and the "
             "shape name from circle, diamond, or triangle."
         )
 
     def response_matches(self, response: str) -> tuple[bool, bool]:
         """Check the exact code and visual attribute without a judge model."""
 
+        code_matched, color_matched, shape_matched = self.response_match_details(
+            response
+        )
+        return code_matched, color_matched and shape_matched
+
+    def response_match_details(self, response: str) -> tuple[bool, bool, bool]:
+        """Check the code, color, and shape independently."""
+
         normalized = " ".join(response.upper().replace("-", " ").split())
         code_matched = self.code in normalized
-        attribute_matched = (
-            self.color.upper() in normalized and self.shape.upper() in normalized
-        )
-        return code_matched, attribute_matched
+        color_matched = self.color.upper() in normalized
+        shape_matched = self.shape.upper() in normalized
+        return code_matched, color_matched, shape_matched
 
     def write(self, path: Path) -> None:
         """Persist the private fixture for later inspection."""

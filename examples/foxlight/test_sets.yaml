@@ -957,7 +957,7 @@ test_sets:
         system: Report only evidence visible in the supplied image.
         prompt: >-
           Read the large six-character code. Then name the colored shape.
-          Choose the color from amber, cyan, magenta, or lime, and the shape
+          Choose the color from orange, cyan, magenta, or lime, and the shape
           from circle, diamond, or triangle. Answer exactly: CODE; COLOR SHAPE.
         max_tokens: 320
         temperature: 0
@@ -987,7 +987,7 @@ test_sets:
           - mlx-community/gemma-3n-E2B-it-4bit
         prompt: >-
           What is the large six-character code? What color and shape are below
-          it? Choose the color from amber, cyan, magenta, or lime, and the shape
+          it? Choose the color from orange, cyan, magenta, or lime, and the shape
           from circle, diamond, or triangle. Answer exactly: CODE; COLOR SHAPE.
         max_tokens: 192
         temperature: 0
@@ -1017,7 +1017,7 @@ test_sets:
           - mlx-community/gemma-4-e2b-it-8bit
         prompt: >-
           Transcribe the large code and describe the colored shape below it.
-          Choose the color from amber, cyan, magenta, or lime, and the shape
+          Choose the color from orange, cyan, magenta, or lime, and the shape
           from circle, diamond, or triangle. Answer exactly: CODE; COLOR SHAPE.
         # This small checkpoint emits a verbose analysis before the visible
         # answer even with thinking disabled; leave room for all three facts.
@@ -1053,7 +1053,7 @@ test_sets:
         kind: chat
         prompt: >-
           Read the large code and describe the colored shape. Choose the color
-          from amber, cyan, magenta, or lime, and the shape from circle,
+          from orange, cyan, magenta, or lime, and the shape from circle,
           diamond, or triangle. Include the code, color, and shape in one short
           sentence.
         max_tokens: 320
@@ -1088,7 +1088,7 @@ test_sets:
         kind: chat
         prompt: >-
           What large code, color, and shape are visible?
-          Choose the color from amber, cyan, magenta, or lime, and the shape
+          Choose the color from orange, cyan, magenta, or lime, and the shape
           from circle, diamond, or triangle.
           Answer exactly: CODE; COLOR; SHAPE.
         max_tokens: 192
@@ -1124,7 +1124,7 @@ test_sets:
         system: You are a careful vision assistant.
         prompt: >-
           Read the large six-character code. Then name the colored shape.
-          Choose the color from amber, cyan, magenta, or lime, and the shape
+          Choose the color from orange, cyan, magenta, or lime, and the shape
           from circle, diamond, or triangle. Answer exactly: CODE; COLOR SHAPE.
         max_tokens: 128
         temperature: 0
