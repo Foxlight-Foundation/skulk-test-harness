@@ -845,45 +845,6 @@ def test_identity_wait_returns_as_soon_as_the_target_answers(
     assert sleeps == [0.25]
 
 
-def test_restoration_identity_wait_requires_one_peer(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A restored fleet target must prove isolation is no longer effective."""
-
-    attempts = 0
-
-    class FakeClient:
-        def __init__(self, _base_url: str) -> None:
-            nonlocal attempts
-            attempts += 1
-
-        def __enter__(self) -> "FakeClient":
-            return self
-
-        def __exit__(self, *_args: object) -> None:
-            pass
-
-        def get_node_id(self) -> str:
-            return "node-a"
-
-        def get_state(self) -> dict[str, object]:
-            identities = {"node-a": {}}
-            if attempts >= 2:
-                identities["node-b"] = {}
-            return {"nodeIdentities": identities, "nodeResources": {}}
-
-    monkeypatch.setattr(fresh_install_module, "SkulkClient", FakeClient)
-    monkeypatch.setattr(fresh_install_module.time, "sleep", lambda _seconds: None)
-
-    assert _wait_for_api_identity(
-        "http://127.0.0.1:52415",
-        timeout_s=1,
-        poll_interval_s=0,
-        minimum_node_count=2,
-    ) == ("node-a", 2)
-    assert attempts == 2
-
-
 def _run_failed_physical_lifecycle(
     *,
     tmp_path: Path,

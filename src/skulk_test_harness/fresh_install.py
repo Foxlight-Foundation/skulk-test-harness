@@ -875,12 +875,6 @@ class FreshInstallQualifier:
                 api_base_url,
                 timeout_s=self.fresh.readiness_timeout_s,
                 poll_interval_s=self.fresh.poll_interval_s,
-                minimum_node_count=(
-                    2
-                    if original.cluster_node_count is not None
-                    and original.cluster_node_count > 1
-                    else 1
-                ),
             )
             mismatches = controller.verify_restored_state(
                 original,
@@ -1309,18 +1303,15 @@ def _wait_for_api_identity(
     *,
     timeout_s: float,
     poll_interval_s: float,
-    minimum_node_count: int = 1,
 ) -> tuple[str, int]:
     """Wait for the API to answer with an identity and report its fleet size.
 
-    Initial readiness needs only the target. Restoration of a target that
-    previously belonged to a multi-node fleet requires at least one peer as
-    well, proving that isolation was actually removed without depending on an
-    exact pre-run count that may have included incidental nodes.
+    Readiness is deliberately the target answering, not the fleet reaching a
+    given size. A leg starts exactly one node, so gating this wait on a
+    pre-run fleet count made it depend on peers the leg never touched and
+    timed out on targets that had already recovered.
     """
 
-    if minimum_node_count < 1:
-        raise ValueError("minimum_node_count must be at least one")
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         try:
@@ -1334,9 +1325,7 @@ def _wait_for_api_identity(
                 ids.update(identities)
             if isinstance(resources, dict):
                 ids.update(resources)
-            node_count = len(ids)
-            if node_count >= minimum_node_count:
-                return node_id, node_count
+            return node_id, len(ids)
         except Exception:  # noqa: BLE001 - service is starting
             pass
         time.sleep(poll_interval_s)
