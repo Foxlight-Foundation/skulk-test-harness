@@ -275,8 +275,10 @@ def test_direct_text_check_matches_dashboard_thinking_default(
                 {
                     "role": "user",
                     "content": (
-                        "Write one friendly sentence that includes this place "
-                        "name and room number: Amber Harbor, room 4821."
+                        "Write one short, friendly welcome sentence for a hotel "
+                        "guest. The hotel is named Amber Harbor, and the guest's "
+                        "room number is 4821. Mention both Amber Harbor and room "
+                        "4821 in your sentence."
                     ),
                 }
             ],
@@ -2135,7 +2137,10 @@ def test_echo_phrase_does_not_look_like_a_credential() -> None:
         assert not re.search(r"token|key|secret|code", phrase, re.IGNORECASE)
 
     prompt = echo_prompt("amber harbor 1234")
-    assert prompt.endswith("Amber Harbor, room 1234.")
+    assert "hotel guest" in prompt
+    assert "hotel is named Amber Harbor" in prompt
+    assert "room number is 1234" in prompt
+    assert prompt.endswith("Mention both Amber Harbor and room 1234 in your sentence.")
     assert "token" not in prompt.lower()
     assert "exactly" not in prompt.lower()
     assert "say nothing else" not in prompt.lower()
