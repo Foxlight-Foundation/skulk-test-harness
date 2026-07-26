@@ -65,6 +65,11 @@ fresh_install:
         - replace-with-existing-skulk-yaml
       expected_backends: [llama_server, llama_server-vulkan]
       expected_data_transport: zenoh
+      served_engine_contract:
+        backend: llama_server-vulkan
+        parallel: 16
+        kv_unified: true
+        probe_concurrency: 4
       vision_contract: unavailable
       text_models:
         - unsloth/Llama-3.2-1B-Instruct-GGUF
@@ -77,6 +82,11 @@ fresh_install:
       exclusion_reason: replace credentials and enable deliberately
       expected_backends: [llama_server, llama_server-cuda]
       expected_data_transport: zenoh
+      served_engine_contract:
+        backend: llama_server-cuda
+        parallel: 16
+        kv_unified: true
+        probe_concurrency: 4
       vision_contract: unavailable
       text_models:
         - unsloth/Llama-3.2-1B-Instruct-GGUF

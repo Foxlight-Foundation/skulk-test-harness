@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import re
 import shlex
@@ -19,7 +20,12 @@ from typing import BinaryIO, Literal
 
 import httpx
 
-from skulk_test_harness.client import SkulkApiError, SkulkClient
+from skulk_test_harness.client import (
+    SkulkApiError,
+    SkulkClient,
+    concurrent_benchmark_client,
+    stream_chat_async,
+)
 from skulk_test_harness.dashboard_qualification import DashboardQualifier
 from skulk_test_harness.fleet_lock import FleetLockStore
 from skulk_test_harness.lease_heartbeat import (
@@ -34,6 +40,8 @@ from skulk_test_harness.models import (
     HarnessConfig,
     InstallProvenance,
     Issue,
+    ServedEngineContract,
+    ServedEngineEvidence,
 )
 from skulk_test_harness.qualification_checks import (
     assert_fresh_runtime_contract,
@@ -684,6 +692,8 @@ class FreshInstallQualifier:
 
             self._qualify_models(
                 api_base_url=api_base_url,
+                controller=controller,
+                installation_root=temporary_root,
                 target=target,
                 report=report,
                 journal=journal,
@@ -715,6 +725,8 @@ class FreshInstallQualifier:
         self,
         *,
         api_base_url: str,
+        controller: SshTargetController,
+        installation_root: str,
         target: FreshInstallTarget,
         report: FreshInstallQualificationReport,
         journal: _LifecycleJournal,
@@ -785,6 +797,34 @@ class FreshInstallQualifier:
                         )
                         _check_heartbeat(heartbeat)
 
+                if target.served_engine_contract is not None:
+                    with journal.stage(
+                        f"served engine runtime contract: {model_id}"
+                    ):
+                        evidence = _qualify_served_engine(
+                            controller=controller,
+                            installation_root=installation_root,
+                            api_base_url=api_base_url,
+                            model_id=model_id,
+                            contract=target.served_engine_contract,
+                            request_timeout_s=self.config.request_timeout_s,
+                            stream_read_timeout_s=self.config.stream_read_timeout_s,
+                        )
+                        report.served_engines.append(evidence)
+                        journal.persist()
+                        if not evidence.passed:
+                            raise RuntimeError(
+                                "fresh served-engine contract failed for "
+                                f"{model_id}: expected --parallel "
+                                f"{evidence.expected_parallel}, observed "
+                                f"{evidence.observed_parallel}; expected "
+                                f"kv-unified={evidence.kv_unified_required}, "
+                                f"observed={evidence.kv_unified_observed}; "
+                                "maximum live concurrency "
+                                f"{evidence.maximum_observed_active}"
+                            )
+                        _check_heartbeat(heartbeat)
+
                 with journal.stage(f"direct API parity: {model_id}"):
                     text_outcome = qualify_direct_text(
                         client,
@@ -853,6 +893,12 @@ class FreshInstallQualifier:
                 api_base_url,
                 timeout_s=self.fresh.readiness_timeout_s,
                 poll_interval_s=self.fresh.poll_interval_s,
+                minimum_node_count=(
+                    2
+                    if original.cluster_node_count is not None
+                    and original.cluster_node_count > 1
+                    else 1
+                ),
             )
             mismatches = controller.verify_restored_state(
                 original,
@@ -889,6 +935,200 @@ class FreshInstallQualifier:
                     )
                 )
         return True
+
+
+def _qualify_served_engine(
+    *,
+    controller: SshTargetController,
+    installation_root: str,
+    api_base_url: str,
+    model_id: str,
+    contract: ServedEngineContract,
+    request_timeout_s: float,
+    stream_read_timeout_s: float,
+) -> ServedEngineEvidence:
+    """Verify effective served-engine flags, overlap, and post-load survival."""
+
+    before = controller.run("ps -axo command=", timeout_s=30).stdout
+    observed_parallel, kv_unified_observed = _llama_server_process_contract(
+        before,
+        installation_root=installation_root,
+    )
+    _run_served_engine_overlap_probe(
+        api_base_url=api_base_url,
+        model_id=model_id,
+        concurrency=contract.probe_concurrency,
+        request_timeout_s=request_timeout_s,
+        stream_read_timeout_s=stream_read_timeout_s,
+    )
+    maximum_observed_active, batching_reported = _served_engine_envelope(
+        api_base_url=api_base_url,
+        model_id=model_id,
+        backend=contract.backend,
+        request_timeout_s=request_timeout_s,
+    )
+    after = controller.run("ps -axo command=", timeout_s=30).stdout
+    after_parallel, after_kv_unified = _llama_server_process_contract(
+        after,
+        installation_root=installation_root,
+    )
+    runner_survived = (
+        after_parallel == observed_parallel
+        and after_kv_unified == kv_unified_observed
+    )
+    passed = (
+        observed_parallel == contract.parallel
+        and kv_unified_observed == contract.kv_unified
+        and maximum_observed_active >= 2
+        and batching_reported
+        and runner_survived
+    )
+    return ServedEngineEvidence(
+        model_id=model_id,
+        backend=contract.backend,
+        expected_parallel=contract.parallel,
+        observed_parallel=observed_parallel,
+        kv_unified_required=contract.kv_unified,
+        kv_unified_observed=kv_unified_observed,
+        probe_concurrency=contract.probe_concurrency,
+        maximum_observed_active=maximum_observed_active,
+        batching_reported=batching_reported,
+        runner_survived=runner_survived,
+        passed=passed,
+    )
+
+
+def _llama_server_process_contract(
+    process_listing: str,
+    *,
+    installation_root: str,
+) -> tuple[int, bool]:
+    """Return effective parallel slots and unified-KV state from one child."""
+
+    candidates: list[list[str]] = []
+    for line in process_listing.splitlines():
+        if installation_root not in line:
+            continue
+        try:
+            arguments = shlex.split(line)
+        except ValueError:
+            continue
+        if any(Path(argument).name == "llama-server" for argument in arguments):
+            candidates.append(arguments)
+    if len(candidates) != 1:
+        raise RuntimeError(
+            "expected exactly one fresh llama-server child, observed "
+            f"{len(candidates)}"
+        )
+    arguments = candidates[0]
+    parallel: int | None = None
+    for index, argument in enumerate(arguments):
+        if argument == "--parallel" and index + 1 < len(arguments):
+            try:
+                parallel = int(arguments[index + 1])
+            except ValueError as exception:
+                raise RuntimeError(
+                    "fresh llama-server --parallel value was not an integer"
+                ) from exception
+        elif argument.startswith("--parallel="):
+            try:
+                parallel = int(argument.partition("=")[2])
+            except ValueError as exception:
+                raise RuntimeError(
+                    "fresh llama-server --parallel value was not an integer"
+                ) from exception
+    if parallel is None:
+        raise RuntimeError("fresh llama-server child omitted --parallel")
+    return parallel, "--kv-unified" in arguments
+
+
+def _run_served_engine_overlap_probe(
+    *,
+    api_base_url: str,
+    model_id: str,
+    concurrency: int,
+    request_timeout_s: float,
+    stream_read_timeout_s: float,
+) -> None:
+    """Drive a bounded simultaneous burst through the ordinary chat endpoint."""
+
+    async def run() -> None:
+        async with concurrent_benchmark_client(
+            api_base_url,
+            concurrency=concurrency,
+        ) as client:
+            executions = await asyncio.gather(
+                *(
+                    stream_chat_async(
+                        client,
+                        model_id=model_id,
+                        messages=[
+                            {
+                                "role": "user",
+                                "content": (
+                                    "Write the lowercase letter x exactly 96 "
+                                    "times. Do not add spaces or commentary."
+                                ),
+                            }
+                        ],
+                        max_tokens=128,
+                        temperature=0.0,
+                        top_p=1.0,
+                        request_timeout_s=request_timeout_s,
+                        stream_read_timeout_s=stream_read_timeout_s,
+                    )
+                    for _ in range(concurrency)
+                )
+            )
+        if any(not execution.text.strip() for execution in executions):
+            raise RuntimeError("served-engine overlap probe returned an empty response")
+
+    asyncio.run(run())
+
+
+def _served_engine_envelope(
+    *,
+    api_base_url: str,
+    model_id: str,
+    backend: str,
+    request_timeout_s: float,
+) -> tuple[int, bool]:
+    """Return maximum observed live concurrency and batching truth."""
+
+    response = httpx.get(
+        api_base_url.rstrip("/") + "/v1/diagnostics/performance-envelopes",
+        timeout=request_timeout_s,
+    )
+    response.raise_for_status()
+    body = response.json()
+    if not isinstance(body, dict):
+        raise RuntimeError("performance-envelope endpoint returned a non-object")
+    raw_envelopes = body.get("envelopes")
+    if not isinstance(raw_envelopes, list):
+        raise RuntimeError("performance-envelope endpoint omitted envelopes")
+    maximum = 0
+    batches = False
+    for raw_envelope in raw_envelopes:
+        if not isinstance(raw_envelope, dict):
+            continue
+        envelope_model = raw_envelope.get(
+            "modelId",
+            raw_envelope.get("model_id"),
+        )
+        envelope_backend = raw_envelope.get("backend")
+        if envelope_model != model_id or envelope_backend != backend:
+            continue
+        batches = batches or raw_envelope.get("batches") is True
+        raw_buckets = raw_envelope.get("buckets")
+        if not isinstance(raw_buckets, list):
+            continue
+        for raw_bucket in raw_buckets:
+            if not isinstance(raw_bucket, dict):
+                continue
+            concurrency = raw_bucket.get("concurrency")
+            if isinstance(concurrency, int) and not isinstance(concurrency, bool):
+                maximum = max(maximum, concurrency)
+    return maximum, batches
 
 
 def _blocking_issues(report: FreshInstallQualificationReport) -> list[Issue]:
@@ -1052,15 +1292,18 @@ def _wait_for_api_identity(
     *,
     timeout_s: float,
     poll_interval_s: float,
+    minimum_node_count: int = 1,
 ) -> tuple[str, int]:
     """Wait for the API to answer with an identity and report its fleet size.
 
-    Readiness is deliberately the target answering, not the fleet reaching a
-    given size. A leg starts exactly one node, so gating this wait on a
-    pre-run fleet count made it depend on peers the leg never touched and
-    timed out on targets that had already recovered.
+    Initial readiness needs only the target. Restoration of a target that
+    previously belonged to a multi-node fleet requires at least one peer as
+    well, proving that isolation was actually removed without depending on an
+    exact pre-run count that may have included incidental nodes.
     """
 
+    if minimum_node_count < 1:
+        raise ValueError("minimum_node_count must be at least one")
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         try:
@@ -1074,7 +1317,9 @@ def _wait_for_api_identity(
                 ids.update(identities)
             if isinstance(resources, dict):
                 ids.update(resources)
-            return node_id, len(ids)
+            node_count = len(ids)
+            if node_count >= minimum_node_count:
+                return node_id, node_count
         except Exception:  # noqa: BLE001 - service is starting
             pass
         time.sleep(poll_interval_s)
