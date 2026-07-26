@@ -14,6 +14,12 @@ triggered the same kind of refusal even with ordinary words. The check only
 needs unpredictable terms to survive the whole request and response path, so a
 benign creative-writing task proves that without asking the model to reproduce
 credential-like or extracted text.
+
+The task also has to be concrete. Asking for merely "one friendly sentence"
+left a 1B instruct model unsure what kind of sentence was wanted, so it asked a
+clarifying question despite receiving and rendering the request correctly. A
+short hotel-welcome scenario gives even a small model enough intent to answer
+while preserving the same randomized response proof.
 """
 
 from __future__ import annotations
@@ -36,12 +42,6 @@ _ECHO_WORDS = (
     "beacon",
 )
 
-ECHO_INSTRUCTION = (
-    "Write one friendly sentence that includes this place name and room "
-    "number: "
-)
-
-
 def echo_phrase() -> str:
     """Return a benign, unpredictable phrase for an echo assertion.
 
@@ -55,11 +55,14 @@ def echo_phrase() -> str:
 
 
 def echo_prompt(phrase: str) -> str:
-    """Return a natural writing task containing every randomized item."""
+    """Return a concrete, natural writing task containing every random item."""
 
     first, second, room = phrase.split()
     return (
-        f"{ECHO_INSTRUCTION}{first.title()} {second.title()}, room {room}."
+        "Write one short, friendly welcome sentence for a hotel guest. "
+        f"The hotel is named {first.title()} {second.title()}, and the guest's "
+        f"room number is {room}. Mention both {first.title()} {second.title()} "
+        f"and room {room} in your sentence."
     )
 
 
