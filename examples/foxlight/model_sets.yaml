@@ -251,14 +251,15 @@ model_sets:
     name: gguf-big
     description: >-
       Large GGUF models that exceed Mac-mini VRAM and run on the 128GB AMD node
-      (kite4) via llama.cpp -- the capacity half of the heterogeneous story (a
-      class of models the minis cannot hold at all, independent of engine). Pair
-      with the llama-cpp test set. Single-node llama.cpp; placement routes here by
-      the GGUF cards' llama.cpp compatible_backends.
+      (kite4) through the shipped text-only llama-server path -- the capacity
+      half of the heterogeneous story (a class of models the minis cannot hold
+      at all, independent of engine). Pair with the llama-cpp test set. Vision
+      GGUFs are intentionally excluded: Skulk must refuse those cards until the
+      served runner supports their projector rather than silently serve them as
+      text-only models.
     models:
       - Qwen/Qwen2.5-7B-Instruct-GGUF
       - unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF
-      - unsloth/gemma-4-31B-it-GGUF
       - bartowski/Llama-3.3-70B-Instruct-GGUF
       - bartowski/openai_gpt-oss-120b-GGUF
 
