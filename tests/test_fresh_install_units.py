@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import dataclasses
+import io
 import json
 import os
 import re
@@ -19,6 +20,7 @@ from typing import BinaryIO, cast
 
 import httpx
 import pytest
+from PIL import Image
 from playwright.sync_api import Page
 from pydantic import ValidationError
 
@@ -180,6 +182,35 @@ def test_random_vision_fixture_has_exact_judge_free_contract(tmp_path: Path) -> 
     path = tmp_path / "fixture.png"
     first.write(path)
     assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_circle_fixture_is_geometrically_circular(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A model must not be penalized for calling a stretched circle an oval."""
+
+    def choose_fixture_value(options: str | tuple[str, ...]) -> str:
+        if isinstance(options, tuple) and "circle" in options:
+            return "circle"
+        if isinstance(options, tuple) and "amber" in options:
+            return "amber"
+        return options[0]
+
+    monkeypatch.setattr(
+        "skulk_test_harness.vision_fixture.secrets.choice",
+        choose_fixture_value,
+    )
+    fixture = generate_vision_fixture()
+    image = Image.open(io.BytesIO(fixture.png)).convert("RGB")
+    amber_pixels = Image.new("1", image.size)
+    amber_pixels.putdata(
+        [pixel == (245, 158, 11) for pixel in image.get_flattened_data()]
+    )
+    bounds = amber_pixels.getbbox()
+
+    assert fixture.shape == "circle"
+    assert bounds is not None
+    assert bounds[2] - bounds[0] == bounds[3] - bounds[1]
 
 
 def test_captured_dashboard_request_must_contain_exact_fixture() -> None:

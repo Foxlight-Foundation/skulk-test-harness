@@ -156,26 +156,26 @@ def _draw_shape(
 
     outline = (15, 23, 42)
     if shape == "circle":
-        draw.ellipse((350, 280, 550, 440), fill=color, outline=outline, width=7)
+        draw.ellipse((370, 270, 530, 430), fill=color, outline=outline, width=7)
     elif shape == "diamond":
         draw.polygon(
-            ((450, 270), (570, 360), (450, 450), (330, 360)),
+            ((450, 270), (530, 350), (450, 430), (370, 350)),
             fill=color,
             outline=outline,
         )
         draw.line(
-            ((450, 270), (570, 360), (450, 450), (330, 360), (450, 270)),
+            ((450, 270), (530, 350), (450, 430), (370, 350), (450, 270)),
             fill=outline,
             width=7,
         )
     else:
         draw.polygon(
-            ((450, 270), (570, 440), (330, 440)),
+            ((450, 270), (542, 430), (358, 430)),
             fill=color,
             outline=outline,
         )
         draw.line(
-            ((450, 270), (570, 440), (330, 440), (450, 270)),
+            ((450, 270), (542, 430), (358, 430), (450, 270)),
             fill=outline,
             width=7,
         )
