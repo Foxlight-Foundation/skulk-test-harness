@@ -1552,6 +1552,7 @@ class VisionFixtureEvidence(HarnessBaseModel):
     response_matched_attribute: bool
     response_matched_color: bool | None = None
     response_matched_shape: bool | None = None
+    response_excerpt: str | None = None
     request_image_sha256: str | None = None
     thumbnail_visible_before_submit: bool | None = None
     attachment_retained_after_submit: bool | None = None

@@ -150,7 +150,11 @@ def qualify_direct_vision(
                 ],
             }
         ],
-        max_tokens=128,
+        # Small vision models often explain each observed element before
+        # giving the requested compact answer. A 128-token cap can stop after
+        # the code and shape but before the color, turning successful image
+        # understanding into a false gate failure.
+        max_tokens=512,
         temperature=0.0,
         top_p=1.0,
         enable_thinking=enable_thinking,
@@ -169,6 +173,9 @@ def qualify_direct_vision(
         response_matched_attribute=attribute_matched,
         response_matched_color=color_matched,
         response_matched_shape=shape_matched,
+        response_excerpt=execution.text.replace(
+            fixture.code, "<hidden-code>"
+        ).strip()[:400],
         request_image_sha256=fixture.sha256,
         passed=code_matched and attribute_matched,
     )
