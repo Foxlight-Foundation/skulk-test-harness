@@ -13,10 +13,10 @@ from PIL import Image, ImageDraw, ImageFont
 
 _ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 _COLORS: dict[str, tuple[int, int, int]] = {
-    "orange": (245, 158, 11),
-    "cyan": (6, 182, 212),
-    "magenta": (217, 70, 239),
-    "lime": (132, 204, 22),
+    "red": (220, 0, 0),
+    "blue": (0, 80, 220),
+    "green": (0, 170, 0),
+    "orange": (255, 128, 0),
 }
 _SHAPES = ("circle", "diamond", "triangle")
 
@@ -56,7 +56,7 @@ class VisionFixture:
         return (
             "Inspect the attached qualification card. Reply with the large "
             "six-character code, then the colored shape as '<color> <shape>'. "
-            "Choose the color name from orange, cyan, magenta, or lime, and the "
+            "Choose the color name from red, blue, green, or orange, and the "
             "shape name from circle, diamond, or triangle."
         )
 
