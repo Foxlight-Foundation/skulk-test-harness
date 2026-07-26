@@ -40,6 +40,7 @@ from skulk_test_harness.models import (
     HarnessConfig,
     InstallProvenance,
     Issue,
+    RunPodFreshInstallConfig,
     ServedEngineContract,
     ServedEngineEvidence,
 )
@@ -49,7 +50,7 @@ from skulk_test_harness.qualification_checks import (
     qualify_direct_vision,
 )
 from skulk_test_harness.reporting import ReportWriter
-from skulk_test_harness.runpod import RunPodClient
+from skulk_test_harness.runpod import RunPodClient, RunPodSshEndpoint
 from skulk_test_harness.target_control import (
     OriginalTargetState,
     RecoverySnapshot,
@@ -468,29 +469,10 @@ class FreshInstallQualifier:
                 deadline_timer.daemon = True
                 deadline_timer.start()
                 endpoint = runpod.wait_for_ssh(pod_id)
-            ephemeral_target = FreshInstallTarget(
-                kind="physical",
-                platform="nvidia",
-                hardware_class=target.hardware_class,
-                eligible=True,
-                ssh_host=endpoint.host,
-                ssh_user="root",
-                ssh_port=endpoint.port,
-                ssh_identity_file=self.fresh.runpod.ssh_private_key_file,
-                # The pod generates its host key at boot, so there is nothing to
-                # have pinned in advance. Inventory hardware never gets this.
-                accept_unknown_host_key=True,
-                service_manager="command",
-                service_stop_command="true",
-                service_start_command="true",
-                isolation_enter_command="true",
-                isolation_exit_command="true",
-                expected_backends=target.expected_backends,
-                expected_data_transport=target.expected_data_transport,
-                vision_contract=target.vision_contract,
-                dashboard_contract=target.dashboard_contract,
-                text_models=target.text_models,
-                vision_models=target.vision_models,
+            ephemeral_target = _runpod_ephemeral_target(
+                target=target,
+                runpod_config=self.fresh.runpod,
+                endpoint=endpoint,
             )
             controller = SshTargetController(ephemeral_target)
             local_port, tunnel = controller.open_tunnel(
@@ -935,6 +917,41 @@ class FreshInstallQualifier:
                     )
                 )
         return True
+
+
+def _runpod_ephemeral_target(
+    *,
+    target: FreshInstallTarget,
+    runpod_config: RunPodFreshInstallConfig,
+    endpoint: RunPodSshEndpoint,
+) -> FreshInstallTarget:
+    """Convert one declared RunPod contract into its ephemeral SSH target."""
+
+    return FreshInstallTarget(
+        kind="physical",
+        platform="nvidia",
+        hardware_class=target.hardware_class,
+        eligible=True,
+        ssh_host=endpoint.host,
+        ssh_user="root",
+        ssh_port=endpoint.port,
+        ssh_identity_file=runpod_config.ssh_private_key_file,
+        # The pod generates its host key at boot, so there is nothing to have
+        # pinned in advance. Inventory hardware never gets this exception.
+        accept_unknown_host_key=True,
+        service_manager="command",
+        service_stop_command="true",
+        service_start_command="true",
+        isolation_enter_command="true",
+        isolation_exit_command="true",
+        expected_backends=target.expected_backends,
+        expected_data_transport=target.expected_data_transport,
+        served_engine_contract=target.served_engine_contract,
+        vision_contract=target.vision_contract,
+        dashboard_contract=target.dashboard_contract,
+        text_models=target.text_models,
+        vision_models=target.vision_models,
+    )
 
 
 def _qualify_served_engine(

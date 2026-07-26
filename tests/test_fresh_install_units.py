@@ -46,6 +46,7 @@ from skulk_test_harness.fresh_install import (
     _llama_server_process_contract,  # pyright: ignore[reportPrivateUsage]
     _provision_model_over_api,  # pyright: ignore[reportPrivateUsage]
     _run_remote_logged_command,  # pyright: ignore[reportPrivateUsage]
+    _runpod_ephemeral_target,  # pyright: ignore[reportPrivateUsage]
     _self_safe_process_pattern,  # pyright: ignore[reportPrivateUsage]
     _served_engine_envelope,  # pyright: ignore[reportPrivateUsage]
     _wait_for_api_identity,  # pyright: ignore[reportPrivateUsage]
@@ -75,7 +76,7 @@ from skulk_test_harness.qualification_checks import (
 from skulk_test_harness.reporting import (
     _fresh_install_markdown,  # pyright: ignore[reportPrivateUsage]
 )
-from skulk_test_harness.runpod import RunPodClient
+from skulk_test_harness.runpod import RunPodClient, RunPodSshEndpoint
 from skulk_test_harness.target_control import (
     OriginalTargetState,
     RecoverySnapshot,
@@ -1118,6 +1119,43 @@ def test_runpod_is_clean_cost_bounded_and_teardown_is_confirmed(
 
     assert lease.hourly_cost_usd == 1.25
     assert deleted == ["/v1/pods/pod-1"]
+
+
+def test_runpod_ephemeral_target_preserves_served_engine_contract(
+    tmp_path: Path,
+) -> None:
+    contract = ServedEngineContract(
+        backend="llama_server-cuda",
+        parallel=16,
+        kv_unified=True,
+        probe_concurrency=4,
+    )
+    target = FreshInstallTarget(
+        kind="runpod",
+        platform="nvidia",
+        hardware_class="nvidia-cuda",
+        eligible=True,
+        expected_backends=["llama_server", "llama_server-cuda"],
+        served_engine_contract=contract,
+        vision_contract="unavailable",
+        text_models=["unsloth/Llama-3.2-1B-Instruct-GGUF"],
+    )
+    runpod_config = RunPodFreshInstallConfig(
+        ssh_public_key_file=tmp_path / "id.pub",
+        ssh_private_key_file=tmp_path / "id",
+        image_name="nvidia/cuda-node-neutral",
+        gpu_type_ids=["NVIDIA L4"],
+    )
+
+    ephemeral = _runpod_ephemeral_target(
+        target=target,
+        runpod_config=runpod_config,
+        endpoint=RunPodSshEndpoint(host="203.0.113.10", port=22198),
+    )
+
+    assert ephemeral.served_engine_contract == contract
+    assert ephemeral.expected_backends == target.expected_backends
+    assert ephemeral.text_models == target.text_models
 
 
 def test_runpod_rejects_over_ceiling_pod_only_after_confirmed_deletion(
