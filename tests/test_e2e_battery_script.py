@@ -72,14 +72,14 @@ def test_mlx_concurrency_cells_stop_at_runtime_cap(script_name: str) -> None:
         if line.strip().startswith("cell concurrency-")
     ]
 
-    assert ["cell", "concurrency-mlx", "concurrency-16"] in cells
+    assert ["cell", "concurrency-mlx", "concurrency-8"] in cells
     assert [
         "cell",
         "concurrency-mlx-reasoning",
-        "concurrency-reasoning-16",
+        "concurrency-reasoning-8",
     ] in cells
     assert any(
-        cell[:3] == ["cell", "concurrency-mlx-multinode", "concurrency-16"]
+        cell[:3] == ["cell", "concurrency-mlx-multinode", "concurrency-8"]
         for cell in cells
     )
     assert ["cell", "concurrency-gguf", "concurrency"] in cells
@@ -96,6 +96,11 @@ def test_mlx_concurrency_cells_stop_at_runtime_cap(script_name: str) -> None:
             test.concurrency for test in test_sets.test_sets[suite_name].tests
         ]
         assert levels == [1, 4, 8, 16]
+    for suite_name in ("concurrency-8", "concurrency-reasoning-8"):
+        levels = [
+            test.concurrency for test in test_sets.test_sets[suite_name].tests
+        ]
+        assert levels == [1, 4, 8]
     for suite_name in ("concurrency", "concurrency-reasoning"):
         levels = [
             test.concurrency for test in test_sets.test_sets[suite_name].tests
@@ -103,12 +108,16 @@ def test_mlx_concurrency_cells_stop_at_runtime_cap(script_name: str) -> None:
         assert levels == [1, 4, 8, 16, 32, 64]
     assert all(
         test.success.min_chars == 1 and test.success.min_generated_chars == 500
-        for suite_name in ("concurrency-16", "concurrency")
+        for suite_name in ("concurrency-8", "concurrency-16", "concurrency")
         for test in test_sets.test_sets[suite_name].tests
     )
     assert all(
         test.max_tokens == 1536 and test.success.min_chars == 500
-        for suite_name in ("concurrency-reasoning-16", "concurrency-reasoning")
+        for suite_name in (
+            "concurrency-reasoning-8",
+            "concurrency-reasoning-16",
+            "concurrency-reasoning",
+        )
         for test in test_sets.test_sets[suite_name].tests
     )
 

@@ -111,18 +111,19 @@ cell mtp-served-9b    mtp-correctness  "--exclude-nodes kite4 --delete-staged-mo
 # --- Throughput-vs-concurrency sweep (non-MTP text) --------------------------
 # The concurrency leg: same cells as run_concurrency_battery.sh, folded into the
 # e2e so every run traces the throughput-vs-concurrency curve per model x engine
-# x hardware, single-rank and multi-rank. MLX stops at the fleet policy
-# SKULK_MAX_CONCURRENT_REQUESTS=16 (the Skulk code default is 8); 32/64 only
-# measure queue latency on that path. The continuously batching GGUF path
-# retains 32/64. Non-toggleable reasoning cards use a larger output
-# budget so the sweep measures completed visible output instead of truncated
-# analysis. A level that saturates (admission refuses) fails its cell, which is
-# the finding, not a flake. Set SKULK_E2E_CONCURRENCY=0 to run the correctness/
-# benchmark battery without this long leg.
+# x hardware, single-rank and multi-rank. MLX stops at Skulk's shipped
+# SKULK_MAX_CONCURRENT_REQUESTS=8 default; testing 16 without an explicit
+# override would measure queue latency and mislabel it as active concurrency.
+# The continuously batching GGUF path retains 32/64. Non-toggleable reasoning
+# cards use a larger output budget so the sweep measures completed visible
+# output instead of truncated analysis. A level that saturates (admission
+# refuses) fails its cell, which is the finding, not a flake. Set
+# SKULK_E2E_CONCURRENCY=0 to run the correctness/benchmark battery without this
+# long leg.
 if [ "${SKULK_E2E_CONCURRENCY:-1}" = "1" ]; then
-  cell concurrency-mlx            concurrency-16
-  cell concurrency-mlx-reasoning  concurrency-reasoning-16
-  cell concurrency-mlx-multinode  concurrency-16  "--sharding Tensor --min-nodes 2"
+  cell concurrency-mlx            concurrency-8
+  cell concurrency-mlx-reasoning  concurrency-reasoning-8
+  cell concurrency-mlx-multinode  concurrency-8  "--sharding Tensor --min-nodes 2"
   cell concurrency-gguf           concurrency
   cell concurrency-120b           concurrency-reasoning
   cell concurrency-gguf-pooled    concurrency-reasoning  "--min-nodes 2 --instance-meta LlamaRpc"

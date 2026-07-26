@@ -12,6 +12,12 @@ as its resolved DATA transport. The battery refuses to exercise a path
 different from the one Skulk ships, but its already-configured fleet still
 cannot substitute for `fresh-install qualify`.
 
+The MLX concurrency cells likewise stop at Skulk's shipped admission width of
+8 when no product override is present. The `concurrency-16` and
+`concurrency-reasoning-16` suites remain available for an explicit operator
+policy, but their 16-way results are invalid unless every eligible MLX node is
+actually launched with `SKULK_MAX_CONCURRENT_REQUESTS=16`.
+
 The scripts assume that specific fleet (its node names, model store contents,
 and hardware mix) and will not run elsewhere unmodified. For your own setup,
 start from the
