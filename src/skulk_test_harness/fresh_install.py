@@ -813,7 +813,8 @@ class FreshInstallQualifier:
                         journal.persist()
                         if not evidence.passed:
                             raise RuntimeError(
-                                f"direct vision API parity failed for {model_id}"
+                                f"direct vision API parity failed for {model_id}; "
+                                f"the model replied: {evidence.response_excerpt!r}"
                             )
                     _check_heartbeat(heartbeat)
 

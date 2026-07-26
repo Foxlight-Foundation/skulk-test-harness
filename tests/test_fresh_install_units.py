@@ -64,7 +64,10 @@ from skulk_test_harness.models import (
     PlacementResult,
     RunPodFreshInstallConfig,
 )
-from skulk_test_harness.qualification_checks import qualify_direct_text
+from skulk_test_harness.qualification_checks import (
+    qualify_direct_text,
+    qualify_direct_vision,
+)
 from skulk_test_harness.runpod import RunPodClient
 from skulk_test_harness.target_control import (
     OriginalTargetState,
@@ -283,6 +286,36 @@ def test_direct_text_check_matches_dashboard_thinking_default(
             "enable_thinking": False,
         }
     ]
+
+
+def test_direct_vision_allows_complete_response_and_redacts_code() -> None:
+    """Verbose VLM output must complete without leaking the hidden code."""
+
+    calls: list[dict[str, object]] = []
+    fixture = generate_vision_fixture()
+
+    class FakeClient:
+        def stream_chat(self, **kwargs: object) -> SimpleNamespace:
+            calls.append(kwargs)
+            return SimpleNamespace(
+                text=(
+                    f"Observed code {fixture.code}; the shape is a "
+                    f"{fixture.color} {fixture.shape}."
+                )
+            )
+
+    evidence = qualify_direct_vision(
+        cast(SkulkClient, FakeClient()),
+        model_id="org/vision-model",
+        fixture=fixture,
+        enable_thinking=False,
+    )
+
+    assert evidence.passed is True
+    assert calls[0]["max_tokens"] == 512
+    assert evidence.response_excerpt is not None
+    assert "<hidden-code>" in evidence.response_excerpt
+    assert fixture.code not in evidence.response_excerpt
 
 
 class _LeaseStore:
