@@ -54,10 +54,10 @@ class VisionFixture:
         """Return a prompt that never embeds the hidden answer."""
 
         return (
-            "Inspect the attached qualification card. Reply with the large "
-            "six-character code, then the colored shape as '<color> <shape>'. "
-            "Choose the color name from red, blue, green, or orange, and the "
-            "shape name from circle, diamond, or triangle."
+            "Read the qualification card. Reply exactly in this format: "
+            "COLOR SHAPE | CODE. Use the pictured color, pictured shape, and "
+            "complete large six-character code. Choose COLOR from red, blue, "
+            "green, or orange, and SHAPE from circle, diamond, or triangle."
         )
 
     def response_matches(self, response: str) -> tuple[bool, bool]:
