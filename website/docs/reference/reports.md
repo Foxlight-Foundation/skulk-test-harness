@@ -93,6 +93,10 @@ headline field still sees the concurrency number.
 | `concurrent_total_requests` | Total requests issued across all workers |
 | `concurrent_succeeded` / `concurrent_failed` | Requests that passed or failed scoring under load |
 | `aggregate_generation_tps` | Total generated tokens across every request that returned tokens (regardless of scoring outcome) divided by the wall span from first request start to last request end |
+| `serving_batches` | Aggregate runner-ground-truth batching verdict when every successful request reported provenance |
+| `concurrent_batching_reported` / `concurrent_batched_requests` | Successful requests that reported batching provenance / specifically reported batched serving |
+| `max_in_flight_at_admission` | Largest runner-reported admission width observed during the test |
+| `aggregate_tps_multiplier_vs_baseline` | Aggregate throughput divided by the configured earlier same-run baseline |
 | `per_request_generation_tps_mean` / `_p50` / `_p90` | Per-request decode-rate distribution under load |
 | `ttft_p50_s` / `ttft_p90_s` | Time-to-first-token distribution under load |
 | `wall_span_s` | Wall-clock span used as the aggregate-throughput denominator |

@@ -699,9 +699,7 @@ def test_streaming_audio_transcription_records_typed_sse_lifecycle(
     client = SkulkClient("http://skulk.test")
     seen: dict[str, object] = {}
     times = iter([100.0, 100.1, 100.2, 100.3, 100.4, 100.5])
-    monkeypatch.setattr(
-        "skulk_test_harness.client.time.monotonic", lambda: next(times)
-    )
+    monkeypatch.setattr("skulk_test_harness.client.time.monotonic", lambda: next(times))
 
     class _Stream:
         status_code = 200
@@ -717,7 +715,7 @@ def test_streaming_audio_transcription_records_typed_sse_lifecycle(
             return b""
 
         def iter_lines(self):
-            yield ': keep-alive'
+            yield ": keep-alive"
             yield 'data: {"type":"transcription.delta","delta":"hello "}'
             yield 'data: {"type":"transcription.delta","delta":"world"}'
             yield 'data: {"type":"transcription.completed","text":"hello world"}'
@@ -883,8 +881,7 @@ def test_fabric_speech_chain_collects_transcript_text_and_audio(
         client.close()
 
     assert connected["url"] == (
-        "wss://skulk.test:52415/v1/fabric/chains/speech"
-        "?stt_model=org%2Frealtime%20stt"
+        "wss://skulk.test:52415/v1/fabric/chains/speech?stt_model=org%2Frealtime%20stt"
     )
     session = json.loads(socket.sent[0])["session"]
     assert session["response"] == {
@@ -1326,9 +1323,7 @@ def test_find_placements_reports_observed_sharding(
                 }
             }
         },
-        "runners": {
-            runner_id: {"RunnerReady": {}} for runner_id in runner_to_shard
-        },
+        "runners": {runner_id: {"RunnerReady": {}} for runner_id in runner_to_shard},
     }
     client = SkulkClient("http://skulk.test")
     monkeypatch.setattr(client, "get_state", lambda: state)
@@ -1352,6 +1347,7 @@ def test_streaming_chat_parses_generation_stats_comment(
         'data: {"choices": [{"delta": {"content": "hello"}}]}',
         ': generation_stats {"prompt_tps": 187.4, "generation_tps": 182.7,'
         ' "prompt_tokens": 17, "generation_tokens": 120,'
+        ' "serving_batches": true, "in_flight_at_admission": 4,'
         ' "peak_memory_usage": {"inBytes": 1}}',
         'data: {"choices": [{"delta": {}, "finish_reason": "stop"}]}',
         "data: [DONE]",
@@ -1373,9 +1369,7 @@ def test_streaming_chat_parses_generation_stats_comment(
             return None
 
     client = SkulkClient("http://skulk.test")
-    monkeypatch.setattr(
-        client._client, "stream", lambda *a, **k: _FakeStreamResponse()
-    )
+    monkeypatch.setattr(client._client, "stream", lambda *a, **k: _FakeStreamResponse())
     try:
         result = client.stream_chat(
             model_id="m/x",
@@ -1392,6 +1386,8 @@ def test_streaming_chat_parses_generation_stats_comment(
     assert result.metrics.skulk_prompt_tps == 187.4
     assert result.metrics.skulk_prompt_tokens == 17
     assert result.metrics.skulk_generation_tokens == 120
+    assert result.metrics.serving_batches is True
+    assert result.metrics.in_flight_at_admission == 4
 
 
 # --- concurrent-benchmark async client: stream-closing servers (#69) ---------
@@ -1447,9 +1443,12 @@ def test_concurrent_benchmark_client_survives_stream_closing_server() -> None:
         server = await asyncio.start_server(handle_connection, "127.0.0.1", 0)
         port = server.sockets[0].getsockname()[1]
         executions: list[ChatExecution] = []
-        async with server, concurrent_benchmark_client(
-            f"http://127.0.0.1:{port}", concurrency=2
-        ) as async_client:
+        async with (
+            server,
+            concurrent_benchmark_client(
+                f"http://127.0.0.1:{port}", concurrency=2
+            ) as async_client,
+        ):
 
             async def worker() -> None:
                 # Two sequential requests per worker: the SECOND is the one

@@ -420,7 +420,9 @@ class FreshInstallConfig(HarnessBaseModel):
 
         heartbeat = self.lease_heartbeat_s or self.lease_ttl_s / 3
         if heartbeat > self.lease_ttl_s / 3:
-            raise ValueError("lease_heartbeat_s must not exceed one third of lease_ttl_s")
+            raise ValueError(
+                "lease_heartbeat_s must not exceed one third of lease_ttl_s"
+            )
         return self
 
     @property
@@ -799,7 +801,7 @@ class PromptImage(HarnessBaseModel):
         default=None,
         description=(
             "Image URL or data URL sent as an OpenAI `image_url` content part."
-        )
+        ),
     )
     input_path: Path | None = Field(
         default=None,
@@ -886,6 +888,29 @@ class PromptTest(HarnessBaseModel):
             "Total requests = `concurrency * concurrent_requests_per_worker`; "
             "raising this sustains the load past a single wave so the engine "
             "reaches steady-state batching instead of a transient burst."
+        ),
+    )
+    require_batched_serving: bool = Field(
+        default=False,
+        description=(
+            "For `kind: concurrent`, require every successful request to report "
+            "runner-ground-truth `serving_batches=true`; widths above one must "
+            "also observe in-flight-at-admission above one."
+        ),
+    )
+    throughput_baseline_test: str | None = Field(
+        default=None,
+        description=(
+            "Earlier concurrent test name for same-run aggregate-throughput "
+            "comparison. The baseline must precede this test in the test set."
+        ),
+    )
+    min_aggregate_tps_multiplier: float | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Minimum aggregate tok/s multiplier over `throughput_baseline_test`. "
+            "Fails flat-throughput serialization even when every request completes."
         ),
     )
     followup_prompt: str | None = Field(
@@ -1166,6 +1191,31 @@ class PromptTest(HarnessBaseModel):
             raise ValueError("PromptTest.model_ids entries must be unique")
         return value
 
+    @model_validator(mode="after")
+    def _validate_concurrency_contract(self) -> "PromptTest":
+        """Require complete, concurrent-only throughput comparison settings."""
+
+        comparison_configured = (
+            self.throughput_baseline_test is not None
+            or self.min_aggregate_tps_multiplier is not None
+        )
+        if (
+            comparison_configured or self.require_batched_serving
+        ) and self.kind != "concurrent":
+            raise ValueError(
+                "batching and throughput contracts require kind='concurrent'"
+            )
+        if (self.throughput_baseline_test is None) != (
+            self.min_aggregate_tps_multiplier is None
+        ):
+            raise ValueError(
+                "throughput_baseline_test and min_aggregate_tps_multiplier "
+                "must be configured together"
+            )
+        if self.throughput_baseline_test == self.name:
+            raise ValueError("a concurrent test cannot use itself as its baseline")
+        return self
+
 
 class TestSet(HarnessBaseModel):
     """Named set of tests that can be run against any compatible model set."""
@@ -1314,6 +1364,19 @@ class GenerationMetrics(HarnessBaseModel):
     skulk_generation_tps: float | None = None
     skulk_prompt_tokens: int | None = None
     skulk_generation_tokens: int | None = None
+    serving_batches: bool | None = Field(
+        default=None,
+        description=(
+            "Runner-ground-truth concurrent-decode mode from Skulk generation stats."
+        ),
+    )
+    in_flight_at_admission: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Runner-ground-truth active request count when this request was admitted."
+        ),
+    )
     word_error_rate: float | None = Field(
         default=None,
         ge=0,
@@ -1349,6 +1412,28 @@ class GenerationMetrics(HarnessBaseModel):
             "the wall span from first request start to last request end. The "
             "headline concurrency number: where a batching engine on a large "
             "GPU pulls away from its single-stream decode rate."
+        ),
+    )
+    concurrent_batching_reported: int | None = Field(
+        default=None,
+        description="Concurrent requests that returned batching provenance.",
+    )
+    concurrent_batched_requests: int | None = Field(
+        default=None,
+        description="Concurrent requests reporting `serving_batches=true`.",
+    )
+    max_in_flight_at_admission: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Maximum runner-reported in-flight-at-admission across the load test."
+        ),
+    )
+    aggregate_tps_multiplier_vs_baseline: float | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Aggregate throughput divided by the configured same-run baseline."
         ),
     )
     per_request_generation_tps_mean: float | None = Field(

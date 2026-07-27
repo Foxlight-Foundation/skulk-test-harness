@@ -204,9 +204,7 @@ def test_placement_preview_ignores_incidental_fabric_nodes() -> None:
     )
 
     assert chosen is not None
-    assert _placement_from_preview("mlx-community/Foo", chosen).node_ids == [
-        "allowed"
-    ]
+    assert _placement_from_preview("mlx-community/Foo", chosen).node_ids == ["allowed"]
 
 
 def test_minimum_placement_enforces_requested_node_width() -> None:
@@ -294,9 +292,7 @@ def test_plan_does_not_reuse_instance_outside_eligible_inventory(
         def detect_runner_state_drift(self) -> list[Issue]:
             return []
 
-        def find_placements_for_model(
-            self, _model_id: str
-        ) -> list[PlacementResult]:
+        def find_placements_for_model(self, _model_id: str) -> list[PlacementResult]:
             return [
                 PlacementResult(
                     model_id="mlx-community/Foo",
@@ -854,10 +850,13 @@ def test_first_chat_model_id_uses_text_generation_task_and_exclusions() -> None:
         {"id": "org/selected-chat", "tasks": ["TextGeneration"]},
     ]
 
-    assert _first_chat_model_id(
-        catalog,
-        exclude_model_ids={"org/STT", "org/excluded-chat"},
-    ) == "org/selected-chat"
+    assert (
+        _first_chat_model_id(
+            catalog,
+            exclude_model_ids={"org/STT", "org/excluded-chat"},
+        )
+        == "org/selected-chat"
+    )
 
 
 def test_realtime_audio_selector_requires_truthful_streaming_metadata() -> None:
@@ -1235,9 +1234,7 @@ def test_vision_suite_uses_original_card_and_strict_semantic_checks(
         == []
     )
 
-    foxlight_sets = load_test_sets(
-        root / "examples/foxlight/test_sets.yaml"
-    ).test_sets
+    foxlight_sets = load_test_sets(root / "examples/foxlight/test_sets.yaml").test_sets
     foxlight_vision_tests = foxlight_sets["vision"].tests
     assert {test.name for test in foxlight_vision_tests} == {
         "qwen-semantic-card-reading",
@@ -1348,8 +1345,7 @@ def test_vision_suite_uses_original_card_and_strict_semantic_checks(
             prefix, encoded = image_url.split(",", maxsplit=1)
             assert prefix == "data:image/png;base64"
             assert (
-                hashlib.sha256(base64.b64decode(encoded)).hexdigest()
-                == expected_hash
+                hashlib.sha256(base64.b64decode(encoded)).hexdigest() == expected_hash
             )
 
         data_plane = test_sets["vision-data-plane"].tests[0]
@@ -1381,9 +1377,7 @@ def test_vision_suite_uses_original_card_and_strict_semantic_checks(
         ),
     }
     assert {
-        model_id
-        for test in foxlight_data_plane_tests
-        for model_id in test.model_ids
+        model_id for test in foxlight_data_plane_tests for model_id in test.model_ids
     } == {
         "mlx-community/Qwen3-VL-4B-Instruct-4bit",
         "mlx-community/Qwen3.5-2B-4bit",
@@ -1738,7 +1732,15 @@ class _FakeClient:
             transcript_deltas=0 if canceled else 2 * turn_count,
             event_types=(
                 ["session.created", "session.updated"]
-                + (["input_audio_buffer.speech_started", "input_audio_buffer.speech_stopped"] * turn_count if server_vad else [])
+                + (
+                    [
+                        "input_audio_buffer.speech_started",
+                        "input_audio_buffer.speech_stopped",
+                    ]
+                    * turn_count
+                    if server_vad
+                    else []
+                )
             ),
             canceled=canceled,
             assistant_text="\n".join(assistant_turns),
@@ -2015,9 +2017,7 @@ def test_vision_data_plane_proves_local_and_remote_media_paths(
     monkeypatch.setattr(
         runner, "_capture_vision_media_diagnostics", lambda _owners: before
     )
-    monkeypatch.setattr(
-        runner, "_wait_for_vision_media_idle", lambda _owners: after
-    )
+    monkeypatch.setattr(runner, "_wait_for_vision_media_idle", lambda _owners: after)
     test = PromptTest(
         name="vision-local-remote",
         kind="vision_data_plane",
@@ -2035,9 +2035,7 @@ def test_vision_data_plane_proves_local_and_remote_media_paths(
     )
 
     assert result.passed is True
-    assert result.output_text == (
-        "owner-1-serving_local: ok\nowner-2-remote_owner: ok"
-    )
+    assert result.output_text == ("owner-1-serving_local: ok\nowner-2-remote_owner: ok")
     assert result.artifact_path is not None
     payload = json.loads(result.artifact_path.read_text())
     assert [owner["owner"] for owner in payload["owners"]] == [
@@ -2407,7 +2405,8 @@ def test_speech_pressure_treats_idle_reclamation_as_a_workload_anomaly() -> None
     )
 
     assert any(
-        issue.evidence == {
+        issue.evidence
+        == {
             "owner": "owner-1-serving_local",
             "anomalies": {"idle_stream_reclaims": 1},
         }
@@ -3695,7 +3694,9 @@ def test_model_lifecycle_reports_when_every_test_excludes_model(
 
     assert placed is True
     assert report.results == []
-    assert [(issue.severity, issue.model_id, issue.message) for issue in report.issues] == [
+    assert [
+        (issue.severity, issue.model_id, issue.message) for issue in report.issues
+    ] == [
         (
             "error",
             "m/Foo",
@@ -4015,6 +4016,8 @@ def _concurrent_execution(
     generation_tps: float | None = 50.0,
     generation_tokens: int | None = 100,
     ttft_s: float | None = 0.2,
+    serving_batches: bool | None = None,
+    in_flight_at_admission: int | None = None,
 ) -> ChatExecution:
     """Build a fixed streamed-chat result for concurrent-benchmark fakes."""
 
@@ -4028,6 +4031,8 @@ def _concurrent_execution(
             skulk_generation_tps=generation_tps,
             skulk_generation_tokens=generation_tokens,
             approx_output_tokens=generation_tokens,
+            serving_batches=serving_batches,
+            in_flight_at_admission=in_flight_at_admission,
         ),
         command_id=None,
         raw_events=[],
@@ -4094,6 +4099,115 @@ def test_concurrent_test_aggregates_throughput_and_passes(
     assert metrics.ttft_p90_s == pytest.approx(0.2)
 
 
+def test_concurrent_test_fails_when_runner_reports_sequential_serving(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _runner()
+    _patch_concurrent_stream(
+        monkeypatch,
+        runner,
+        lambda: _concurrent_execution(
+            serving_batches=False,
+            in_flight_at_admission=1,
+        ),
+    )
+    test = _concurrent_test(4, 1).model_copy(update={"require_batched_serving": True})
+
+    result = runner._run_concurrent_test(
+        SkulkClient("http://api"),
+        model_id="m",
+        test=test,
+        repetition=1,
+    )
+
+    assert result.passed is False
+    assert result.metrics.concurrent_batched_requests == 0
+    assert result.metrics.max_in_flight_at_admission == 1
+    assert any("sequential generation" in issue.message for issue in result.issues)
+    assert any("never overlapped" in issue.message for issue in result.issues)
+
+
+def test_concurrent_test_accepts_runner_proven_batching(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _runner()
+    _patch_concurrent_stream(
+        monkeypatch,
+        runner,
+        lambda: _concurrent_execution(
+            serving_batches=True,
+            in_flight_at_admission=4,
+        ),
+    )
+    test = _concurrent_test(4, 1).model_copy(update={"require_batched_serving": True})
+
+    result = runner._run_concurrent_test(
+        SkulkClient("http://api"),
+        model_id="m",
+        test=test,
+        repetition=1,
+    )
+
+    assert result.passed is True
+    assert result.metrics.serving_batches is True
+    assert result.metrics.concurrent_batching_reported == 4
+    assert result.metrics.concurrent_batched_requests == 4
+    assert result.metrics.max_in_flight_at_admission == 4
+
+
+def test_concurrent_test_fails_flat_throughput_against_prior_baseline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _runner()
+    _patch_concurrent_stream(
+        monkeypatch,
+        runner,
+        lambda: _concurrent_execution(
+            serving_batches=True,
+            in_flight_at_admission=4,
+        ),
+    )
+    report = RunReport.start(
+        "run",
+        RunSpec(model_set="models", test_set="concurrency"),
+        [],
+    )
+    report.results.append(
+        TestResult(
+            model_id="m",
+            test_name="concurrent-1",
+            kind="concurrent",
+            repetition=1,
+            passed=True,
+            output_text="baseline",
+            metrics=GenerationMetrics(
+                elapsed_s=1,
+                aggregate_generation_tps=1_000_000,
+            ),
+        )
+    )
+    test = _concurrent_test(4, 1).model_copy(
+        update={
+            "require_batched_serving": True,
+            "throughput_baseline_test": "concurrent-1",
+            "min_aggregate_tps_multiplier": 1.2,
+        }
+    )
+
+    result = runner._run_concurrent_test(
+        SkulkClient("http://api"),
+        model_id="m",
+        test=test,
+        repetition=1,
+        report=report,
+    )
+
+    assert result.passed is False
+    assert result.metrics.aggregate_tps_multiplier_vs_baseline is not None
+    assert result.metrics.aggregate_tps_multiplier_vs_baseline < 1.2
+    assert any("did not scale" in issue.message for issue in result.issues)
+
+
 def test_concurrent_test_fails_when_a_request_errors(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -4140,7 +4254,8 @@ def test_concurrent_test_records_unexpected_worker_error_without_aborting(
     assert result.metrics.concurrent_failed == 2
     assert result.metrics.concurrent_succeeded == 0
     assert any(
-        "worker error" in str((i.evidence or {}).get("error", "")) for i in result.issues
+        "worker error" in str((i.evidence or {}).get("error", ""))
+        for i in result.issues
     )
 
 
@@ -4197,14 +4312,10 @@ def test_concurrent_test_rejects_tool_mocks_loudly(
     test = test.model_copy(update={"tool_mocks": [ToolMock(name="t", content="x")]})
     driver = SkulkClient("http://api")
 
-    result = runner._run_concurrent_test(
-        driver, model_id="m", test=test, repetition=1
-    )
+    result = runner._run_concurrent_test(driver, model_id="m", test=test, repetition=1)
 
     assert result.passed is False
-    assert any(
-        "does not support tool_mocks" in i.message for i in result.issues
-    )
+    assert any("does not support tool_mocks" in i.message for i in result.issues)
 
 
 def test_concurrent_test_counts_dropped_worker_slots_as_failures(
@@ -4231,7 +4342,8 @@ def test_concurrent_test_counts_dropped_worker_slots_as_failures(
     assert result.metrics.concurrent_failed == 3
     assert result.passed is False
     assert any(
-        "not issued" in i.message or "worker error" in str((i.evidence or {}).get("error", ""))
+        "not issued" in i.message
+        or "worker error" in str((i.evidence or {}).get("error", ""))
         for i in result.issues
     )
 
@@ -4515,9 +4627,7 @@ def test_wait_for_model_ready_bounds_total_wait_under_placement_churn(
     # final entry naming the ceiling and re-anchor count.
     assert any("churn_ceiling_s" in entry for entry in result.readiness_transitions)
     ceiling_entry = next(
-        entry
-        for entry in result.readiness_transitions
-        if "churn_ceiling_s" in entry
+        entry for entry in result.readiness_transitions if "churn_ceiling_s" in entry
     )
     assert ceiling_entry["churn_ceiling_s"] == 2.0
     assert isinstance(ceiling_entry["re_anchor_count"], int)
@@ -4566,7 +4676,9 @@ def test_wait_for_model_ready_default_churn_ceiling_derivation(
     assert clock["t"] == pytest.approx(2.5)
 
 
-def test_wait_for_model_ready_ignores_preexisting_instance_on_forced_placement() -> None:
+def test_wait_for_model_ready_ignores_preexisting_instance_on_forced_placement() -> (
+    None
+):
     # A forced placement (reuse=False) must never adopt a pre-existing user-owned
     # instance that is already ready: it would run the "fresh" test against it and
     # then tear it down. The wait must select the harness's own placement.
