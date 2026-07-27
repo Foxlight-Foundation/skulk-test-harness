@@ -214,6 +214,7 @@ def _place_multinode(
     report: StabilityReport,
     *,
     min_nodes: int,
+    eligible_node_ids: list[str] | None = None,
     excluded_node_ids: list[str] | None = None,
 ) -> PlacementResult | None:
     """Place ``model_id`` across at least ``min_nodes`` and wait for readiness.
@@ -222,11 +223,13 @@ def _place_multinode(
     an error issue and returns ``None`` if no usable placement can be made ready.
     """
 
+    eligible = set(eligible_node_ids or [])
     excluded = excluded_node_ids or []
     existing = [
         placement
         for placement in client.find_placements_for_model(model_id)
         if _placement_avoids_nodes(placement, excluded)
+        and _placement_uses_only_nodes(placement, eligible)
     ]
     if existing:
         placement = existing[0]
@@ -244,6 +247,10 @@ def _place_multinode(
             model_id, excluded_node_ids=excluded
         )
         if preview.get("error") in (None, "")
+        and (
+            not eligible
+            or set(_preview_node_ids(preview)).issubset(eligible)
+        )
     ]
     if not previews:
         report.add_issue(
@@ -283,6 +290,7 @@ def _place_multinode(
             placement
             for placement in client.find_placements_for_model(model_id)
             if _placement_avoids_nodes(placement, excluded)
+            and _placement_uses_only_nodes(placement, eligible)
         ]
         if placements and placements[0].instance_id:
             ready_deadline = time.monotonic() + config.placement_ready_timeout_s
@@ -312,6 +320,29 @@ def _placement_avoids_nodes(
     if not excluded_node_ids:
         return True
     return not set(placement.node_ids).intersection(excluded_node_ids)
+
+
+def _placement_uses_only_nodes(
+    placement: PlacementResult, eligible_node_ids: set[str]
+) -> bool:
+    """Return whether a placement stays within an optional eligibility scope."""
+    return not eligible_node_ids or set(placement.node_ids).issubset(
+        eligible_node_ids
+    )
+
+
+def _preview_node_ids(preview: dict[str, object]) -> list[str]:
+    """Extract live node IDs from a tagged placement preview."""
+    parsed = unwrap_tagged(preview.get("instance"))
+    if parsed is None:
+        return []
+    assignments = parsed[1].get("shardAssignments")
+    if not isinstance(assignments, dict):
+        return []
+    node_to_runner = assignments.get("nodeToRunner")
+    if not isinstance(node_to_runner, dict):
+        return []
+    return [node_id for node_id in node_to_runner if isinstance(node_id, str)]
 
 
 def _preview_node_count(preview: dict[str, object]) -> int:
@@ -367,6 +398,8 @@ def run_failover(
     model_id: str,
     *,
     min_nodes: int = 2,
+    eligible_node_ids: list[str] | None = None,
+    excluded_node_ids: list[str] | None = None,
 ) -> StabilityReport:
     """Crash the master mid-stream and assert the cluster survives (#273).
 
@@ -395,6 +428,18 @@ def run_failover(
     node = _require_cluster_node(config, master_friendly, report, model_id)
     if node is None:
         return report.finish()
+    if eligible_node_ids and master_id not in set(eligible_node_ids):
+        report.add_issue(
+            Issue(
+                severity="error",
+                model_id=model_id,
+                message=(
+                    "The current master is outside the configured eligible "
+                    "inventory; refusing to crash an incidental node"
+                ),
+            )
+        )
+        return report.finish()
 
     if client.base_url.endswith(":52415") and master_friendly in client.base_url:
         # The harness API client must survive the crash; refuse to kill the very
@@ -416,7 +461,10 @@ def run_failover(
         model_id,
         report,
         min_nodes=min_nodes,
-        excluded_node_ids=[master_id] if master_id else None,
+        eligible_node_ids=eligible_node_ids,
+        excluded_node_ids=sorted(
+            set(excluded_node_ids or []).union([master_id] if master_id else [])
+        ),
     )
     if placement is None or not placement.ready:
         return report.finish()
@@ -533,17 +581,30 @@ def run_failover(
 
 
 def _wait_for_model_servable(
-    client: SkulkClient, model_id: str, *, timeout_s: float, poll_interval_s: float
+    client: SkulkClient,
+    model_id: str,
+    *,
+    timeout_s: float,
+    poll_interval_s: float,
+    eligible_node_ids: list[str] | None = None,
+    excluded_node_ids: list[str] | None = None,
 ) -> bool:
     """Poll until at least one ready instance exists for ``model_id``."""
 
+    eligible = set(eligible_node_ids or [])
+    excluded = excluded_node_ids or []
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         try:
             placements = client.find_placements_for_model(model_id)
         except SkulkApiError:
             placements = []
-        if any(placement.ready for placement in placements):
+        if any(
+            placement.ready
+            and _placement_avoids_nodes(placement, excluded)
+            and _placement_uses_only_nodes(placement, eligible)
+            for placement in placements
+        ):
             return True
         time.sleep(poll_interval_s)
     return False
@@ -555,6 +616,8 @@ def run_churn(
     model_id: str,
     *,
     rounds: int = 3,
+    eligible_node_ids: list[str] | None = None,
+    excluded_node_ids: list[str] | None = None,
 ) -> StabilityReport:
     """Repeatedly crash and relaunch a NON-master node, asserting recovery.
 
@@ -564,7 +627,15 @@ def run_churn(
     """
 
     report = StabilityReport.start(_stability_run_id("churn", model_id), "churn", model_id)
-    placement = _place_multinode(client, config, model_id, report, min_nodes=2)
+    placement = _place_multinode(
+        client,
+        config,
+        model_id,
+        report,
+        min_nodes=2,
+        eligible_node_ids=eligible_node_ids,
+        excluded_node_ids=excluded_node_ids,
+    )
     if placement is None or not placement.ready:
         return report.finish()
 
@@ -624,9 +695,22 @@ def run_churn(
         # asserting a completion rather than expecting the old one to survive a
         # shard loss it structurally cannot.
         if not _wait_for_model_servable(
-            client, model_id, timeout_s=20.0, poll_interval_s=config.poll_interval_s
+            client,
+            model_id,
+            timeout_s=20.0,
+            poll_interval_s=config.poll_interval_s,
+            eligible_node_ids=eligible_node_ids,
+            excluded_node_ids=excluded_node_ids,
         ):
-            replaced = _place_multinode(client, config, model_id, report, min_nodes=2)
+            replaced = _place_multinode(
+                client,
+                config,
+                model_id,
+                report,
+                min_nodes=2,
+                eligible_node_ids=eligible_node_ids,
+                excluded_node_ids=excluded_node_ids,
+            )
             if replaced is not None:
                 placement = replaced
             round_log["re_placed"] = replaced is not None
@@ -666,7 +750,10 @@ def _pick_non_master_friendly(
 
     master_id = chaos.current_master(client)
     master_friendly = chaos.friendly_for_node(client, master_id)
+    eligible_friendly_names = set(config.eligible_fleet_nodes)
     for friendly in config.cluster_nodes:
+        if eligible_friendly_names and friendly not in eligible_friendly_names:
+            continue
         if friendly == master_friendly:
             continue
         if friendly in client.base_url:
@@ -693,6 +780,8 @@ def run_soak(
     *,
     concurrency: int = 4,
     duration_s: float = 120.0,
+    eligible_node_ids: list[str] | None = None,
+    excluded_node_ids: list[str] | None = None,
 ) -> StabilityReport:
     """Drive sustained concurrent load and assert every completion succeeds.
 
@@ -702,7 +791,15 @@ def run_soak(
     """
 
     report = StabilityReport.start(_stability_run_id("soak", model_id), "soak", model_id)
-    placement = _place_multinode(client, config, model_id, report, min_nodes=1)
+    placement = _place_multinode(
+        client,
+        config,
+        model_id,
+        report,
+        min_nodes=1,
+        eligible_node_ids=eligible_node_ids,
+        excluded_node_ids=excluded_node_ids,
+    )
     if placement is None or not placement.ready:
         return report.finish()
 
@@ -768,6 +865,9 @@ def run_placement_refusal(
     client: SkulkClient,
     config: HarnessConfig,
     model_id: str,
+    *,
+    eligible_node_ids: list[str] | None = None,
+    excluded_node_ids: list[str] | None = None,
 ) -> StabilityReport:
     """Assert an impossible placement is refused or re-placed wider, not wedged (#290).
 
@@ -780,15 +880,20 @@ def run_placement_refusal(
     report = StabilityReport.start(
         _stability_run_id("refusal", model_id), "refusal", model_id
     )
-    live_nodes = _live_node_count(client)
+    eligible = set(eligible_node_ids or [])
+    excluded = excluded_node_ids or []
+    live_nodes = len(eligible) if eligible else _live_node_count(client)
     impossible_min_nodes = live_nodes + 5
     report.observations["live_node_count"] = live_nodes
     report.observations["requested_min_nodes"] = impossible_min_nodes
 
     previews = [
         preview
-        for preview in client.get_placement_previews(model_id)
+        for preview in client.get_placement_previews(
+            model_id, excluded_node_ids=excluded
+        )
         if preview.get("error") in (None, "")
+        and (not eligible or set(_preview_node_ids(preview)).issubset(eligible))
     ]
     sharding = str(previews[0].get("sharding")) if previews else "Pipeline"
     instance_meta = str(previews[0].get("instance_meta")) if previews else "MlxRing"
@@ -800,7 +905,7 @@ def run_placement_refusal(
             sharding=sharding,
             instance_meta=instance_meta,
             min_nodes=impossible_min_nodes,
-            excluded_nodes=[],
+            excluded_nodes=excluded,
         )
     except SkulkApiError as exc:
         # An explicit 4xx/5xx refusal is the cleanest possible outcome.

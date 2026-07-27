@@ -106,6 +106,20 @@ class HarnessRunner:
             report.issues.extend(client.detect_runner_state_drift())
             for model in models:
                 existing = client.find_placements_for_model(model.model_id)
+                if spec.placement.excluded_nodes:
+                    excluded = set(spec.placement.excluded_nodes)
+                    existing = [
+                        placement
+                        for placement in existing
+                        if not excluded.intersection(placement.node_ids)
+                    ]
+                if spec.placement.eligible_nodes:
+                    eligible = set(spec.placement.eligible_nodes)
+                    existing = [
+                        placement
+                        for placement in existing
+                        if set(placement.node_ids).issubset(eligible)
+                    ]
                 if existing and spec.reuse_existing_instances:
                     report.placements.append(existing[0])
                     continue

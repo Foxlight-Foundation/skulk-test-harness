@@ -9,6 +9,7 @@ from skulk_test_harness.stability import (
     _percentile,
     _place_multinode,
     _placements_for_model_from_state,
+    _wait_for_model_servable,
     classify_placement_outcome,
     completion_is_coherent,
     summarize_latency,
@@ -243,3 +244,126 @@ def test_place_multinode_recreates_when_existing_uses_excluded_node() -> None:
     assert client.preview_exclusions == [["master-node"]]
     assert client.place_exclusions == [["master-node"]]
     assert client.waited_instance_ids == ["new-worker-placement"]
+
+
+def test_place_multinode_rejects_existing_and_preview_outside_eligibility() -> None:
+    class _Client:
+        def __init__(self) -> None:
+            self.find_calls = 0
+            self.placed = False
+
+        def find_placements_for_model(self, model_id: str) -> list[PlacementResult]:
+            assert model_id == MODEL_ID
+            self.find_calls += 1
+            if self.find_calls == 1:
+                return [
+                    PlacementResult(
+                        model_id=MODEL_ID,
+                        instance_id="incidental-placement",
+                        node_ids=["incidental"],
+                        ready=True,
+                    )
+                ]
+            return [
+                PlacementResult(
+                    model_id=MODEL_ID,
+                    instance_id="eligible-placement",
+                    node_ids=["eligible-a", "eligible-b"],
+                    ready=False,
+                )
+            ]
+
+        def get_placement_previews(
+            self, model_id: str, *, excluded_node_ids: list[str] | None = None
+        ) -> list[dict[str, object]]:
+            assert model_id == MODEL_ID
+            assert excluded_node_ids == ["incidental"]
+            return [
+                {
+                    "sharding": "Pipeline",
+                    "instance_meta": "MlxRing",
+                    "instance": {
+                        "MlxRingInstance": {
+                            "shardAssignments": {
+                                "nodeToRunner": {
+                                    "incidental": "runner-incidental",
+                                }
+                            }
+                        }
+                    },
+                },
+                {
+                    "sharding": "Pipeline",
+                    "instance_meta": "MlxRing",
+                    "instance": {
+                        "MlxRingInstance": {
+                            "shardAssignments": {
+                                "nodeToRunner": {
+                                    "eligible-a": "runner-a",
+                                    "eligible-b": "runner-b",
+                                }
+                            }
+                        }
+                    },
+                },
+            ]
+
+        def place_model(self, **kwargs: object) -> None:
+            assert kwargs["excluded_nodes"] == ["incidental"]
+            self.placed = True
+
+        def wait_for_instance_ready(
+            self, instance_id: str, *, timeout_s: float, poll_interval_s: float
+        ) -> PlacementResult:
+            del timeout_s, poll_interval_s
+            return PlacementResult(
+                model_id=MODEL_ID,
+                instance_id=instance_id,
+                node_ids=["eligible-a", "eligible-b"],
+                ready=True,
+            )
+
+    client = _Client()
+    report = StabilityReport.start("run-2", "churn", MODEL_ID)
+
+    placement = _place_multinode(
+        client,  # type: ignore[arg-type]
+        HarnessConfig(),
+        MODEL_ID,
+        report,
+        min_nodes=2,
+        eligible_node_ids=["eligible-a", "eligible-b"],
+        excluded_node_ids=["incidental"],
+    )
+
+    assert placement is not None
+    assert placement.node_ids == ["eligible-a", "eligible-b"]
+    assert placement.created_by_harness is True
+    assert client.placed is True
+
+
+def test_wait_for_model_servable_ignores_incidental_ready_instance() -> None:
+    class _Client:
+        def find_placements_for_model(
+            self, _model_id: str
+        ) -> list[PlacementResult]:
+            return [
+                PlacementResult(
+                    model_id=MODEL_ID,
+                    instance_id="incidental-placement",
+                    node_ids=["incidental"],
+                    ready=True,
+                )
+            ]
+
+    assert (
+        _wait_for_model_servable(
+            _Client(),  # type: ignore[arg-type]
+            MODEL_ID,
+            timeout_s=0.001,
+            poll_interval_s=0.0,
+            eligible_node_ids=["eligible"],
+            excluded_node_ids=["incidental"],
+        )
+        is False
+    )

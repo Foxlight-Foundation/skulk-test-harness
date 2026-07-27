@@ -262,6 +262,91 @@ def test_minimum_placement_enforces_requested_node_width() -> None:
     ]
 
 
+def test_plan_does_not_reuse_instance_outside_eligible_inventory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A dry run must describe the same eligible placement execution permits."""
+
+    def _preview(*node_ids: str) -> dict[str, object]:
+        return {
+            "sharding": "Pipeline",
+            "instance_meta": "MlxRing",
+            "instance": {
+                "MlxRingInstance": {
+                    "shardAssignments": {
+                        "nodeToRunner": {
+                            node_id: f"runner-{index}"
+                            for index, node_id in enumerate(node_ids)
+                        },
+                        "runnerToShard": {},
+                    }
+                }
+            },
+        }
+
+    class _PlanClient:
+        def __enter__(self) -> "_PlanClient":
+            return self
+
+        def __exit__(self, *_exc: object) -> None:
+            return None
+
+        def detect_runner_state_drift(self) -> list[Issue]:
+            return []
+
+        def find_placements_for_model(
+            self, _model_id: str
+        ) -> list[PlacementResult]:
+            return [
+                PlacementResult(
+                    model_id="mlx-community/Foo",
+                    instance_id="incidental-instance",
+                    node_ids=["incidental"],
+                    ready=True,
+                )
+            ]
+
+        def get_placement_previews(
+            self,
+            _model_id: str,
+            *,
+            excluded_node_ids: list[str],
+        ) -> list[dict[str, object]]:
+            assert excluded_node_ids == ["incidental"]
+            return [_preview("eligible")]
+
+    runner = HarnessRunner(
+        config=HarnessConfig(preview_settle_attempts=1),
+        model_sets={},
+        test_sets={},
+    )
+    monkeypatch.setattr(
+        runner,
+        "resolve_model_set",
+        lambda *_args, **_kwargs: [
+            ModelRef(model_id="mlx-community/Foo", source="explicit")
+        ],
+    )
+    monkeypatch.setattr(runner, "_client", lambda: _PlanClient())
+    from skulk_test_harness import orchestrator as orch
+
+    monkeypatch.setattr(orch, "gather_fingerprint", lambda *_a, **_k: (None, []))
+
+    report = runner.plan(
+        RunSpec(
+            model_set="any",
+            test_set="any",
+            placement=PlacementPolicy(
+                eligible_nodes=["eligible"],
+                excluded_nodes=["incidental"],
+            ),
+        )
+    )
+
+    assert report.placements[0].instance_id is None
+    assert report.placements[0].node_ids == ["eligible"]
+
+
 def test_score_output_accepts_single_file_asteroids_artifact() -> None:
     text = """```html
 <!doctype html>

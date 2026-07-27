@@ -276,6 +276,38 @@ def _require_execution_preflight(
     return scope
 
 
+def _read_configured_placement_scope(
+    cfg: HarnessConfig,
+) -> tuple[list[str], list[str]]:
+    """Resolve a configured inventory for a non-mutating plan."""
+    if not cfg.eligible_fleet_nodes:
+        return [], []
+    with SkulkClient(
+        cfg.api_base_url, request_timeout_s=cfg.request_timeout_s
+    ) as client:
+        try:
+            return _placement_scope_from_state(cfg, client.get_state())
+        except ValueError as exception:
+            console.print(f"[bold red]REFUSED[/]: {exception}")
+            raise typer.Exit(code=1) from exception
+
+
+def _policy_with_placement_scope(
+    policy: PlacementPolicy,
+    scope: tuple[list[str], list[str]],
+) -> PlacementPolicy:
+    """Constrain a placement policy to the resolved configured inventory."""
+    eligible_node_ids, incidental_node_ids = scope
+    return policy.model_copy(
+        update={
+            "eligible_nodes": eligible_node_ids,
+            "excluded_nodes": sorted(
+                set(policy.excluded_nodes).union(incidental_node_ids)
+            ),
+        }
+    )
+
+
 def _print_lease(store: FleetLockStore) -> None:
     lease = store.read()
     now = datetime.now(UTC)
@@ -660,15 +692,20 @@ def plan(
     """Plan a harness run without mutating the cluster."""
 
     cfg, runner = _load_runner(config)
+    policy = PlacementPolicy(
+        sharding=sharding,  # type: ignore[arg-type]
+        instance_meta=instance_meta,  # type: ignore[arg-type]
+        min_nodes=min_nodes,
+    )
+    policy = _policy_with_placement_scope(
+        policy,
+        _read_configured_placement_scope(cfg),
+    )
     spec = RunSpec(
         model_set=model_set,
         test_set=test_set,
         mode="plan",
-        placement=PlacementPolicy(
-            sharding=sharding,  # type: ignore[arg-type]
-            instance_meta=instance_meta,  # type: ignore[arg-type]
-            min_nodes=min_nodes,
-        ),
+        placement=policy,
     )
     report = runner.plan(spec)
     run_dir = ReportWriter(cfg.output_dir).write(report)
@@ -741,10 +778,7 @@ def run(
     if execute:
         placement_scope = _require_execution_preflight(cfg, force=force)
     elif cfg.eligible_fleet_nodes:
-        with SkulkClient(
-            cfg.api_base_url, request_timeout_s=cfg.request_timeout_s
-        ) as client:
-            placement_scope = _placement_scope_from_state(cfg, client.get_state())
+        placement_scope = _read_configured_placement_scope(cfg)
     # Resolve friendly names to live libp2p node IDs before building the
     # spec: placement exclusion is by node ID, but node IDs are ephemeral so a
     # battery cell can only name a node by its stable friendly name.
@@ -834,13 +868,24 @@ def goal(
     """Parse a constrained natural-language goal into a plan or run."""
 
     cfg, runner = _load_runner(config)
-    if execute:
+    placement_scope = (
         _require_execution_preflight(cfg, force=force)
+        if execute
+        else _read_configured_placement_scope(cfg)
+    )
     spec = parse_goal(
         text,
         model_set_names=list(runner.model_sets),
         test_set_names=list(runner.test_sets),
         execute=execute,
+    )
+    spec = spec.model_copy(
+        update={
+            "placement": _policy_with_placement_scope(
+                spec.placement,
+                placement_scope,
+            )
+        }
     )
     report = runner.execute(spec) if execute else runner.plan(spec)
     run_dir = ReportWriter(cfg.output_dir).write(report)
@@ -961,9 +1006,18 @@ def stability_failover(
 
     _require_destructive_opt_in(execute_destructive)
     cfg = load_config(config)
-    _require_execution_preflight(cfg, force=force)
+    eligible_node_ids, incidental_node_ids = _require_execution_preflight(
+        cfg, force=force
+    )
     with _stability_client(cfg) as client:
-        report = stability.run_failover(client, cfg, model, min_nodes=min_nodes)
+        report = stability.run_failover(
+            client,
+            cfg,
+            model,
+            min_nodes=min_nodes,
+            eligible_node_ids=eligible_node_ids,
+            excluded_node_ids=incidental_node_ids,
+        )
     _write_stability(cfg, report)
 
 
@@ -991,9 +1045,18 @@ def stability_churn(
 
     _require_destructive_opt_in(execute_destructive)
     cfg = load_config(config)
-    _require_execution_preflight(cfg, force=force)
+    eligible_node_ids, incidental_node_ids = _require_execution_preflight(
+        cfg, force=force
+    )
     with _stability_client(cfg) as client:
-        report = stability.run_churn(client, cfg, model, rounds=rounds)
+        report = stability.run_churn(
+            client,
+            cfg,
+            model,
+            rounds=rounds,
+            eligible_node_ids=eligible_node_ids,
+            excluded_node_ids=incidental_node_ids,
+        )
     _write_stability(cfg, report)
 
 
@@ -1014,10 +1077,18 @@ def stability_soak(
     """Drive sustained concurrent load and report latency/failures."""
 
     cfg = load_config(config)
-    _require_execution_preflight(cfg, force=force)
+    eligible_node_ids, incidental_node_ids = _require_execution_preflight(
+        cfg, force=force
+    )
     with _stability_client(cfg) as client:
         report = stability.run_soak(
-            client, cfg, model, concurrency=concurrency, duration_s=duration_s
+            client,
+            cfg,
+            model,
+            concurrency=concurrency,
+            duration_s=duration_s,
+            eligible_node_ids=eligible_node_ids,
+            excluded_node_ids=incidental_node_ids,
         )
     _write_stability(cfg, report)
 
@@ -1045,9 +1116,17 @@ def stability_refusal(
 
     _require_destructive_opt_in(execute_destructive)
     cfg = load_config(config)
-    _require_execution_preflight(cfg, force=force)
+    eligible_node_ids, incidental_node_ids = _require_execution_preflight(
+        cfg, force=force
+    )
     with _stability_client(cfg) as client:
-        report = stability.run_placement_refusal(client, cfg, model)
+        report = stability.run_placement_refusal(
+            client,
+            cfg,
+            model,
+            eligible_node_ids=eligible_node_ids,
+            excluded_node_ids=incidental_node_ids,
+        )
     _write_stability(cfg, report)
 
 
