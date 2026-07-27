@@ -1075,9 +1075,14 @@ def test_foxlight_e2e_battery_references_defined_sets() -> None:
     assert ["cell", "speech-tts", "speech-synthesis-semantic"] in cells
     assert [
         "cell",
-        "vision",
+        "vision-multinode",
         "vision-data-plane",
         "--min-nodes 2",
+    ] in cells
+    assert [
+        "cell",
+        "vision-default-placement",
+        "vision-data-plane",
     ] in cells
 
 
@@ -1349,6 +1354,47 @@ def test_vision_suite_uses_original_card_and_strict_semantic_checks(
 
         data_plane = test_sets["vision-data-plane"].tests[0]
         assert data_plane.kind == "vision_data_plane"
+        assert len(data_plane.success.required_regexes) == 3
+
+    foxlight_data_plane_tests = foxlight_sets["vision-data-plane"].tests
+    assert {
+        test.name: (test.model_ids, test.max_tokens, test.system)
+        for test in foxlight_data_plane_tests
+    } == {
+        "qwen-image-local-remote-routing": (
+            [
+                "mlx-community/Qwen3-VL-4B-Instruct-4bit",
+                "mlx-community/Qwen3.5-2B-4bit",
+            ],
+            320,
+            "Report only evidence visible in the supplied image.",
+        ),
+        "gemma3n-image-local-remote-routing": (
+            ["mlx-community/gemma-3n-E2B-it-4bit"],
+            192,
+            None,
+        ),
+        "gemma4-image-local-remote-routing": (
+            ["mlx-community/gemma-4-e2b-it-8bit"],
+            320,
+            None,
+        ),
+    }
+    assert {
+        model_id
+        for test in foxlight_data_plane_tests
+        for model_id in test.model_ids
+    } == {
+        "mlx-community/Qwen3-VL-4B-Instruct-4bit",
+        "mlx-community/Qwen3.5-2B-4bit",
+        "mlx-community/gemma-3n-E2B-it-4bit",
+        "mlx-community/gemma-4-e2b-it-8bit",
+    }
+    for data_plane in foxlight_data_plane_tests:
+        assert data_plane.kind == "vision_data_plane"
+        assert data_plane.images[0].input_path == Path(
+            "fixtures/vision/semantic-qualification-card.png"
+        )
         assert len(data_plane.success.required_regexes) == 3
 
 

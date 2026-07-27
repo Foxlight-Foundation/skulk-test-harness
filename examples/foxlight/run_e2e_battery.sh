@@ -66,7 +66,12 @@ cell speech-voice-catalog-tts speech-voice-catalog
 cell speech-stt-realtime streaming-transcription
 cell speech-stt-realtime fabric-speech-chain
 cell vision           vision
-cell vision           vision-data-plane "--min-nodes 2"
+# Qwen3-VL, Qwen3.5, and Gemma 3n support distributed pipeline inference, so
+# force their media-parity cell across two ranks. Gemma 4 E-series shares KV
+# caches across layers and is intentionally single-node; its default-placement
+# cell still sends the same fixture through both local and remote API owners.
+cell vision-multinode vision-data-plane "--min-nodes 2"
+cell vision-default-placement vision-data-plane
 
 # --- AMD / llama.cpp leg (kite4): GGUF coherence + the big models Bug A unlocked ---
 cell gguf-llama-cpp   llama-cpp

@@ -130,3 +130,38 @@ def test_mlx_concurrency_cells_stop_at_runtime_cap(script_name: str) -> None:
     assert model_sets["concurrency-mlx-reasoning"].models == [mlx_reasoning_model]
     assert gguf_reasoning_model not in model_sets["concurrency-gguf"].models
     assert model_sets["concurrency-120b"].models == [gguf_reasoning_model]
+
+
+def test_vision_data_plane_cells_respect_family_placement_contracts() -> None:
+    """Split distributed-capable VLMs from Gemma 4 default placement."""
+    root = Path(__file__).resolve().parents[1]
+    script = root / "examples" / "foxlight" / "run_e2e_battery.sh"
+    cells = [
+        shlex.split(line.strip())
+        for line in script.read_text().splitlines()
+        if line.strip().startswith("cell vision-")
+    ]
+
+    assert [
+        "cell",
+        "vision-multinode",
+        "vision-data-plane",
+        "--min-nodes 2",
+    ] in cells
+    assert [
+        "cell",
+        "vision-default-placement",
+        "vision-data-plane",
+    ] in cells
+
+    model_sets = load_model_sets(
+        root / "examples" / "foxlight" / "model_sets.yaml"
+    ).model_sets
+    assert model_sets["vision-multinode"].models == [
+        "mlx-community/Qwen3-VL-4B-Instruct-4bit",
+        "mlx-community/Qwen3.5-2B-4bit",
+        "mlx-community/gemma-3n-E2B-it-4bit",
+    ]
+    assert model_sets["vision-default-placement"].models == [
+        "mlx-community/gemma-4-e2b-it-8bit"
+    ]
