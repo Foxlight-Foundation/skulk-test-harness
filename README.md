@@ -87,9 +87,20 @@ it.
 Release-qualification profiles can also set
 `required_data_transport: zenoh` (or `gossipsub`). Before any named run,
 natural-language goal, or stability suite mutates the cluster, the harness
-checks every live node present in either `/state` telemetry map and refuses a
-missing, mixed, or mismatched transport advertisement. Generic profiles leave
-this unset.
+checks every eligible node and refuses a missing, mixed, or mismatched
+transport advertisement. Set `eligible_fleet_nodes` to stable friendly names
+when the fabric can contain unrelated nodes; every listed node must be present,
+and placement previews, reused instances, and final live placement are confined
+to that allowlist. Incidental members are ignored. With no allowlist the
+transport check retains its generic behavior and covers every live node.
+Generic profiles leave both settings unset.
+
+```yaml
+required_data_transport: zenoh
+eligible_fleet_nodes:
+  - node-a
+  - node-b
+```
 
 ## Fresh-install release qualification
 

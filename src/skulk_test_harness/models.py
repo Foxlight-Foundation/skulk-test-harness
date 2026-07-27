@@ -535,10 +535,19 @@ class HarnessConfig(HarnessBaseModel):
         default=None,
         description=(
             "Optional fleet qualification invariant. Before an executed run, "
-            "require every node present in either /state nodeResources or "
-            "nodeIdentities to advertise this resolved DATA transport. "
+            "require every eligible node (or every live node when no eligibility "
+            "allowlist is configured) to advertise this resolved DATA transport. "
             "Foxlight's production E2E profile pins this to the transport Skulk "
             "ships by default; generic/community profiles leave it unset."
+        ),
+    )
+    eligible_fleet_nodes: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Optional allowlist of stable friendly node names for configured-fleet "
+            "runs. Every listed node must be present, placement previews and live "
+            "instances must use only those nodes, and incidental fabric members "
+            "are ignored. Empty preserves generic/community behavior."
         ),
     )
     cluster_nodes: dict[str, ClusterNode] = Field(
@@ -1188,6 +1197,13 @@ class PlacementPolicy(HarnessBaseModel):
     instance_meta: InstanceMeta = "MlxRing"
     min_nodes: int | None = Field(default=None, ge=1)
     excluded_nodes: list[str] = Field(default_factory=list)
+    eligible_nodes: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Resolved live node IDs allowed to serve this run. Empty allows any "
+            "node not explicitly excluded."
+        ),
+    )
 
 
 class RunSpec(HarnessBaseModel):

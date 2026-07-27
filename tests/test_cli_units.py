@@ -165,6 +165,57 @@ def test_generic_profile_has_no_shipping_transport_requirement() -> None:
     cli._require_shipping_data_transport(HarnessConfig(), {})
 
 
+def test_eligible_fleet_ignores_incidental_transport() -> None:
+    cfg = HarnessConfig(
+        required_data_transport="zenoh",
+        eligible_fleet_nodes=["alpha", "beta"],
+    )
+    state: dict[str, object] = {
+        "nodeResources": {
+            "peer-a": {"dataTransport": "zenoh"},
+            "peer-b": {"dataTransport": "zenoh"},
+            "incidental": {"dataTransport": "gossipsub"},
+        },
+        "nodeIdentities": {
+            "peer-a": {"friendlyName": "alpha"},
+            "peer-b": {"friendlyName": "beta"},
+            "incidental": {"friendlyName": "unmanaged"},
+        },
+    }
+
+    cli._require_shipping_data_transport(cfg, state)
+    assert cli._placement_scope_from_state(cfg, state) == (
+        ["peer-a", "peer-b"],
+        ["incidental"],
+    )
+
+
+def test_eligible_fleet_requires_every_configured_node() -> None:
+    cfg = HarnessConfig(eligible_fleet_nodes=["alpha", "beta"])
+    state: dict[str, object] = {
+        "nodeIdentities": {
+            "peer-a": {"friendlyName": "alpha"},
+            "incidental": {"friendlyName": "unmanaged"},
+        }
+    }
+
+    with pytest.raises(ValueError, match=r"required node\(s\) are absent.*beta"):
+        cli._placement_scope_from_state(cfg, state)
+
+
+def test_eligible_fleet_rejects_ambiguous_friendly_names() -> None:
+    cfg = HarnessConfig(eligible_fleet_nodes=["alpha"])
+    state: dict[str, object] = {
+        "nodeIdentities": {
+            "peer-a": {"friendlyName": "alpha"},
+            "peer-b": {"friendlyName": "alpha"},
+        }
+    }
+
+    with pytest.raises(ValueError, match="friendly name.*ambiguous"):
+        cli._placement_scope_from_state(cfg, state)
+
+
 def test_goal_execute_uses_shared_execution_preflight(monkeypatch, tmp_path) -> None:
     _patch(monkeypatch, tmp_path, passed=True)
     observed: list[tuple[HarnessConfig, bool]] = []

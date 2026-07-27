@@ -8,7 +8,7 @@ import shlex
 import wave
 from collections.abc import Callable
 from pathlib import Path
-from typing import Never
+from typing import Never, cast
 
 import httpx
 import pytest
@@ -156,6 +156,110 @@ def test_placement_from_preview_extracts_nodes_and_runners() -> None:
     assert placement.runner_ids == ["runner-a"]
     assert placement.sharding == "Pipeline"
     assert placement.instance_meta == "MlxRingInstance"
+
+
+def test_placement_preview_ignores_incidental_fabric_nodes() -> None:
+    """Configured runs must choose only previews inside the eligible inventory."""
+
+    def _preview(*node_ids: str) -> dict[str, object]:
+        return {
+            "sharding": "Pipeline",
+            "instance_meta": "MlxRing",
+            "instance": {
+                "MlxRingInstance": {
+                    "shardAssignments": {
+                        "nodeToRunner": {
+                            node_id: f"runner-{index}"
+                            for index, node_id in enumerate(node_ids)
+                        },
+                        "runnerToShard": {},
+                    }
+                }
+            },
+        }
+
+    class _PreviewClient:
+        def get_placement_previews(
+            self,
+            _model_id: str,
+            *,
+            excluded_node_ids: list[str],
+        ) -> list[dict[str, object]]:
+            assert excluded_node_ids == []
+            return [
+                _preview("allowed", "incidental"),
+                _preview("allowed"),
+            ]
+
+    runner = HarnessRunner(
+        config=HarnessConfig(preview_settle_attempts=1),
+        model_sets={},
+        test_sets={},
+    )
+
+    chosen = runner._choose_preview_once(
+        cast(SkulkClient, cast(object, _PreviewClient())),
+        "mlx-community/Foo",
+        PlacementPolicy(eligible_nodes=["allowed"]),
+    )
+
+    assert chosen is not None
+    assert _placement_from_preview("mlx-community/Foo", chosen).node_ids == [
+        "allowed"
+    ]
+
+
+def test_minimum_placement_enforces_requested_node_width() -> None:
+    """``min_nodes`` must apply to the default minimum strategy, not just exact."""
+
+    def _preview(*node_ids: str) -> dict[str, object]:
+        return {
+            "sharding": "Tensor",
+            "instance_meta": "MlxRing",
+            "instance": {
+                "MlxRingInstance": {
+                    "shardAssignments": {
+                        "nodeToRunner": {
+                            node_id: f"runner-{index}"
+                            for index, node_id in enumerate(node_ids)
+                        },
+                        "runnerToShard": {},
+                    }
+                }
+            },
+        }
+
+    class _PreviewClient:
+        def get_placement_previews(
+            self,
+            _model_id: str,
+            *,
+            excluded_node_ids: list[str],
+        ) -> list[dict[str, object]]:
+            assert excluded_node_ids == []
+            return [
+                _preview("node-a"),
+                _preview("node-a", "node-b"),
+                _preview("node-a", "node-b", "node-c"),
+            ]
+
+    runner = HarnessRunner(
+        config=HarnessConfig(preview_settle_attempts=1),
+        model_sets={},
+        test_sets={},
+    )
+
+    chosen = runner._choose_preview_once(
+        cast(SkulkClient, cast(object, _PreviewClient())),
+        "mlx-community/Foo",
+        PlacementPolicy(sharding="Tensor", min_nodes=2),
+    )
+
+    assert chosen is not None
+    assert _placement_from_preview("mlx-community/Foo", chosen).node_ids == [
+        "node-a",
+        "node-b",
+    ]
 
 
 def test_score_output_accepts_single_file_asteroids_artifact() -> None:
@@ -1000,6 +1104,7 @@ def test_vision_suite_uses_original_card_and_strict_semantic_checks(
     monkeypatch.chdir(root)
     expected_hash = "2832760871d31e987ba83a3ad9366e1b4f603742e716a59976ac13f0a07c12f5"
     correct_response = "FUE4ZG; cyan diamond"
+    perceptual_synonym_response = "FUE4ZG; teal diamond"
     wrong_code_response = "FUE42G; cyan diamond"
     wrong_attribute_response = "FUE4ZG; magenta triangle"
     leaked_response = f"<|im_start|> image\n{correct_response}"
@@ -1030,6 +1135,15 @@ def test_vision_suite_uses_original_card_and_strict_semantic_checks(
         wrong_attribute_response,
         public_vision.success,
     )
+    assert (
+        _score_output(
+            "vision-model",
+            public_vision.name,
+            perceptual_synonym_response,
+            public_vision.success,
+        )
+        == []
+    )
 
     foxlight_sets = load_test_sets(
         root / "examples/foxlight/test_sets.yaml"
@@ -1049,6 +1163,15 @@ def test_vision_suite_uses_original_card_and_strict_semantic_checks(
                 "vision-model",
                 vision.name,
                 correct_response,
+                vision.success,
+            )
+            == []
+        )
+        assert (
+            _score_output(
+                "vision-model",
+                vision.name,
+                perceptual_synonym_response,
                 vision.success,
             )
             == []

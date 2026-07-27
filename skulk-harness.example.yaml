@@ -9,8 +9,15 @@ store_delete_timeout_s: 30
 poll_interval_s: 2
 preview_settle_attempts: 8
 # Optional release-qualification invariant. Executed runs refuse unless every
-# live node advertises this resolved DATA transport in /state.
+# eligible node (or every live node when no allowlist is set) advertises this
+# resolved DATA transport in /state.
 # required_data_transport: zenoh
+# Optional configured-fleet inventory. Every friendly name must be present;
+# placements are confined to these nodes and incidental fabric members are
+# ignored.
+# eligible_fleet_nodes:
+#   - node-a
+#   - node-b
 output_dir: runs
 model_sets_path: configs/model_sets.yaml
 test_sets_path: configs/test_sets.yaml

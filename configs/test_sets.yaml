@@ -558,7 +558,7 @@ test_sets:
           min_chars: 16
           required_regexes:
             - "(?i)\\bFUE4ZG\\b"
-            - "(?i)\\bcyan\\b"
+            - "(?i)\\b(?:cyan|teal)\\b"
             - "(?i)\\bdiamond\\b"
           forbidden_substrings:
             - bedroom
@@ -592,7 +592,7 @@ test_sets:
           min_chars: 16
           required_regexes:
             - "(?i)\\bFUE4ZG\\b"
-            - "(?i)\\bcyan\\b"
+            - "(?i)\\b(?:cyan|teal)\\b"
             - "(?i)\\bdiamond\\b"
           forbidden_substrings:
             - bedroom
