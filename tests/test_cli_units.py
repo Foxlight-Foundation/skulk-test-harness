@@ -39,17 +39,22 @@ class _StubRunner:
         self._passed = passed
         self.model_sets = {"s": object()}
         self.test_sets = {"t": object()}
+        self.observed_specs: list[RunSpec] = []
 
     def execute(self, spec: RunSpec) -> RunReport:
+        self.observed_specs.append(spec)
         return _report(spec, passed=self._passed)
 
     def plan(self, spec: RunSpec) -> RunReport:
+        self.observed_specs.append(spec)
         return _report(spec, passed=self._passed)
 
 
-def _patch(monkeypatch, tmp_path: Path, *, passed: bool) -> None:
+def _patch(monkeypatch, tmp_path: Path, *, passed: bool) -> _StubRunner:
     cfg = HarnessConfig(output_dir=tmp_path)
-    monkeypatch.setattr(cli, "_load_runner", lambda _config: (cfg, _StubRunner(passed=passed)))
+    stub = _StubRunner(passed=passed)
+    monkeypatch.setattr(cli, "_load_runner", lambda _config: (cfg, stub))
+    return stub
 
 
 def test_run_exits_nonzero_on_failed_result(monkeypatch, tmp_path) -> None:
@@ -165,12 +170,66 @@ def test_generic_profile_has_no_shipping_transport_requirement() -> None:
     cli._require_shipping_data_transport(HarnessConfig(), {})
 
 
+def test_eligible_fleet_ignores_incidental_transport() -> None:
+    cfg = HarnessConfig(
+        required_data_transport="zenoh",
+        eligible_fleet_nodes=["alpha", "beta"],
+    )
+    state: dict[str, object] = {
+        "nodeResources": {
+            "peer-a": {"dataTransport": "zenoh"},
+            "peer-b": {"dataTransport": "zenoh"},
+            "incidental": {"dataTransport": "gossipsub"},
+        },
+        "nodeIdentities": {
+            "peer-a": {"friendlyName": "alpha"},
+            "peer-b": {"friendlyName": "beta"},
+            "incidental": {"friendlyName": "unmanaged"},
+        },
+    }
+
+    cli._require_shipping_data_transport(cfg, state)
+    assert cli._placement_scope_from_state(cfg, state) == (
+        ["peer-a", "peer-b"],
+        ["incidental"],
+    )
+
+
+def test_eligible_fleet_requires_every_configured_node() -> None:
+    cfg = HarnessConfig(eligible_fleet_nodes=["alpha", "beta"])
+    state: dict[str, object] = {
+        "nodeIdentities": {
+            "peer-a": {"friendlyName": "alpha"},
+            "incidental": {"friendlyName": "unmanaged"},
+        }
+    }
+
+    with pytest.raises(ValueError, match=r"required node\(s\) are absent.*beta"):
+        cli._placement_scope_from_state(cfg, state)
+
+
+def test_eligible_fleet_rejects_ambiguous_friendly_names() -> None:
+    cfg = HarnessConfig(eligible_fleet_nodes=["alpha"])
+    state: dict[str, object] = {
+        "nodeIdentities": {
+            "peer-a": {"friendlyName": "alpha"},
+            "peer-b": {"friendlyName": "alpha"},
+        }
+    }
+
+    with pytest.raises(ValueError, match="friendly name.*ambiguous"):
+        cli._placement_scope_from_state(cfg, state)
+
+
 def test_goal_execute_uses_shared_execution_preflight(monkeypatch, tmp_path) -> None:
-    _patch(monkeypatch, tmp_path, passed=True)
+    stub = _patch(monkeypatch, tmp_path, passed=True)
     observed: list[tuple[HarnessConfig, bool]] = []
 
-    def record_preflight(cfg: HarnessConfig, *, force: bool) -> None:
+    def record_preflight(
+        cfg: HarnessConfig, *, force: bool
+    ) -> tuple[list[str], list[str]]:
         observed.append((cfg, force))
+        return ["eligible-a", "eligible-b"], ["incidental"]
 
     monkeypatch.setattr(cli, "_require_execution_preflight", record_preflight)
 
@@ -178,6 +237,11 @@ def test_goal_execute_uses_shared_execution_preflight(monkeypatch, tmp_path) -> 
 
     assert result.exit_code == 0
     assert observed == [(HarnessConfig(output_dir=tmp_path), False)]
+    assert stub.observed_specs[0].placement.eligible_nodes == [
+        "eligible-a",
+        "eligible-b",
+    ]
+    assert stub.observed_specs[0].placement.excluded_nodes == ["incidental"]
 
 
 @pytest.mark.parametrize(

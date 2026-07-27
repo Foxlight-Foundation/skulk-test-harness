@@ -10,7 +10,7 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$REPO_ROOT"
-CONFIG="examples/foxlight/skulk-harness.yaml"
+CONFIG="${SKULK_HARNESS_CONFIG:-examples/foxlight/skulk-harness.yaml}"
 LOG="${SKULK_E2E_BATTERY_LOG:-runs/e2e_battery.log}"
 mkdir -p "$(dirname "$LOG")"
 : > "$LOG"

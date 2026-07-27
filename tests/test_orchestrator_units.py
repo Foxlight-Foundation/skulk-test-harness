@@ -8,7 +8,7 @@ import shlex
 import wave
 from collections.abc import Callable
 from pathlib import Path
-from typing import Never
+from typing import Never, cast
 
 import httpx
 import pytest
@@ -156,6 +156,195 @@ def test_placement_from_preview_extracts_nodes_and_runners() -> None:
     assert placement.runner_ids == ["runner-a"]
     assert placement.sharding == "Pipeline"
     assert placement.instance_meta == "MlxRingInstance"
+
+
+def test_placement_preview_ignores_incidental_fabric_nodes() -> None:
+    """Configured runs must choose only previews inside the eligible inventory."""
+
+    def _preview(*node_ids: str) -> dict[str, object]:
+        return {
+            "sharding": "Pipeline",
+            "instance_meta": "MlxRing",
+            "instance": {
+                "MlxRingInstance": {
+                    "shardAssignments": {
+                        "nodeToRunner": {
+                            node_id: f"runner-{index}"
+                            for index, node_id in enumerate(node_ids)
+                        },
+                        "runnerToShard": {},
+                    }
+                }
+            },
+        }
+
+    class _PreviewClient:
+        def get_placement_previews(
+            self,
+            _model_id: str,
+            *,
+            excluded_node_ids: list[str],
+        ) -> list[dict[str, object]]:
+            assert excluded_node_ids == []
+            return [
+                _preview("allowed", "incidental"),
+                _preview("allowed"),
+            ]
+
+    runner = HarnessRunner(
+        config=HarnessConfig(preview_settle_attempts=1),
+        model_sets={},
+        test_sets={},
+    )
+
+    chosen = runner._choose_preview_once(
+        cast(SkulkClient, cast(object, _PreviewClient())),
+        "mlx-community/Foo",
+        PlacementPolicy(eligible_nodes=["allowed"]),
+    )
+
+    assert chosen is not None
+    assert _placement_from_preview("mlx-community/Foo", chosen).node_ids == [
+        "allowed"
+    ]
+
+
+def test_minimum_placement_enforces_requested_node_width() -> None:
+    """``min_nodes`` must apply to the default minimum strategy, not just exact."""
+
+    def _preview(*node_ids: str) -> dict[str, object]:
+        return {
+            "sharding": "Tensor",
+            "instance_meta": "MlxRing",
+            "instance": {
+                "MlxRingInstance": {
+                    "shardAssignments": {
+                        "nodeToRunner": {
+                            node_id: f"runner-{index}"
+                            for index, node_id in enumerate(node_ids)
+                        },
+                        "runnerToShard": {},
+                    }
+                }
+            },
+        }
+
+    class _PreviewClient:
+        def get_placement_previews(
+            self,
+            _model_id: str,
+            *,
+            excluded_node_ids: list[str],
+        ) -> list[dict[str, object]]:
+            assert excluded_node_ids == []
+            return [
+                _preview("node-a"),
+                _preview("node-a", "node-b"),
+                _preview("node-a", "node-b", "node-c"),
+            ]
+
+    runner = HarnessRunner(
+        config=HarnessConfig(preview_settle_attempts=1),
+        model_sets={},
+        test_sets={},
+    )
+
+    chosen = runner._choose_preview_once(
+        cast(SkulkClient, cast(object, _PreviewClient())),
+        "mlx-community/Foo",
+        PlacementPolicy(sharding="Tensor", min_nodes=2),
+    )
+
+    assert chosen is not None
+    assert _placement_from_preview("mlx-community/Foo", chosen).node_ids == [
+        "node-a",
+        "node-b",
+    ]
+
+
+def test_plan_does_not_reuse_instance_outside_eligible_inventory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A dry run must describe the same eligible placement execution permits."""
+
+    def _preview(*node_ids: str) -> dict[str, object]:
+        return {
+            "sharding": "Pipeline",
+            "instance_meta": "MlxRing",
+            "instance": {
+                "MlxRingInstance": {
+                    "shardAssignments": {
+                        "nodeToRunner": {
+                            node_id: f"runner-{index}"
+                            for index, node_id in enumerate(node_ids)
+                        },
+                        "runnerToShard": {},
+                    }
+                }
+            },
+        }
+
+    class _PlanClient:
+        def __enter__(self) -> "_PlanClient":
+            return self
+
+        def __exit__(self, *_exc: object) -> None:
+            return None
+
+        def detect_runner_state_drift(self) -> list[Issue]:
+            return []
+
+        def find_placements_for_model(
+            self, _model_id: str
+        ) -> list[PlacementResult]:
+            return [
+                PlacementResult(
+                    model_id="mlx-community/Foo",
+                    instance_id="incidental-instance",
+                    node_ids=["incidental"],
+                    ready=True,
+                )
+            ]
+
+        def get_placement_previews(
+            self,
+            _model_id: str,
+            *,
+            excluded_node_ids: list[str],
+        ) -> list[dict[str, object]]:
+            assert excluded_node_ids == ["incidental"]
+            return [_preview("eligible")]
+
+    runner = HarnessRunner(
+        config=HarnessConfig(preview_settle_attempts=1),
+        model_sets={},
+        test_sets={},
+    )
+    monkeypatch.setattr(
+        runner,
+        "resolve_model_set",
+        lambda *_args, **_kwargs: [
+            ModelRef(model_id="mlx-community/Foo", source="explicit")
+        ],
+    )
+    monkeypatch.setattr(runner, "_client", lambda: _PlanClient())
+    from skulk_test_harness import orchestrator as orch
+
+    monkeypatch.setattr(orch, "gather_fingerprint", lambda *_a, **_k: (None, []))
+
+    report = runner.plan(
+        RunSpec(
+            model_set="any",
+            test_set="any",
+            placement=PlacementPolicy(
+                eligible_nodes=["eligible"],
+                excluded_nodes=["incidental"],
+            ),
+        )
+    )
+
+    assert report.placements[0].instance_id is None
+    assert report.placements[0].node_ids == ["eligible"]
 
 
 def test_score_output_accepts_single_file_asteroids_artifact() -> None:
@@ -1000,6 +1189,7 @@ def test_vision_suite_uses_original_card_and_strict_semantic_checks(
     monkeypatch.chdir(root)
     expected_hash = "2832760871d31e987ba83a3ad9366e1b4f603742e716a59976ac13f0a07c12f5"
     correct_response = "FUE4ZG; cyan diamond"
+    perceptual_synonym_response = "FUE4ZG; teal diamond"
     wrong_code_response = "FUE42G; cyan diamond"
     wrong_attribute_response = "FUE4ZG; magenta triangle"
     leaked_response = f"<|im_start|> image\n{correct_response}"
@@ -1030,6 +1220,15 @@ def test_vision_suite_uses_original_card_and_strict_semantic_checks(
         wrong_attribute_response,
         public_vision.success,
     )
+    assert (
+        _score_output(
+            "vision-model",
+            public_vision.name,
+            perceptual_synonym_response,
+            public_vision.success,
+        )
+        == []
+    )
 
     foxlight_sets = load_test_sets(
         root / "examples/foxlight/test_sets.yaml"
@@ -1049,6 +1248,15 @@ def test_vision_suite_uses_original_card_and_strict_semantic_checks(
                 "vision-model",
                 vision.name,
                 correct_response,
+                vision.success,
+            )
+            == []
+        )
+        assert (
+            _score_output(
+                "vision-model",
+                vision.name,
+                perceptual_synonym_response,
                 vision.success,
             )
             == []
@@ -3987,13 +4195,18 @@ def test_concurrent_test_counts_dropped_worker_slots_as_failures(
 
 
 def _placement(
-    instance_id: str, *, ready: bool = False, terminal_failure: bool = False
+    instance_id: str,
+    *,
+    ready: bool = False,
+    terminal_failure: bool = False,
+    node_ids: list[str] | None = None,
 ) -> PlacementResult:
     return PlacementResult(
         model_id="m",
         instance_id=instance_id,
         ready=ready,
         terminal_failure=terminal_failure,
+        node_ids=node_ids or [],
     )
 
 
@@ -4056,6 +4269,48 @@ def test_wait_for_model_ready_returns_immediately_when_ready() -> None:
     assert result.ready is True
     assert result.reused_existing is True
     assert client.calls == 1  # no polling loop
+
+
+def test_wait_for_model_ready_ignores_ready_incidental_duplicate() -> None:
+    incidental = _placement(
+        "incidental",
+        ready=True,
+        node_ids=["incidental-node"],
+    )
+    eligible_loading = _placement("eligible", node_ids=["eligible-node"])
+    eligible_ready = _placement(
+        "eligible",
+        ready=True,
+        node_ids=["eligible-node"],
+    )
+    client = _ScriptedPlacementClient(
+        [
+            [incidental, eligible_loading],
+            [incidental, eligible_ready],
+        ]
+    )
+    spec = RunSpec(
+        model_set="m",
+        test_set="t",
+        mode="execute",
+        placement=PlacementPolicy(
+            eligible_nodes=["eligible-node"],
+            excluded_nodes=["incidental-node"],
+        ),
+    )
+
+    result = _fast_runner()._wait_for_model_ready(
+        client,  # type: ignore[arg-type]
+        "m",
+        spec,
+        _report(),
+        created_by_harness=False,
+        reused=True,
+    )
+
+    assert result.ready is True
+    assert result.instance_id == "eligible"
+    assert result.node_ids == ["eligible-node"]
 
 
 def test_wait_for_model_ready_fails_fast_on_disappearance() -> None:

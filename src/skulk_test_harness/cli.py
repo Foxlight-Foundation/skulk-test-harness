@@ -138,6 +138,60 @@ def _require_fleet_or_refuse(cfg: HarnessConfig, *, force: bool) -> None:
         raise typer.Exit(code=1)
 
 
+def _eligible_fleet_node_ids(
+    cfg: HarnessConfig, state: dict[str, object]
+) -> set[str] | None:
+    """Resolve and validate the configured friendly-name eligibility allowlist."""
+
+    if not cfg.eligible_fleet_nodes:
+        return None
+
+    identities = _dict_field(state, "nodeIdentities")
+    if not identities:
+        raise ValueError(
+            "eligible_fleet_nodes is configured, but /state has no nodeIdentities"
+        )
+
+    ids_by_friendly_name: dict[str, list[str]] = {}
+    for node_id, raw_identity in identities.items():
+        if not isinstance(raw_identity, dict):
+            continue
+        friendly_name = raw_identity.get("friendlyName")
+        if isinstance(friendly_name, str):
+            ids_by_friendly_name.setdefault(friendly_name, []).append(node_id)
+
+    requested = set(cfg.eligible_fleet_nodes)
+    missing = requested - ids_by_friendly_name.keys()
+    if missing:
+        raise ValueError(
+            "configured-fleet eligibility violation: required node(s) are absent: "
+            f"{sorted(missing)}"
+        )
+
+    ambiguous = sorted(
+        name for name in requested if len(ids_by_friendly_name[name]) != 1
+    )
+    if ambiguous:
+        raise ValueError(
+            "configured-fleet eligibility violation: friendly name(s) are "
+            f"ambiguous: {ambiguous}"
+        )
+
+    return {ids_by_friendly_name[name][0] for name in requested}
+
+
+def _placement_scope_from_state(
+    cfg: HarnessConfig, state: dict[str, object]
+) -> tuple[list[str], list[str]]:
+    """Return resolved eligible IDs and currently incidental IDs."""
+
+    eligible = _eligible_fleet_node_ids(cfg, state)
+    if eligible is None:
+        return [], []
+    identities = _dict_field(state, "nodeIdentities")
+    return sorted(eligible), sorted(identities.keys() - eligible)
+
+
 def _require_shipping_data_transport(
     cfg: HarnessConfig, state: dict[str, object]
 ) -> None:
@@ -165,8 +219,13 @@ def _require_shipping_data_transport(
             "nodeIdentities to define the live fleet"
         )
 
+    eligible = _eligible_fleet_node_ids(cfg, state)
+    considered_node_ids = (
+        eligible if eligible is not None else resources.keys() | identities.keys()
+    )
+
     mismatches: list[str] = []
-    for node_id in resources.keys() | identities.keys():
+    for node_id in considered_node_ids:
         identity = identities.get(node_id)
         friendly_name = (
             identity.get("friendlyName")
@@ -192,7 +251,9 @@ def _require_shipping_data_transport(
         )
 
 
-def _require_execution_preflight(cfg: HarnessConfig, *, force: bool) -> None:
+def _require_execution_preflight(
+    cfg: HarnessConfig, *, force: bool
+) -> tuple[list[str], list[str]]:
     """Apply every safety and shipping-contract gate before fleet mutation.
 
     All execution entry points share this preflight so natural-language goals,
@@ -200,16 +261,51 @@ def _require_execution_preflight(cfg: HarnessConfig, *, force: bool) -> None:
     configured profile does not ship.
     """
     _require_fleet_or_refuse(cfg, force=force)
-    if cfg.required_data_transport is None:
-        return
+    if cfg.required_data_transport is None and not cfg.eligible_fleet_nodes:
+        return [], []
     with SkulkClient(
         cfg.api_base_url, request_timeout_s=cfg.request_timeout_s
     ) as client:
         try:
-            _require_shipping_data_transport(cfg, client.get_state())
+            state = client.get_state()
+            scope = _placement_scope_from_state(cfg, state)
+            _require_shipping_data_transport(cfg, state)
         except ValueError as exception:
             console.print(f"[bold red]REFUSED[/]: {exception}")
             raise typer.Exit(code=1) from exception
+    return scope
+
+
+def _read_configured_placement_scope(
+    cfg: HarnessConfig,
+) -> tuple[list[str], list[str]]:
+    """Resolve a configured inventory for a non-mutating plan."""
+    if not cfg.eligible_fleet_nodes:
+        return [], []
+    with SkulkClient(
+        cfg.api_base_url, request_timeout_s=cfg.request_timeout_s
+    ) as client:
+        try:
+            return _placement_scope_from_state(cfg, client.get_state())
+        except ValueError as exception:
+            console.print(f"[bold red]REFUSED[/]: {exception}")
+            raise typer.Exit(code=1) from exception
+
+
+def _policy_with_placement_scope(
+    policy: PlacementPolicy,
+    scope: tuple[list[str], list[str]],
+) -> PlacementPolicy:
+    """Constrain a placement policy to the resolved configured inventory."""
+    eligible_node_ids, incidental_node_ids = scope
+    return policy.model_copy(
+        update={
+            "eligible_nodes": eligible_node_ids,
+            "excluded_nodes": sorted(
+                set(policy.excluded_nodes).union(incidental_node_ids)
+            ),
+        }
+    )
 
 
 def _print_lease(store: FleetLockStore) -> None:
@@ -596,15 +692,20 @@ def plan(
     """Plan a harness run without mutating the cluster."""
 
     cfg, runner = _load_runner(config)
+    policy = PlacementPolicy(
+        sharding=sharding,  # type: ignore[arg-type]
+        instance_meta=instance_meta,  # type: ignore[arg-type]
+        min_nodes=min_nodes,
+    )
+    policy = _policy_with_placement_scope(
+        policy,
+        _read_configured_placement_scope(cfg),
+    )
     spec = RunSpec(
         model_set=model_set,
         test_set=test_set,
         mode="plan",
-        placement=PlacementPolicy(
-            sharding=sharding,  # type: ignore[arg-type]
-            instance_meta=instance_meta,  # type: ignore[arg-type]
-            min_nodes=min_nodes,
-        ),
+        placement=policy,
     )
     report = runner.plan(spec)
     run_dir = ReportWriter(cfg.output_dir).write(report)
@@ -673,18 +774,23 @@ def run(
     cfg, runner = _load_runner(config)
     # An executed run mutates the shared fleet; refuse if another agent holds the
     # lease. A dry-run only reads/plans, so it never needs the fleet.
+    placement_scope: tuple[list[str], list[str]] | None = None
     if execute:
-        _require_execution_preflight(cfg, force=force)
+        placement_scope = _require_execution_preflight(cfg, force=force)
+    elif cfg.eligible_fleet_nodes:
+        placement_scope = _read_configured_placement_scope(cfg)
     # Resolve friendly names to live libp2p node IDs before building the
     # spec: placement exclusion is by node ID, but node IDs are ephemeral so a
     # battery cell can only name a node by its stable friendly name.
-    excluded_node_ids: list[str] = []
+    eligible_node_ids, incidental_node_ids = placement_scope or ([], [])
+    excluded_node_ids: list[str] = list(incidental_node_ids)
     requested = [n.strip() for n in (exclude_nodes or "").split(",") if n.strip()]
     if requested:
         with SkulkClient(
             cfg.api_base_url, request_timeout_s=cfg.request_timeout_s
         ) as client:
-            excluded_node_ids = client.resolve_node_ids(requested)
+            excluded_node_ids.extend(client.resolve_node_ids(requested))
+    excluded_node_ids = sorted(set(excluded_node_ids))
     spec = RunSpec(
         model_set=model_set,
         test_set=test_set,
@@ -697,6 +803,7 @@ def run(
             instance_meta=instance_meta,  # type: ignore[arg-type]
             min_nodes=min_nodes,
             excluded_nodes=excluded_node_ids,
+            eligible_nodes=eligible_node_ids,
         ),
     )
     report = runner.execute(spec) if execute else runner.plan(spec)
@@ -761,13 +868,24 @@ def goal(
     """Parse a constrained natural-language goal into a plan or run."""
 
     cfg, runner = _load_runner(config)
-    if execute:
+    placement_scope = (
         _require_execution_preflight(cfg, force=force)
+        if execute
+        else _read_configured_placement_scope(cfg)
+    )
     spec = parse_goal(
         text,
         model_set_names=list(runner.model_sets),
         test_set_names=list(runner.test_sets),
         execute=execute,
+    )
+    spec = spec.model_copy(
+        update={
+            "placement": _policy_with_placement_scope(
+                spec.placement,
+                placement_scope,
+            )
+        }
     )
     report = runner.execute(spec) if execute else runner.plan(spec)
     run_dir = ReportWriter(cfg.output_dir).write(report)
@@ -888,9 +1006,18 @@ def stability_failover(
 
     _require_destructive_opt_in(execute_destructive)
     cfg = load_config(config)
-    _require_execution_preflight(cfg, force=force)
+    eligible_node_ids, incidental_node_ids = _require_execution_preflight(
+        cfg, force=force
+    )
     with _stability_client(cfg) as client:
-        report = stability.run_failover(client, cfg, model, min_nodes=min_nodes)
+        report = stability.run_failover(
+            client,
+            cfg,
+            model,
+            min_nodes=min_nodes,
+            eligible_node_ids=eligible_node_ids,
+            excluded_node_ids=incidental_node_ids,
+        )
     _write_stability(cfg, report)
 
 
@@ -918,9 +1045,22 @@ def stability_churn(
 
     _require_destructive_opt_in(execute_destructive)
     cfg = load_config(config)
-    _require_execution_preflight(cfg, force=force)
+    eligible_node_ids, incidental_node_ids = _require_execution_preflight(
+        cfg, force=force
+    )
     with _stability_client(cfg) as client:
-        report = stability.run_churn(client, cfg, model, rounds=rounds)
+        def resolve_placement_scope() -> tuple[list[str], list[str]]:
+            return _placement_scope_from_state(cfg, client.get_state())
+
+        report = stability.run_churn(
+            client,
+            cfg,
+            model,
+            rounds=rounds,
+            eligible_node_ids=eligible_node_ids,
+            excluded_node_ids=incidental_node_ids,
+            placement_scope_resolver=resolve_placement_scope,
+        )
     _write_stability(cfg, report)
 
 
@@ -941,10 +1081,18 @@ def stability_soak(
     """Drive sustained concurrent load and report latency/failures."""
 
     cfg = load_config(config)
-    _require_execution_preflight(cfg, force=force)
+    eligible_node_ids, incidental_node_ids = _require_execution_preflight(
+        cfg, force=force
+    )
     with _stability_client(cfg) as client:
         report = stability.run_soak(
-            client, cfg, model, concurrency=concurrency, duration_s=duration_s
+            client,
+            cfg,
+            model,
+            concurrency=concurrency,
+            duration_s=duration_s,
+            eligible_node_ids=eligible_node_ids,
+            excluded_node_ids=incidental_node_ids,
         )
     _write_stability(cfg, report)
 
@@ -972,9 +1120,17 @@ def stability_refusal(
 
     _require_destructive_opt_in(execute_destructive)
     cfg = load_config(config)
-    _require_execution_preflight(cfg, force=force)
+    eligible_node_ids, incidental_node_ids = _require_execution_preflight(
+        cfg, force=force
+    )
     with _stability_client(cfg) as client:
-        report = stability.run_placement_refusal(client, cfg, model)
+        report = stability.run_placement_refusal(
+            client,
+            cfg,
+            model,
+            eligible_node_ids=eligible_node_ids,
+            excluded_node_ids=incidental_node_ids,
+        )
     _write_stability(cfg, report)
 
 

@@ -106,6 +106,20 @@ class HarnessRunner:
             report.issues.extend(client.detect_runner_state_drift())
             for model in models:
                 existing = client.find_placements_for_model(model.model_id)
+                if spec.placement.excluded_nodes:
+                    excluded = set(spec.placement.excluded_nodes)
+                    existing = [
+                        placement
+                        for placement in existing
+                        if not excluded.intersection(placement.node_ids)
+                    ]
+                if spec.placement.eligible_nodes:
+                    eligible = set(spec.placement.eligible_nodes)
+                    existing = [
+                        placement
+                        for placement in existing
+                        if set(placement.node_ids).issubset(eligible)
+                    ]
                 if existing and spec.reuse_existing_instances:
                     report.placements.append(existing[0])
                     continue
@@ -524,16 +538,25 @@ class HarnessRunner:
             )
             if preview.get("error") in (None, "")
         ]
+        if placement.eligible_nodes:
+            eligible = set(placement.eligible_nodes)
+            previews = [
+                preview
+                for preview in previews
+                if set(_preview_node_ids(preview)).issubset(eligible)
+            ]
+        if placement.min_nodes is not None:
+            previews = [
+                preview
+                for preview in previews
+                if _preview_node_count(preview) >= placement.min_nodes
+            ]
         if placement.strategy == "exact":
             previews = [
                 p
                 for p in previews
                 if p.get("sharding") == placement.sharding
                 and p.get("instance_meta") == placement.instance_meta
-                and (
-                    placement.min_nodes is None
-                    or _preview_node_count(p) >= placement.min_nodes
-                )
             ]
         elif placement.strategy == "single":
             previews = [p for p in previews if _preview_node_count(p) == 1]
@@ -578,6 +601,9 @@ class HarnessRunner:
         if spec.placement.excluded_nodes:
             excluded = set(spec.placement.excluded_nodes)
             existing = [p for p in existing if not excluded.intersection(p.node_ids)]
+        if spec.placement.eligible_nodes:
+            eligible = set(spec.placement.eligible_nodes)
+            existing = [p for p in existing if set(p.node_ids).issubset(eligible)]
         if existing and spec.reuse_existing_instances:
             # Resolve readiness by MODEL, not by a pinned instance id. If the
             # cluster tears the reused instance down and re-places the model
@@ -637,6 +663,21 @@ class HarnessRunner:
             reused=False,
             ignore_instance_ids=preexisting_instance_ids,
         )
+        eligible = set(spec.placement.eligible_nodes)
+        if placement.ready and eligible and not set(placement.node_ids).issubset(
+            eligible
+        ):
+            placement = placement.model_copy(
+                update={
+                    "ready": False,
+                    "terminal_failure": True,
+                    "unavailable_reason": "ineligible_nodes",
+                    "runner_failure_messages": [
+                        "Live placement used a node outside the configured eligibility "
+                        "allowlist; the harness refused to execute tests on it"
+                    ],
+                }
+            )
         if placement.ready and placement.sharding != requested_sharding:
             report.issues.append(
                 Issue(
@@ -700,12 +741,17 @@ class HarnessRunner:
         ``readiness_transitions`` when not ready; the caller owns issue reporting.
         """
         excluded = set(spec.placement.excluded_nodes or ())
+        eligible = set(spec.placement.eligible_nodes or ())
 
         def current_placements() -> list[PlacementResult]:
             placements = client.find_placements_for_model(model_id)
             if excluded:
                 placements = [
                     p for p in placements if not excluded.intersection(p.node_ids)
+                ]
+            if eligible:
+                placements = [
+                    p for p in placements if set(p.node_ids).issubset(eligible)
                 ]
             if ignore_instance_ids:
                 placements = [
@@ -4368,6 +4414,11 @@ def _not_ready_message(placement: PlacementResult) -> str:
             "window; stopped the readiness wait instead of polling a vanished "
             "instance id"
         )
+    if reason == "ineligible_nodes":
+        return (
+            "Live placement used a node outside the configured eligibility "
+            "allowlist; refused to execute tests on incidental fabric members"
+        )
     if reason == "load_failed" or placement.terminal_failure:
         return "Instance runner failed while loading"
     if reason == "ready_timeout":
@@ -5307,16 +5358,24 @@ _STT_CAPABILITY_ALIASES = frozenset(
 
 
 def _preview_node_count(preview: dict[str, object]) -> int:
+    return len(_preview_node_ids(preview))
+
+
+def _preview_node_ids(preview: dict[str, object]) -> list[str]:
+    """Return node IDs assigned by a placement preview."""
+
     instance = preview.get("instance")
     parsed = unwrap_tagged(instance)
     if parsed is None:
-        return 0
+        return []
     _tag, body = parsed
     assignments = body.get("shardAssignments")
     if not isinstance(assignments, dict):
-        return 0
+        return []
     node_to_runner = assignments.get("nodeToRunner")
-    return len(node_to_runner) if isinstance(node_to_runner, dict) else 0
+    if not isinstance(node_to_runner, dict):
+        return []
+    return [node_id for node_id in node_to_runner if isinstance(node_id, str)]
 
 
 def _placement_from_preview(
