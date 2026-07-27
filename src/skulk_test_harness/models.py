@@ -895,7 +895,8 @@ class PromptTest(HarnessBaseModel):
         description=(
             "For `kind: concurrent`, require every successful request to report "
             "runner-ground-truth `serving_batches=true`; widths above one must "
-            "also observe in-flight-at-admission above one."
+            "also observe in-flight-at-admission above one. These cells use "
+            "Skulk's non-streaming benchmark endpoint, so TTFT is unavailable."
         ),
     )
     throughput_baseline_test: str | None = Field(

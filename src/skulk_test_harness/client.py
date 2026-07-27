@@ -734,6 +734,108 @@ async def stream_chat_async(
     return parser.finish()
 
 
+async def bench_chat_async(
+    async_client: httpx.AsyncClient,
+    *,
+    model_id: str,
+    messages: list[dict[str, object]],
+    max_tokens: int,
+    temperature: float | None,
+    top_p: float | None,
+    enable_thinking: bool | None = None,
+    reasoning_effort: str | None = None,
+    tools: list[dict[str, object]] | None = None,
+    tool_choice: str | dict[str, object] | None = None,
+    parallel_tool_calls: bool | None = None,
+    top_logprobs: int | None = None,
+    request_timeout_s: float,
+    generation_timeout_s: float,
+) -> ChatExecution:
+    """Run one non-streaming benchmark completion on a shared async client.
+
+    Skulk exposes runner-ground-truth batching provenance only on its explicit
+    benchmark API. Concurrent tests that require this contract use this helper
+    instead of asking ordinary chat streams to expose live admission state.
+    """
+
+    payload = _chat_completion_payload(
+        model_id=model_id,
+        messages=messages,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        top_p=top_p,
+        enable_thinking=enable_thinking,
+        reasoning_effort=reasoning_effort,
+        tools=tools,
+        tool_choice=tool_choice,
+        parallel_tool_calls=parallel_tool_calls,
+        top_logprobs=top_logprobs,
+    )
+    payload["stream"] = False
+    started = time.monotonic()
+    path = "/bench/chat/completions"
+    try:
+        response = await async_client.post(
+            path,
+            json=payload,
+            timeout=httpx.Timeout(
+                timeout=None,
+                connect=request_timeout_s,
+                read=generation_timeout_s,
+                write=request_timeout_s,
+                pool=request_timeout_s,
+            ),
+        )
+    except (httpx.TimeoutException, httpx.TransportError) as exc:
+        raise SkulkApiError("POST", path, 0, f"{type(exc).__name__}: {exc}") from exc
+    if response.status_code >= 400:
+        raise SkulkApiError("POST", path, response.status_code, response.text)
+    raw_event = response.json()
+    if not isinstance(raw_event, dict):
+        raise TypeError(f"Unexpected benchmark chat response: {raw_event!r}")
+    event: dict[str, object] = raw_event
+    text = _extract_non_stream_text(event)
+    reasoning_text = _extract_non_stream_reasoning(event)
+    tool_calls = _extract_non_stream_tool_calls(event)
+    generated_chars = len(text) + len(reasoning_text)
+    metrics = GenerationMetrics(
+        elapsed_s=time.monotonic() - started,
+        ttft_s=None,
+        output_chars=len(text),
+        generated_chars=generated_chars,
+        chunks=1 if generated_chars else 0,
+        approx_output_tokens=(
+            max(1, round(generated_chars / 4)) if generated_chars else 0
+        ),
+    )
+    stats = event.get("generation_stats")
+    if isinstance(stats, dict):
+        metrics = metrics.model_copy(
+            update={
+                "skulk_prompt_tps": _float_or_none(stats.get("prompt_tps")),
+                "skulk_generation_tps": _float_or_none(
+                    stats.get("generation_tps")
+                ),
+                "skulk_prompt_tokens": _int_or_none(stats.get("prompt_tokens")),
+                "skulk_generation_tokens": _int_or_none(
+                    stats.get("generation_tokens")
+                ),
+                "serving_batches": _bool_or_none(stats.get("serving_batches")),
+                "in_flight_at_admission": _int_or_none(
+                    stats.get("in_flight_at_admission")
+                ),
+            }
+        )
+    return ChatExecution(
+        text=text,
+        reasoning_text=reasoning_text,
+        tool_calls=tool_calls,
+        metrics=metrics,
+        command_id=str(event.get("id")) if event.get("id") is not None else None,
+        raw_events=[event],
+    )
+
+
 class SkulkClient:
     """Small synchronous Skulk API client."""
 
@@ -2499,6 +2601,22 @@ def _extract_non_stream_text(event: dict[str, object]) -> str:
         return ""
     content = message.get("content")
     return content if isinstance(content, str) else ""
+
+
+def _extract_non_stream_reasoning(event: dict[str, object]) -> str:
+    """Extract separated reasoning text from one non-streaming chat response."""
+
+    choices = event.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return ""
+    first = choices[0]
+    if not isinstance(first, dict):
+        return ""
+    message = first.get("message")
+    if not isinstance(message, dict):
+        return ""
+    reasoning = message.get("reasoning_content")
+    return reasoning if isinstance(reasoning, str) else ""
 
 
 def _extract_non_stream_tool_calls(event: dict[str, object]) -> list[ToolCallRecord]:

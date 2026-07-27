@@ -34,7 +34,7 @@ Each map key must match the test set's `name`.
 | `artifact` | Artifact-style generation checks |
 | `tool` | OpenAI-style tool call behavior |
 | `cancel` | Streaming cancellation and follow-up health |
-| `concurrent` | Aggregate decode throughput and correctness under many simultaneous requests; reports aggregate tokens per second, per-request decode-rate distribution, and time-to-first-token under load. Single-turn: it forwards `tools` for tool-call emission under load but does not run the tool-result round trip (`tool_mocks` is rejected; use `kind: tool` for that) |
+| `concurrent` | Aggregate decode throughput and correctness under many simultaneous requests; reports aggregate tokens per second and per-request decode-rate distribution. Streaming cells also report time-to-first-token under load. Single-turn: it forwards `tools` for tool-call emission under load but does not run the tool-result round trip (`tool_mocks` is rejected; use `kind: tool` for that) |
 | `error` | Expected API error behavior |
 | `embedding` | Embeddings endpoint behavior |
 | `audio_speech` | Text-to-speech endpoint behavior; generated audio is saved as an artifact |
@@ -74,7 +74,7 @@ Each map key must match the test set's `name`.
 | `cancel_after_chunks` | Stream chunks before cancellation |
 | `concurrency` | Simultaneous in-flight requests for `kind: concurrent` (asyncio workers on one event loop, sharing a client that opens a fresh connection per request) |
 | `concurrent_requests_per_worker` | Sequential requests each concurrent worker issues; total load is `concurrency * concurrent_requests_per_worker` |
-| `require_batched_serving` | For `kind: concurrent`, require every successful response to carry runner-ground-truth `serving_batches: true`; widths above one must also prove that at least two requests overlapped at runner admission |
+| `require_batched_serving` | For `kind: concurrent`, use the non-streaming benchmark endpoint and require every successful response to carry runner-ground-truth `serving_batches: true`; widths above one must also prove that at least two requests overlapped at runner admission. TTFT is unavailable for these cells because ordinary chat streams intentionally do not expose live admission state |
 | `throughput_baseline_test` | Name of an earlier concurrent test in the same set whose same-model, same-repetition aggregate throughput is the baseline |
 | `min_aggregate_tps_multiplier` | Minimum aggregate-throughput multiplier over `throughput_baseline_test`; configured together with the baseline name to reject flat serialized throughput |
 | `followup_prompt` | Health check after cancel or expected error |
