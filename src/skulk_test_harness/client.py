@@ -37,9 +37,7 @@ def _required_int(payload: Mapping[str, object], key: str) -> int:
     return value
 
 
-def _optional_int(
-    payload: Mapping[str, object], key: str, *, default: int = 0
-) -> int:
+def _optional_int(payload: Mapping[str, object], key: str, *, default: int = 0) -> int:
     """Read an additive integer counter while remaining compatible with older APIs."""
 
     value = payload.get(key, default)
@@ -616,6 +614,12 @@ class _ChatStreamParser:
                     "skulk_generation_tokens": _int_or_none(
                         self._stream_stats.get("generation_tokens")
                     ),
+                    "serving_batches": _bool_or_none(
+                        self._stream_stats.get("serving_batches")
+                    ),
+                    "in_flight_at_admission": _int_or_none(
+                        self._stream_stats.get("in_flight_at_admission")
+                    ),
                 }
             )
         return ChatExecution(
@@ -988,9 +992,7 @@ class SkulkClient:
     def get_vision_media_diagnostics(self) -> VisionMediaDiagnosticsSnapshot:
         """Return typed vision upload ingress and egress diagnostics."""
 
-        return VisionMediaDiagnosticsSnapshot.from_payload(
-            self.get_diagnostics_node()
-        )
+        return VisionMediaDiagnosticsSnapshot.from_payload(self.get_diagnostics_node())
 
     def get_provider_capability_diagnostics(
         self,
@@ -1704,14 +1706,19 @@ class SkulkClient:
                     raise SkulkApiError(
                         "POST", "/v1/audio/transcriptions", response.status_code, body
                     )
-                if _base_media_type(response.headers.get("content-type", "")) != "text/event-stream":
+                if (
+                    _base_media_type(response.headers.get("content-type", ""))
+                    != "text/event-stream"
+                ):
                     raise TypeError("Streaming transcription did not return SSE")
                 for line in response.iter_lines():
                     if not line.startswith("data: "):
                         continue
                     payload = json.loads(line.removeprefix("data: "))
                     if not isinstance(payload, dict):
-                        raise TypeError("Streaming transcription event was not an object")
+                        raise TypeError(
+                            "Streaming transcription event was not an object"
+                        )
                     event = cast(dict[str, object], payload)
                     event_type = event.get("type")
                     if not isinstance(event_type, str):
@@ -1734,7 +1741,10 @@ class SkulkClient:
                         if first_transcript_s is None:
                             first_transcript_s = arrival
                         text_parts.append(delta)
-                        if cancel_after_deltas and len(text_parts) >= cancel_after_deltas:
+                        if (
+                            cancel_after_deltas
+                            and len(text_parts) >= cancel_after_deltas
+                        ):
                             canceled = True
                             break
                     if event_type == "transcription.completed":
@@ -1825,9 +1835,7 @@ class SkulkClient:
         if response_max_output_tokens is not None and not (
             1 <= response_max_output_tokens <= 4096
         ):
-            raise ValueError(
-                "response_max_output_tokens must be between 1 and 4096"
-            )
+            raise ValueError("response_max_output_tokens must be between 1 and 4096")
         if not 1 <= turn_count <= 4:
             raise ValueError("realtime turn count must be between 1 and 4")
         if turn_count > 1 and not server_vad:
@@ -2102,7 +2110,10 @@ class SkulkClient:
                         if first_transcript_s is None:
                             first_transcript_s = time.monotonic() - started_at
                         continue
-                    if event_type == "conversation.item.input_audio_transcription.completed":
+                    if (
+                        event_type
+                        == "conversation.item.input_audio_transcription.completed"
+                    ):
                         final_transcript = event.get("transcript")
                         if not isinstance(final_transcript, str):
                             raise TypeError("Realtime final transcript was not text")
@@ -2140,13 +2151,17 @@ class SkulkClient:
                     if event_type == "response.output_text.done":
                         text = event.get("text")
                         if not isinstance(text, str):
-                            raise TypeError("Realtime assistant final text was not text")
+                            raise TypeError(
+                                "Realtime assistant final text was not text"
+                            )
                         assistant_parts = [text]
                         continue
                     if event_type == "response.audio.delta":
                         delta = event.get("delta")
                         if not isinstance(delta, str):
-                            raise TypeError("Realtime response audio delta was not base64")
+                            raise TypeError(
+                                "Realtime response audio delta was not base64"
+                            )
                         audio_chunk = base64.b64decode(delta, validate=True)
                         response_audio_parts.append(audio_chunk)
                         current_response_audio.append(audio_chunk)
@@ -2158,7 +2173,9 @@ class SkulkClient:
                     if event_type == "response.done":
                         response_payload = event.get("response")
                         if not isinstance(response_payload, dict):
-                            raise TypeError("Realtime response.done omitted response status")
+                            raise TypeError(
+                                "Realtime response.done omitted response status"
+                            )
                         status = response_payload.get("status")
                         if not isinstance(status, str):
                             raise TypeError("Realtime response status was not text")
@@ -2292,6 +2309,10 @@ class SkulkClient:
                     "skulk_prompt_tokens": _int_or_none(stats.get("prompt_tokens")),
                     "skulk_generation_tokens": _int_or_none(
                         stats.get("generation_tokens")
+                    ),
+                    "serving_batches": _bool_or_none(stats.get("serving_batches")),
+                    "in_flight_at_admission": _int_or_none(
+                        stats.get("in_flight_at_admission")
                     ),
                 }
             )
@@ -2612,9 +2633,14 @@ def _float_or_none(value: object) -> float | None:
 
 
 def _int_or_none(value: object) -> int | None:
-    if isinstance(value, int):
+    if isinstance(value, int) and not isinstance(value, bool):
         return value
     return None
+
+
+def _bool_or_none(value: object) -> bool | None:
+    """Return strict boolean generation provenance without truthy coercion."""
+    return value if isinstance(value, bool) else None
 
 
 def _active_runner_ids(state: dict[str, object]) -> set[str]:

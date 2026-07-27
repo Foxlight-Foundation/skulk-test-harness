@@ -444,6 +444,40 @@ test_sets:
           min_transcript_deltas: 1
 ```
 
+## Prove Concurrent Serving
+
+A concurrency test can require runtime provenance and compare aggregate
+throughput with an earlier single-stream cell. This prevents a serialized
+engine from passing merely because all requests eventually finish:
+
+```yaml
+test_sets:
+  batching-contract:
+    name: batching-contract
+    tests:
+      - name: concurrent-1
+        kind: concurrent
+        prompt: Write continuous technical prose.
+        concurrency: 1
+        concurrent_requests_per_worker: 3
+        require_batched_serving: true
+        max_tokens: 512
+      - name: concurrent-4
+        kind: concurrent
+        prompt: Write continuous technical prose.
+        concurrency: 4
+        concurrent_requests_per_worker: 2
+        require_batched_serving: true
+        throughput_baseline_test: concurrent-1
+        min_aggregate_tps_multiplier: 1.2
+        max_tokens: 512
+```
+
+The baseline must appear earlier in the set and use the same repetition
+number. At widths above one, `require_batched_serving` also requires an observed
+runner admission width of at least two; a configuration flag alone is not proof
+that requests overlapped.
+
 ## Success Criteria
 
 | Field | Use it when you need to check... |

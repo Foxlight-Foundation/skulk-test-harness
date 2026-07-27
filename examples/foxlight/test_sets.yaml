@@ -1274,6 +1274,7 @@ test_sets:
     tests:
       - name: concurrent-1
         kind: concurrent
+        require_batched_serving: true
         concurrency: 1
         concurrent_requests_per_worker: 3
         system: You are a thorough technical writer. Write continuous prose.
@@ -1291,6 +1292,9 @@ test_sets:
           min_generated_chars: 500
       - name: concurrent-4
         kind: concurrent
+        require_batched_serving: true
+        throughput_baseline_test: concurrent-1
+        min_aggregate_tps_multiplier: 1.2
         concurrency: 4
         concurrent_requests_per_worker: 2
         system: You are a thorough technical writer. Write continuous prose.
@@ -1304,6 +1308,7 @@ test_sets:
           min_generated_chars: 500
       - name: concurrent-8
         kind: concurrent
+        require_batched_serving: true
         concurrency: 8
         concurrent_requests_per_worker: 2
         system: You are a thorough technical writer. Write continuous prose.
@@ -1317,6 +1322,7 @@ test_sets:
           min_generated_chars: 500
       - name: concurrent-16
         kind: concurrent
+        require_batched_serving: true
         concurrency: 16
         concurrent_requests_per_worker: 2
         system: You are a thorough technical writer. Write continuous prose.
@@ -1330,6 +1336,7 @@ test_sets:
           min_generated_chars: 500
       - name: concurrent-32
         kind: concurrent
+        require_batched_serving: true
         concurrency: 32
         concurrent_requests_per_worker: 2
         system: You are a thorough technical writer. Write continuous prose.
@@ -1343,6 +1350,7 @@ test_sets:
           min_generated_chars: 500
       - name: concurrent-64
         kind: concurrent
+        require_batched_serving: true
         concurrency: 64
         concurrent_requests_per_worker: 2
         system: You are a thorough technical writer. Write continuous prose.
@@ -1370,6 +1378,7 @@ test_sets:
     tests:
       - name: concurrent-1
         kind: concurrent
+        require_batched_serving: true
         concurrency: 1
         concurrent_requests_per_worker: 3
         system: You are a thorough technical writer. Write continuous prose.
@@ -1386,6 +1395,9 @@ test_sets:
           min_chars: 500
       - name: concurrent-4
         kind: concurrent
+        require_batched_serving: true
+        throughput_baseline_test: concurrent-1
+        min_aggregate_tps_multiplier: 1.2
         concurrency: 4
         concurrent_requests_per_worker: 2
         system: You are a thorough technical writer. Write continuous prose.
@@ -1398,6 +1410,7 @@ test_sets:
           min_chars: 500
       - name: concurrent-8
         kind: concurrent
+        require_batched_serving: true
         concurrency: 8
         concurrent_requests_per_worker: 2
         system: You are a thorough technical writer. Write continuous prose.
@@ -1410,6 +1423,7 @@ test_sets:
           min_chars: 500
       - name: concurrent-16
         kind: concurrent
+        require_batched_serving: true
         concurrency: 16
         concurrent_requests_per_worker: 2
         system: You are a thorough technical writer. Write continuous prose.
@@ -1422,6 +1436,7 @@ test_sets:
           min_chars: 500
       - name: concurrent-32
         kind: concurrent
+        require_batched_serving: true
         concurrency: 32
         concurrent_requests_per_worker: 2
         system: You are a thorough technical writer. Write continuous prose.
@@ -1434,6 +1449,7 @@ test_sets:
           min_chars: 500
       - name: concurrent-64
         kind: concurrent
+        require_batched_serving: true
         concurrency: 64
         concurrent_requests_per_worker: 2
         system: You are a thorough technical writer. Write continuous prose.
@@ -1459,6 +1475,7 @@ test_sets:
     tests:
       - name: concurrent-1
         kind: concurrent
+        require_batched_serving: true
         concurrency: 1
         concurrent_requests_per_worker: 3
         system: You are a thorough technical writer. Write continuous prose.
@@ -1471,6 +1488,9 @@ test_sets:
           min_chars: 500
       - name: concurrent-4
         kind: concurrent
+        require_batched_serving: true
+        throughput_baseline_test: concurrent-1
+        min_aggregate_tps_multiplier: 1.2
         concurrency: 4
         concurrent_requests_per_worker: 2
         system: You are a thorough technical writer. Write continuous prose.
@@ -1483,6 +1503,7 @@ test_sets:
           min_chars: 500
       - name: concurrent-8
         kind: concurrent
+        require_batched_serving: true
         concurrency: 8
         concurrent_requests_per_worker: 2
         system: You are a thorough technical writer. Write continuous prose.
@@ -1495,6 +1516,7 @@ test_sets:
           min_chars: 500
       - name: concurrent-16
         kind: concurrent
+        require_batched_serving: true
         concurrency: 16
         concurrent_requests_per_worker: 2
         system: You are a thorough technical writer. Write continuous prose.
@@ -1518,6 +1540,7 @@ test_sets:
     tests:
       - name: concurrent-1
         kind: concurrent
+        require_batched_serving: true
         concurrency: 1
         concurrent_requests_per_worker: 3
         system: You are a thorough technical writer. Write continuous prose.
@@ -1530,6 +1553,9 @@ test_sets:
           min_chars: 500
       - name: concurrent-4
         kind: concurrent
+        require_batched_serving: true
+        throughput_baseline_test: concurrent-1
+        min_aggregate_tps_multiplier: 1.2
         concurrency: 4
         concurrent_requests_per_worker: 2
         system: You are a thorough technical writer. Write continuous prose.
@@ -1542,6 +1568,7 @@ test_sets:
           min_chars: 500
       - name: concurrent-8
         kind: concurrent
+        require_batched_serving: true
         concurrency: 8
         concurrent_requests_per_worker: 2
         system: You are a thorough technical writer. Write continuous prose.
@@ -1565,6 +1592,7 @@ test_sets:
     tests:
       - name: concurrent-1
         kind: concurrent
+        require_batched_serving: true
         concurrency: 1
         concurrent_requests_per_worker: 3
         system: You are a thorough technical writer. Write continuous prose.
@@ -1582,6 +1610,9 @@ test_sets:
           min_generated_chars: 500
       - name: concurrent-4
         kind: concurrent
+        require_batched_serving: true
+        throughput_baseline_test: concurrent-1
+        min_aggregate_tps_multiplier: 1.2
         concurrency: 4
         concurrent_requests_per_worker: 2
         system: You are a thorough technical writer. Write continuous prose.
@@ -1595,6 +1626,7 @@ test_sets:
           min_generated_chars: 500
       - name: concurrent-8
         kind: concurrent
+        require_batched_serving: true
         concurrency: 8
         concurrent_requests_per_worker: 2
         system: You are a thorough technical writer. Write continuous prose.
@@ -1608,6 +1640,7 @@ test_sets:
           min_generated_chars: 500
       - name: concurrent-16
         kind: concurrent
+        require_batched_serving: true
         concurrency: 16
         concurrent_requests_per_worker: 2
         system: You are a thorough technical writer. Write continuous prose.
@@ -1632,6 +1665,7 @@ test_sets:
     tests:
       - name: concurrent-1
         kind: concurrent
+        require_batched_serving: true
         concurrency: 1
         concurrent_requests_per_worker: 3
         system: You are a thorough technical writer. Write continuous prose.
@@ -1645,6 +1679,9 @@ test_sets:
           min_generated_chars: 500
       - name: concurrent-4
         kind: concurrent
+        require_batched_serving: true
+        throughput_baseline_test: concurrent-1
+        min_aggregate_tps_multiplier: 1.2
         concurrency: 4
         concurrent_requests_per_worker: 2
         system: You are a thorough technical writer. Write continuous prose.
@@ -1658,6 +1695,7 @@ test_sets:
           min_generated_chars: 500
       - name: concurrent-8
         kind: concurrent
+        require_batched_serving: true
         concurrency: 8
         concurrent_requests_per_worker: 2
         system: You are a thorough technical writer. Write continuous prose.

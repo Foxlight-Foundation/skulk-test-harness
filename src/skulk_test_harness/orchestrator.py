@@ -630,9 +630,7 @@ class HarnessRunner:
             return None
 
         min_nodes = spec.placement.min_nodes or max(1, _preview_node_count(preview))
-        requested_sharding = str(
-            preview.get("sharding") or spec.placement.sharding
-        )
+        requested_sharding = str(preview.get("sharding") or spec.placement.sharding)
         try:
             client.place_model(
                 model_id=model_id,
@@ -664,8 +662,10 @@ class HarnessRunner:
             ignore_instance_ids=preexisting_instance_ids,
         )
         eligible = set(spec.placement.eligible_nodes)
-        if placement.ready and eligible and not set(placement.node_ids).issubset(
-            eligible
+        if (
+            placement.ready
+            and eligible
+            and not set(placement.node_ids).issubset(eligible)
         ):
             placement = placement.model_copy(
                 update={
@@ -911,15 +911,16 @@ class HarnessRunner:
                 if no_viable_since is None:
                     no_viable_since = now
                 grace_expired = (
-                    now - no_viable_since
-                    > self.config.placement_appearance_timeout_s
+                    now - no_viable_since > self.config.placement_appearance_timeout_s
                 )
                 never_appeared = not seen_any and now > appearance_deadline
                 if never_appeared:
                     return not_ready("never_appeared")
                 if seen_any and grace_expired:
                     return not_ready(
-                        "load_failed" if placements else "disappeared_without_replacement"
+                        "load_failed"
+                        if placements
+                        else "disappeared_without_replacement"
                     )
             time.sleep(self.config.poll_interval_s)
 
@@ -1015,6 +1016,7 @@ class HarnessRunner:
                 test=test,
                 repetition=repetition,
                 thinking_default=thinking_default,
+                report=report,
             )
         if test.kind == "error":
             return self._run_expected_error_test(
@@ -1374,9 +1376,7 @@ class HarnessRunner:
         elapsed_s = 0.0
         for owner_index, owner in enumerate(owners, start=1):
             role = (
-                "serving_local"
-                if owner.node_id == serving_node_id
-                else "remote_owner"
+                "serving_local" if owner.node_id == serving_node_id else "remote_owner"
             )
             label = f"owner-{owner_index}-{role}"
             try:
@@ -1485,6 +1485,7 @@ class HarnessRunner:
         test: PromptTest,
         repetition: int,
         thinking_default: bool | None = None,
+        report: RunReport | None = None,
     ) -> TestResult:
         """Drive ``concurrency`` simultaneous chat completions and measure load.
 
@@ -1587,6 +1588,9 @@ class HarnessRunner:
         failed = 0
         per_request_tps: list[float] = []
         ttfts: list[float] = []
+        batching_reported = 0
+        batched_requests = 0
+        admission_widths: list[int] = []
         total_generation_tokens = 0
         sample_text = ""
         for execution, error, _started, _ended in records:
@@ -1649,6 +1653,12 @@ class HarnessRunner:
             succeeded += 1
             if per_request_rate is not None:
                 per_request_tps.append(per_request_rate)
+            if metrics.serving_batches is not None:
+                batching_reported += 1
+                if metrics.serving_batches:
+                    batched_requests += 1
+            if metrics.in_flight_at_admission is not None:
+                admission_widths.append(metrics.in_flight_at_admission)
             if not sample_text:
                 sample_text = execution.text
 
@@ -1675,6 +1685,118 @@ class HarnessRunner:
             if wall_span > 0 and total_generation_tokens > 0
             else None
         )
+        contract_failed = False
+        max_admission = max(admission_widths) if admission_widths else None
+        if test.require_batched_serving:
+            if batching_reported != succeeded:
+                contract_failed = True
+                issues.append(
+                    Issue(
+                        severity="error",
+                        model_id=model_id,
+                        test_name=test.name,
+                        message="Batching provenance was missing under concurrent load",
+                        evidence={
+                            "successful_requests": succeeded,
+                            "requests_reporting_batching": batching_reported,
+                        },
+                    )
+                )
+            elif batched_requests != succeeded:
+                contract_failed = True
+                issues.append(
+                    Issue(
+                        severity="error",
+                        model_id=model_id,
+                        test_name=test.name,
+                        message=(
+                            "Runner reported sequential generation in a "
+                            "batching-required concurrency test"
+                        ),
+                        evidence={
+                            "successful_requests": succeeded,
+                            "batched_requests": batched_requests,
+                        },
+                    )
+                )
+            if test.concurrency > 1 and (max_admission is None or max_admission < 2):
+                contract_failed = True
+                issues.append(
+                    Issue(
+                        severity="error",
+                        model_id=model_id,
+                        test_name=test.name,
+                        message=(
+                            "Concurrent requests never overlapped at runner admission"
+                        ),
+                        evidence={
+                            "requested_concurrency": test.concurrency,
+                            "max_in_flight_at_admission": max_admission or 0,
+                        },
+                    )
+                )
+
+        aggregate_multiplier: float | None = None
+        if (
+            test.throughput_baseline_test is not None
+            and test.min_aggregate_tps_multiplier is not None
+        ):
+            baseline = (
+                next(
+                    (
+                        prior
+                        for prior in reversed(report.results)
+                        if prior.model_id == model_id
+                        and prior.test_name == test.throughput_baseline_test
+                        and prior.repetition == repetition
+                    ),
+                    None,
+                )
+                if report is not None
+                else None
+            )
+            baseline_tps = (
+                baseline.metrics.aggregate_generation_tps
+                if baseline is not None
+                else None
+            )
+            if aggregate_tps is None or baseline_tps is None or baseline_tps <= 0:
+                contract_failed = True
+                issues.append(
+                    Issue(
+                        severity="error",
+                        model_id=model_id,
+                        test_name=test.name,
+                        message="Concurrency throughput baseline was unavailable",
+                        evidence={
+                            "baseline_test": test.throughput_baseline_test,
+                        },
+                    )
+                )
+            else:
+                aggregate_multiplier = aggregate_tps / baseline_tps
+                if aggregate_multiplier < test.min_aggregate_tps_multiplier:
+                    contract_failed = True
+                    issues.append(
+                        Issue(
+                            severity="error",
+                            model_id=model_id,
+                            test_name=test.name,
+                            message=(
+                                "Aggregate throughput did not scale above the "
+                                "single-stream baseline"
+                            ),
+                            evidence={
+                                "baseline_test": test.throughput_baseline_test,
+                                "baseline_tps": baseline_tps,
+                                "aggregate_tps": aggregate_tps,
+                                "observed_multiplier": aggregate_multiplier,
+                                "required_multiplier": (
+                                    test.min_aggregate_tps_multiplier
+                                ),
+                            },
+                        )
+                    )
         aggregated_metrics = GenerationMetrics(
             elapsed_s=wall_span,
             wall_span_s=wall_span,
@@ -1685,6 +1807,16 @@ class HarnessRunner:
             concurrent_total_requests=total_requests,
             concurrent_succeeded=succeeded,
             concurrent_failed=failed,
+            serving_batches=(
+                batched_requests == succeeded
+                if batching_reported == succeeded and succeeded > 0
+                else None
+            ),
+            in_flight_at_admission=max_admission,
+            concurrent_batching_reported=batching_reported,
+            concurrent_batched_requests=batched_requests,
+            max_in_flight_at_admission=max_admission,
+            aggregate_tps_multiplier_vs_baseline=aggregate_multiplier,
             per_request_generation_tps_mean=(
                 statistics.fmean(per_request_tps) if per_request_tps else None
             ),
@@ -1697,7 +1829,9 @@ class HarnessRunner:
             model_id=model_id,
             test_name=test.name,
             repetition=repetition,
-            passed=failed == 0 and succeeded == total_requests,
+            passed=(
+                failed == 0 and succeeded == total_requests and not contract_failed
+            ),
             output_text=sample_text,
             reasoning_text="",
             tool_calls=[],
@@ -2992,7 +3126,9 @@ class HarnessRunner:
             try:
                 audio = audio_path.read_bytes()
                 filename = audio_path.name
-                media_type = test.input_audio_mime_type or _guess_audio_media_type(audio_path)
+                media_type = test.input_audio_mime_type or _guess_audio_media_type(
+                    audio_path
+                )
             except OSError as exc:
                 issues.append(
                     Issue(
@@ -3108,7 +3244,13 @@ class HarnessRunner:
                     language=test.transcription_language,
                     prompt=test.prompt,
                 )
-            except (OSError, SkulkApiError, httpx.HTTPError, TypeError, ValueError) as exc:
+            except (
+                OSError,
+                SkulkApiError,
+                httpx.HTTPError,
+                TypeError,
+                ValueError,
+            ) as exc:
                 issues.append(
                     Issue(
                         severity="error",
@@ -3195,9 +3337,7 @@ class HarnessRunner:
                     secondary_model_id,
                     placement.instance_id,
                     report,
-                    protected_instance_ids=frozenset(
-                        placement.protected_instance_ids
-                    ),
+                    protected_instance_ids=frozenset(placement.protected_instance_ids),
                 )
                 if spec.delete_staged_models and torn_down:
                     self._evict_staged_model(client, secondary_model_id, report)
@@ -3217,9 +3357,7 @@ class HarnessRunner:
                 ),
                 output_chars=len(output),
                 generated_chars=len(output),
-                chunks=(
-                    execution.transcript_deltas if execution is not None else 0
-                ),
+                chunks=(execution.transcript_deltas if execution is not None else 0),
             ),
             issues=issues,
             artifact_path=artifact_path,
@@ -3394,9 +3532,7 @@ class HarnessRunner:
         response_tts_model_id: str | None = None
         if test.kind in {"realtime_conversation", "fabric_speech_chain"}:
             catalog = client.list_models()
-            response_tts_model_id = (
-                test.realtime_response_tts_model_id or tts_model_id
-            )
+            response_tts_model_id = test.realtime_response_tts_model_id or tts_model_id
             response_model_id = test.realtime_response_model_id or _first_chat_model_id(
                 catalog,
                 exclude_model_ids={model_id, tts_model_id, response_tts_model_id},
@@ -3608,10 +3744,14 @@ class HarnessRunner:
                     )
                 executions.append(execution)
                 owner_label = f"owner-{owner_index}-{role}"
-                if test.kind in {
-                    "realtime_conversation",
-                    "fabric_speech_chain",
-                } and execution.response_audio:
+                if (
+                    test.kind
+                    in {
+                        "realtime_conversation",
+                        "fabric_speech_chain",
+                    }
+                    and execution.response_audio
+                ):
                     _audio_artifact_path(
                         artifact_dir,
                         response_tts_model_id or "fabric-response-tts",
@@ -4973,7 +5113,10 @@ def _score_realtime_conversation(
                 evidence={"missing_turn_evidence": missing},
             )
         )
-    if not execution.response_statuses or execution.response_statuses[-1] != "completed":
+    if (
+        not execution.response_statuses
+        or execution.response_statuses[-1] != "completed"
+    ):
         issues.append(
             Issue(
                 severity="error",
@@ -6284,9 +6427,7 @@ def _score_vision_media_diagnostics(
                 )
             )
         anomalies = {
-            key: delta[key]
-            for key in _VISION_MEDIA_ANOMALY_FIELDS
-            if delta[key] > 0
+            key: delta[key] for key in _VISION_MEDIA_ANOMALY_FIELDS if delta[key] > 0
         }
         if anomalies:
             issues.append(
@@ -6343,9 +6484,7 @@ def _score_vision_media_diagnostics(
                     message="Vision ingress completion counters missed requests",
                     evidence={
                         "successful_requests": successful_requests,
-                        "completed_streams_delta": serving_delta[
-                            "completed_streams"
-                        ],
+                        "completed_streams_delta": serving_delta["completed_streams"],
                     },
                 )
             )
@@ -6395,8 +6534,7 @@ def _vision_media_diagnostics_artifact_path(
 
     artifact_dir.mkdir(parents=True, exist_ok=True)
     path = artifact_dir / (
-        f"{slugify(model_id)}--{slugify(test_name)}--rep-{repetition}"
-        ".vision-media.json"
+        f"{slugify(model_id)}--{slugify(test_name)}--rep-{repetition}.vision-media.json"
     )
     path.write_text(json.dumps({"owners": records}, indent=2, sort_keys=True))
     return path
