@@ -1118,15 +1118,71 @@ test_sets:
     description: >
       Multi-node VLM qualification through colocated and remote API owners with
       vision media ingress/egress diagnostics and bounded cleanup assertions.
+      Each family reuses the prompt and output budget already proven by the
+      corresponding direct semantic test so this cell measures routing parity
+      instead of changing the model contract at the same time.
     tests:
-      - name: image-local-remote-routing
+      - name: qwen-image-local-remote-routing
         kind: vision_data_plane
-        system: You are a careful vision assistant.
+        model_ids:
+          - mlx-community/Qwen3-VL-4B-Instruct-4bit
+          - mlx-community/Qwen3.5-2B-4bit
+        system: Report only evidence visible in the supplied image.
         prompt: >-
           Read the large six-character code. Then name the colored shape.
           Choose the color from orange, cyan, magenta, or lime, and the shape
           from circle, diamond, or triangle. Answer exactly: CODE; COLOR SHAPE.
-        max_tokens: 128
+        max_tokens: 320
+        temperature: 0
+        enable_thinking: false
+        images:
+          - input_path: fixtures/vision/semantic-qualification-card.png
+            media_type: image/png
+        success:
+          min_chars: 16
+          required_regexes:
+            - "(?i)\\bFUE4ZG\\b"
+            - "(?i)\\b(?:cyan|teal)\\b"
+            - "(?i)\\bdiamond\\b"
+          forbidden_substrings:
+            - bedroom
+            - furniture
+            - potted plant
+
+      - name: gemma3n-image-local-remote-routing
+        kind: vision_data_plane
+        model_ids:
+          - mlx-community/gemma-3n-E2B-it-4bit
+        prompt: >-
+          What is the large six-character code? What color and shape are below
+          it? Choose the color from orange, cyan, magenta, or lime, and the shape
+          from circle, diamond, or triangle. Answer exactly: CODE; COLOR SHAPE.
+        max_tokens: 192
+        temperature: 0
+        enable_thinking: false
+        images:
+          - input_path: fixtures/vision/semantic-qualification-card.png
+            media_type: image/png
+        success:
+          min_chars: 16
+          required_regexes:
+            - "(?i)\\bFUE4ZG\\b"
+            - "(?i)\\b(?:cyan|teal)\\b"
+            - "(?i)\\bdiamond\\b"
+          forbidden_substrings:
+            - bedroom
+            - furniture
+            - potted plant
+
+      - name: gemma4-image-local-remote-routing
+        kind: vision_data_plane
+        model_ids:
+          - mlx-community/gemma-4-e2b-it-8bit
+        prompt: >-
+          Transcribe the large code and describe the colored shape below it.
+          Choose the color from orange, cyan, magenta, or lime, and the shape
+          from circle, diamond, or triangle. Answer exactly: CODE; COLOR SHAPE.
+        max_tokens: 320
         temperature: 0
         enable_thinking: false
         images:
