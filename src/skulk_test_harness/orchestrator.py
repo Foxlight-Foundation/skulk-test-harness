@@ -30,6 +30,7 @@ from skulk_test_harness.client import (
     SkulkClient,
     StreamingAudioTranscriptionExecution,
     VisionMediaDiagnosticsSnapshot,
+    bench_chat_async,
     concurrent_benchmark_client,
     stream_chat_async,
 )
@@ -1859,8 +1860,29 @@ class HarnessRunner:
         test: PromptTest,
         enable_thinking: bool | None,
     ) -> ChatExecution:
-        """Issue one streamed completion for the concurrent benchmark."""
+        """Issue one completion for the concurrent benchmark.
 
+        Batching-required cells use Skulk's explicit benchmark endpoint because
+        that is the only public surface allowed to expose live admission
+        provenance. Other concurrent cells retain streaming TTFT measurement.
+        """
+
+        if test.require_batched_serving:
+            return await bench_chat_async(
+                async_client,
+                model_id=model_id,
+                messages=messages,
+                max_tokens=test.max_tokens,
+                temperature=test.temperature,
+                top_p=test.top_p,
+                enable_thinking=enable_thinking,
+                reasoning_effort=test.reasoning_effort,
+                tools=test.tools,
+                tool_choice=test.tool_choice,
+                parallel_tool_calls=test.parallel_tool_calls,
+                top_logprobs=test.top_logprobs,
+                request_timeout_s=self.config.request_timeout_s,
+            )
         return await stream_chat_async(
             async_client,
             model_id=model_id,
@@ -1870,9 +1892,6 @@ class HarnessRunner:
             top_p=test.top_p,
             enable_thinking=enable_thinking,
             reasoning_effort=test.reasoning_effort,
-            # Mirror the chat request options so a concurrent test that
-            # exercises tools or logprobs asks the backend for them (dropping
-            # them would falsely fail tool/logprob criteria under load).
             tools=test.tools,
             tool_choice=test.tool_choice,
             parallel_tool_calls=test.parallel_tool_calls,

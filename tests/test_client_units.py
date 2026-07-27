@@ -14,6 +14,7 @@ from skulk_test_harness.client import (
     SkulkApiError,
     SkulkClient,
     VisionMediaDiagnosticsSnapshot,
+    bench_chat_async,
     concurrent_benchmark_client,
     stream_chat_async,
 )
@@ -1480,3 +1481,64 @@ def test_concurrent_benchmark_client_survives_stream_closing_server() -> None:
     )
     # The per-request force-close proof: four requests, four connections.
     assert connection_count == 4
+
+
+def test_bench_chat_async_parses_qualification_only_batching_truth() -> None:
+    """The async concurrency client must use and parse the benchmark surface."""
+
+    observed_paths: list[str] = []
+    observed_payloads: list[dict[str, object]] = []
+
+    async def scenario() -> ChatExecution:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            observed_paths.append(request.url.path)
+            payload = json.loads(request.content)
+            assert isinstance(payload, dict)
+            observed_payloads.append(payload)
+            return httpx.Response(
+                200,
+                json={
+                    "id": "bench-1",
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": "hello benchmark",
+                            }
+                        }
+                    ],
+                    "generation_stats": {
+                        "prompt_tps": 12.0,
+                        "generation_tps": 34.0,
+                        "prompt_tokens": 5,
+                        "generation_tokens": 6,
+                        "serving_batches": True,
+                        "in_flight_at_admission": 4,
+                    },
+                },
+            )
+
+        async with httpx.AsyncClient(
+            base_url="http://skulk.test",
+            transport=httpx.MockTransport(handler),
+        ) as async_client:
+            return await bench_chat_async(
+                async_client,
+                model_id="m/x",
+                messages=[{"role": "user", "content": "hi"}],
+                max_tokens=8,
+                temperature=None,
+                top_p=None,
+                request_timeout_s=5.0,
+            )
+
+    execution = asyncio.run(scenario())
+
+    assert observed_paths == ["/bench/chat/completions"]
+    assert observed_payloads[0]["stream"] is False
+    assert execution.text == "hello benchmark"
+    assert execution.metrics.ttft_s is None
+    assert execution.metrics.skulk_generation_tps == 34.0
+    assert execution.metrics.skulk_generation_tokens == 6
+    assert execution.metrics.serving_batches is True
+    assert execution.metrics.in_flight_at_admission == 4
