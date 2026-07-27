@@ -741,12 +741,17 @@ class HarnessRunner:
         ``readiness_transitions`` when not ready; the caller owns issue reporting.
         """
         excluded = set(spec.placement.excluded_nodes or ())
+        eligible = set(spec.placement.eligible_nodes or ())
 
         def current_placements() -> list[PlacementResult]:
             placements = client.find_placements_for_model(model_id)
             if excluded:
                 placements = [
                     p for p in placements if not excluded.intersection(p.node_ids)
+                ]
+            if eligible:
+                placements = [
+                    p for p in placements if set(p.node_ids).issubset(eligible)
                 ]
             if ignore_instance_ids:
                 placements = [

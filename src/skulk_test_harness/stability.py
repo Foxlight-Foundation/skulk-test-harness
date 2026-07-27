@@ -102,6 +102,9 @@ def classify_placement_outcome(
     *,
     expected_min_nodes: int,
     live_node_count: int,
+    eligible_node_ids: list[str] | None = None,
+    excluded_node_ids: list[str] | None = None,
+    ignore_instance_ids: frozenset[str] = frozenset(),
 ) -> tuple[str, list[PlacementResult]]:
     """Classify a refusal-scenario placement outcome from cluster state.
 
@@ -121,6 +124,15 @@ def classify_placement_outcome(
     """
 
     placements = _placements_for_model_from_state(state, model_id)
+    eligible = set(eligible_node_ids or [])
+    excluded = excluded_node_ids or []
+    placements = [
+        placement
+        for placement in placements
+        if _placement_avoids_nodes(placement, excluded)
+        and _placement_uses_only_nodes(placement, eligible)
+        and placement.instance_id not in ignore_instance_ids
+    ]
     if not placements:
         return "refused", []
     for placement in placements:
@@ -618,6 +630,10 @@ def run_churn(
     rounds: int = 3,
     eligible_node_ids: list[str] | None = None,
     excluded_node_ids: list[str] | None = None,
+    placement_scope_resolver: Callable[
+        [], tuple[list[str], list[str]]
+    ]
+    | None = None,
 ) -> StabilityReport:
     """Repeatedly crash and relaunch a NON-master node, asserting recovery.
 
@@ -687,6 +703,25 @@ def run_churn(
                     message=f"Cluster did not return to {baseline_nodes} nodes after churn round {round_index}",
                 )
             )
+        elif placement_scope_resolver is not None:
+            try:
+                eligible_node_ids, excluded_node_ids = (
+                    placement_scope_resolver()
+                )
+            except ValueError as exception:
+                report.add_issue(
+                    Issue(
+                        severity="error",
+                        model_id=model_id,
+                        message=(
+                            "Failed to re-resolve the configured eligible "
+                            "inventory after churn restart"
+                        ),
+                        evidence={"error": str(exception)},
+                    )
+                )
+                rounds_log.append(round_log)
+                break
 
         # If the churned node hosted a shard, Skulk correctly tears down the
         # non-redundant instance (failing its tasks, #223/#224), so the original
@@ -886,6 +921,11 @@ def run_placement_refusal(
     impossible_min_nodes = live_nodes + 5
     report.observations["live_node_count"] = live_nodes
     report.observations["requested_min_nodes"] = impossible_min_nodes
+    preexisting_instance_ids = frozenset(
+        placement.instance_id
+        for placement in client.find_placements_for_model(model_id)
+        if placement.instance_id is not None
+    )
 
     previews = [
         preview
@@ -926,6 +966,9 @@ def run_placement_refusal(
                 model_id,
                 expected_min_nodes=impossible_min_nodes,
                 live_node_count=live_nodes,
+                eligible_node_ids=eligible_node_ids,
+                excluded_node_ids=excluded_node_ids,
+                ignore_instance_ids=preexisting_instance_ids,
             )
             # A terminal verdict is anything other than a still-settling partial.
             if verdict in {"refused", "replaced_wider"}:
@@ -936,7 +979,7 @@ def run_placement_refusal(
             placement.model_dump(mode="json") for placement in evidence_placements
         ]
         for placement in evidence_placements:
-            if placement.created_by_harness or placement.instance_id:
+            if placement.instance_id is not None:
                 created_instance_id = placement.instance_id
         if verdict == "partial":
             report.add_issue(

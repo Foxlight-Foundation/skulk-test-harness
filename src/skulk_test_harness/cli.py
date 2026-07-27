@@ -1049,6 +1049,9 @@ def stability_churn(
         cfg, force=force
     )
     with _stability_client(cfg) as client:
+        def resolve_placement_scope() -> tuple[list[str], list[str]]:
+            return _placement_scope_from_state(cfg, client.get_state())
+
         report = stability.run_churn(
             client,
             cfg,
@@ -1056,6 +1059,7 @@ def stability_churn(
             rounds=rounds,
             eligible_node_ids=eligible_node_ids,
             excluded_node_ids=incidental_node_ids,
+            placement_scope_resolver=resolve_placement_scope,
         )
     _write_stability(cfg, report)
 

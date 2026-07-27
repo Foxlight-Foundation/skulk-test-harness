@@ -4195,13 +4195,18 @@ def test_concurrent_test_counts_dropped_worker_slots_as_failures(
 
 
 def _placement(
-    instance_id: str, *, ready: bool = False, terminal_failure: bool = False
+    instance_id: str,
+    *,
+    ready: bool = False,
+    terminal_failure: bool = False,
+    node_ids: list[str] | None = None,
 ) -> PlacementResult:
     return PlacementResult(
         model_id="m",
         instance_id=instance_id,
         ready=ready,
         terminal_failure=terminal_failure,
+        node_ids=node_ids or [],
     )
 
 
@@ -4264,6 +4269,48 @@ def test_wait_for_model_ready_returns_immediately_when_ready() -> None:
     assert result.ready is True
     assert result.reused_existing is True
     assert client.calls == 1  # no polling loop
+
+
+def test_wait_for_model_ready_ignores_ready_incidental_duplicate() -> None:
+    incidental = _placement(
+        "incidental",
+        ready=True,
+        node_ids=["incidental-node"],
+    )
+    eligible_loading = _placement("eligible", node_ids=["eligible-node"])
+    eligible_ready = _placement(
+        "eligible",
+        ready=True,
+        node_ids=["eligible-node"],
+    )
+    client = _ScriptedPlacementClient(
+        [
+            [incidental, eligible_loading],
+            [incidental, eligible_ready],
+        ]
+    )
+    spec = RunSpec(
+        model_set="m",
+        test_set="t",
+        mode="execute",
+        placement=PlacementPolicy(
+            eligible_nodes=["eligible-node"],
+            excluded_nodes=["incidental-node"],
+        ),
+    )
+
+    result = _fast_runner()._wait_for_model_ready(
+        client,  # type: ignore[arg-type]
+        "m",
+        spec,
+        _report(),
+        created_by_harness=False,
+        reused=True,
+    )
+
+    assert result.ready is True
+    assert result.instance_id == "eligible"
+    assert result.node_ids == ["eligible-node"]
 
 
 def test_wait_for_model_ready_fails_fast_on_disappearance() -> None:

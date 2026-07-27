@@ -1,5 +1,8 @@
+import pytest
+
 from skulk_test_harness.client import ChatExecution
 from skulk_test_harness.models import (
+    ClusterNode,
     GenerationMetrics,
     HarnessConfig,
     PlacementResult,
@@ -12,6 +15,8 @@ from skulk_test_harness.stability import (
     _wait_for_model_servable,
     classify_placement_outcome,
     completion_is_coherent,
+    run_churn,
+    run_placement_refusal,
     summarize_latency,
 )
 
@@ -152,6 +157,23 @@ def test_classify_partial_when_more_nodes_than_live() -> None:
         state, MODEL_ID, expected_min_nodes=10, live_node_count=3
     )
     assert verdict == "partial"
+
+
+def test_classify_refusal_ignores_incidental_and_preexisting_instances() -> None:
+    state = _state(ready=True, node_ids=["incidental"])
+
+    verdict, placements = classify_placement_outcome(
+        state,
+        MODEL_ID,
+        expected_min_nodes=10,
+        live_node_count=2,
+        eligible_node_ids=["eligible-a", "eligible-b"],
+        excluded_node_ids=["incidental"],
+        ignore_instance_ids=frozenset({"instance-1"}),
+    )
+
+    assert verdict == "refused"
+    assert placements == []
 
 
 def test_placements_for_model_ignores_other_models() -> None:
@@ -367,3 +389,155 @@ def test_wait_for_model_servable_ignores_incidental_ready_instance() -> None:
         )
         is False
     )
+
+
+def test_churn_re_resolves_eligible_ids_after_restart(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from skulk_test_harness import stability
+
+    initial = PlacementResult(
+        model_id=MODEL_ID,
+        instance_id="initial",
+        node_ids=["old-eligible-a", "old-eligible-b"],
+        ready=True,
+        created_by_harness=True,
+    )
+    replacement = initial.model_copy(
+        update={
+            "instance_id": "replacement",
+            "node_ids": ["new-eligible-a", "eligible-b"],
+        }
+    )
+    placement_scopes: list[tuple[list[str] | None, list[str] | None]] = []
+    servable_scopes: list[tuple[list[str] | None, list[str] | None]] = []
+
+    def place(
+        *_args: object,
+        eligible_node_ids: list[str] | None = None,
+        excluded_node_ids: list[str] | None = None,
+        **_kwargs: object,
+    ) -> PlacementResult:
+        placement_scopes.append((eligible_node_ids, excluded_node_ids))
+        return initial if len(placement_scopes) == 1 else replacement
+
+    def servable(
+        *_args: object,
+        eligible_node_ids: list[str] | None = None,
+        excluded_node_ids: list[str] | None = None,
+        **_kwargs: object,
+    ) -> bool:
+        servable_scopes.append((eligible_node_ids, excluded_node_ids))
+        return False
+
+    monkeypatch.setattr(stability, "_place_multinode", place)
+    monkeypatch.setattr(stability, "_pick_non_master_friendly", lambda *_args: "alpha")
+    monkeypatch.setattr(stability, "_live_node_count", lambda *_args: 2)
+    monkeypatch.setattr(stability, "_wait_for_node_count", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(stability, "_wait_for_model_servable", servable)
+    monkeypatch.setattr(
+        stability,
+        "_coherence_completion",
+        lambda *_args: _execution("1 2 3", chunks=3),
+    )
+    monkeypatch.setattr(stability, "_cleanup_instance", lambda *_args: None)
+    monkeypatch.setattr(stability.chaos, "current_master", lambda *_args: "master")
+    monkeypatch.setattr(stability.chaos, "friendly_for_node", lambda *_args: "master")
+    monkeypatch.setattr(stability.chaos, "node_for_friendly", lambda *_args: "old-eligible-a")
+    monkeypatch.setattr(stability.chaos, "kill_skulk", lambda *_args: True)
+    monkeypatch.setattr(stability.chaos, "wait_for_node_absent", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(stability.chaos, "relaunch_skulk", lambda *_args: True)
+
+    class _Client:
+        base_url = "http://survivor:52415"
+
+    refresh_calls = 0
+
+    def refresh() -> tuple[list[str], list[str]]:
+        nonlocal refresh_calls
+        refresh_calls += 1
+        return ["new-eligible-a", "eligible-b"], ["incidental"]
+
+    report = run_churn(
+        _Client(),  # type: ignore[arg-type]
+        HarnessConfig(
+            eligible_fleet_nodes=["alpha", "beta"],
+            cluster_nodes={
+                "alpha": ClusterNode(
+                    ssh_host="alpha",
+                    relaunch_command="restart",
+                ),
+                "beta": ClusterNode(
+                    ssh_host="beta",
+                    relaunch_command="restart",
+                ),
+            },
+        ),
+        MODEL_ID,
+        rounds=1,
+        eligible_node_ids=["old-eligible-a", "old-eligible-b"],
+        excluded_node_ids=["incidental"],
+        placement_scope_resolver=refresh,
+    )
+
+    assert report.passed is True
+    assert refresh_calls == 1
+    assert servable_scopes == [
+        (["new-eligible-a", "eligible-b"], ["incidental"])
+    ]
+    assert placement_scopes[-1] == (
+        ["new-eligible-a", "eligible-b"],
+        ["incidental"],
+    )
+
+
+def test_refusal_never_deletes_preexisting_incidental_instance() -> None:
+    class _Client:
+        def __init__(self) -> None:
+            self.deleted: list[str] = []
+
+        def find_placements_for_model(
+            self, _model_id: str
+        ) -> list[PlacementResult]:
+            return [
+                PlacementResult(
+                    model_id=MODEL_ID,
+                    instance_id="instance-1",
+                    node_ids=["incidental"],
+                    ready=True,
+                )
+            ]
+
+        def get_placement_previews(
+            self,
+            _model_id: str,
+            *,
+            excluded_node_ids: list[str],
+        ) -> list[dict[str, object]]:
+            assert excluded_node_ids == ["incidental"]
+            return []
+
+        def place_model(self, **_kwargs: object) -> None:
+            return None
+
+        def get_state(self) -> dict[str, object]:
+            return _state(ready=True, node_ids=["incidental"])
+
+        def delete_instance(self, instance_id: str) -> None:
+            self.deleted.append(instance_id)
+
+    client = _Client()
+    report = run_placement_refusal(
+        client,  # type: ignore[arg-type]
+        HarnessConfig(
+            placement_ready_timeout_s=0.01,
+            poll_interval_s=0.0,
+        ),
+        MODEL_ID,
+        eligible_node_ids=["eligible"],
+        excluded_node_ids=["incidental"],
+    )
+
+    assert report.passed is True
+    assert report.observations["verdict"] == "refused"
+    assert client.deleted == []
