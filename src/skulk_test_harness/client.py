@@ -795,14 +795,18 @@ async def bench_chat_async(
         raise TypeError(f"Unexpected benchmark chat response: {raw_event!r}")
     event: dict[str, object] = raw_event
     text = _extract_non_stream_text(event)
+    reasoning_text = _extract_non_stream_reasoning(event)
     tool_calls = _extract_non_stream_tool_calls(event)
+    generated_chars = len(text) + len(reasoning_text)
     metrics = GenerationMetrics(
         elapsed_s=time.monotonic() - started,
         ttft_s=None,
         output_chars=len(text),
-        generated_chars=len(text),
-        chunks=1 if text else 0,
-        approx_output_tokens=max(1, round(len(text) / 4)) if text else 0,
+        generated_chars=generated_chars,
+        chunks=1 if generated_chars else 0,
+        approx_output_tokens=(
+            max(1, round(generated_chars / 4)) if generated_chars else 0
+        ),
     )
     stats = event.get("generation_stats")
     if isinstance(stats, dict):
@@ -824,7 +828,7 @@ async def bench_chat_async(
         )
     return ChatExecution(
         text=text,
-        reasoning_text="",
+        reasoning_text=reasoning_text,
         tool_calls=tool_calls,
         metrics=metrics,
         command_id=str(event.get("id")) if event.get("id") is not None else None,
@@ -2597,6 +2601,22 @@ def _extract_non_stream_text(event: dict[str, object]) -> str:
         return ""
     content = message.get("content")
     return content if isinstance(content, str) else ""
+
+
+def _extract_non_stream_reasoning(event: dict[str, object]) -> str:
+    """Extract separated reasoning text from one non-streaming chat response."""
+
+    choices = event.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return ""
+    first = choices[0]
+    if not isinstance(first, dict):
+        return ""
+    message = first.get("message")
+    if not isinstance(message, dict):
+        return ""
+    reasoning = message.get("reasoning_content")
+    return reasoning if isinstance(reasoning, str) else ""
 
 
 def _extract_non_stream_tool_calls(event: dict[str, object]) -> list[ToolCallRecord]:

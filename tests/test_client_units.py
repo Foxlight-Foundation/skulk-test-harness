@@ -1504,6 +1504,7 @@ def test_bench_chat_async_parses_qualification_only_batching_truth() -> None:
                             "message": {
                                 "role": "assistant",
                                 "content": "hello benchmark",
+                                "reasoning_content": "private chain",
                             }
                         }
                     ],
@@ -1538,7 +1539,9 @@ def test_bench_chat_async_parses_qualification_only_batching_truth() -> None:
     assert observed_paths == ["/bench/chat/completions"]
     assert observed_payloads[0]["stream"] is False
     assert execution.text == "hello benchmark"
+    assert execution.reasoning_text == "private chain"
     assert execution.metrics.ttft_s is None
+    assert execution.metrics.generated_chars == len("hello benchmarkprivate chain")
     assert execution.metrics.skulk_generation_tps == 34.0
     assert execution.metrics.skulk_generation_tokens == 6
     assert execution.metrics.serving_batches is True
