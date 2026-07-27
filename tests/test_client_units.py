@@ -1530,6 +1530,7 @@ def test_bench_chat_async_parses_qualification_only_batching_truth() -> None:
                 temperature=None,
                 top_p=None,
                 request_timeout_s=5.0,
+                generation_timeout_s=30.0,
             )
 
     execution = asyncio.run(scenario())

@@ -749,6 +749,7 @@ async def bench_chat_async(
     parallel_tool_calls: bool | None = None,
     top_logprobs: int | None = None,
     request_timeout_s: float,
+    generation_timeout_s: float,
 ) -> ChatExecution:
     """Run one non-streaming benchmark completion on a shared async client.
 
@@ -780,7 +781,7 @@ async def bench_chat_async(
             timeout=httpx.Timeout(
                 timeout=None,
                 connect=request_timeout_s,
-                read=request_timeout_s,
+                read=generation_timeout_s,
                 write=request_timeout_s,
                 pool=request_timeout_s,
             ),

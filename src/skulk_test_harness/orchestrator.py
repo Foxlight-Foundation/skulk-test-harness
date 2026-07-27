@@ -1882,6 +1882,7 @@ class HarnessRunner:
                 parallel_tool_calls=test.parallel_tool_calls,
                 top_logprobs=test.top_logprobs,
                 request_timeout_s=self.config.request_timeout_s,
+                generation_timeout_s=self.config.generation_timeout_s,
             )
         return await stream_chat_async(
             async_client,
