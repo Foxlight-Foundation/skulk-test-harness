@@ -11,7 +11,7 @@ import socket
 import subprocess
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from contextlib import AbstractContextManager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -47,6 +47,7 @@ from skulk_test_harness.models import (
 from skulk_test_harness.qualification_checks import (
     UnexpectedFreshInstallPeerError,
     assert_fresh_runtime_contract,
+    assert_fresh_single_node,
     qualify_direct_text,
     qualify_direct_vision,
 )
@@ -79,10 +80,12 @@ class QualificationInterruptedError(BaseException):
 
 
 class QualificationSignalGuard(AbstractContextManager["QualificationSignalGuard"]):
-    """Convert SIGINT/SIGTERM into exceptions so lifecycle ``finally`` runs."""
+    """Convert work signals into exceptions and defer recovery-time signals."""
 
     def __init__(self) -> None:
         self._previous: dict[int, object] = {}
+        self._recovery_started = False
+        self._interrupted_signum: int | None = None
 
     def __enter__(self) -> "QualificationSignalGuard":
         for signum in (signal.SIGINT, signal.SIGTERM):
@@ -94,11 +97,104 @@ class QualificationSignalGuard(AbstractContextManager["QualificationSignalGuard"
         for signum, handler in self._previous.items():
             signal.signal(signum, handler)  # pyright: ignore[reportArgumentType]
 
-    @staticmethod
-    def _handle(signum: int, _frame: FrameType | None) -> None:
+    @property
+    def interrupted_signum(self) -> int | None:
+        """Return the first termination signal observed by this guard."""
+
+        return self._interrupted_signum
+
+    def begin_recovery(self) -> None:
+        """Defer termination until mandatory restoration has completed.
+
+        Signals received while product work is running still raise immediately
+        so the run stops at the next Python boundary. Once a lifecycle enters
+        its ``finally`` block, however, raising from the handler can interrupt
+        the service restart, tunnel teardown, provider deletion, or lease
+        release itself. Recovery records the stop request and completes before
+        the report returns a blocking interrupted verdict.
+        """
+
+        self._recovery_started = True
+
+    def _handle(self, signum: int, _frame: FrameType | None) -> None:
+        if self._interrupted_signum is None:
+            self._interrupted_signum = signum
+        if self._recovery_started:
+            return
         raise QualificationInterruptedError(
             f"fresh-install qualification interrupted by signal {signum}"
         )
+
+
+class _FreshRuntimeMonitor(AbstractContextManager["_FreshRuntimeMonitor"]):
+    """Remember topology violations that occur inside blocking user actions."""
+
+    def __init__(
+        self,
+        *,
+        api_base_url: str,
+        expected_node_id: str,
+        poll_interval_s: float,
+        request_timeout_s: float,
+    ) -> None:
+        self.expected_node_id = expected_node_id
+        self._api_base_url = api_base_url
+        self._poll_interval_s = max(poll_interval_s, 1.0)
+        self._request_timeout_s = request_timeout_s
+        self._stop = threading.Event()
+        self._failure_lock = threading.Lock()
+        self._failure: Exception | None = None
+        self._thread = threading.Thread(
+            target=self._run,
+            name="fresh-install-runtime-monitor",
+            daemon=True,
+        )
+
+    def __enter__(self) -> "_FreshRuntimeMonitor":
+        self._thread.start()
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self._stop.set()
+        self._thread.join(timeout=max(self._request_timeout_s + 1.0, 5.0))
+        if self._thread.is_alive():
+            self._record_failure(
+                RuntimeError("fresh-install runtime monitor did not stop")
+            )
+        # Preserve an active product/recovery exception. Otherwise a violation
+        # observed only by the monitor must still fail the enclosing journey.
+        if not _exc or _exc[0] is None:
+            self.raise_if_failed()
+
+    def raise_if_failed(self) -> None:
+        """Raise a previously observed topology or identity violation."""
+
+        with self._failure_lock:
+            failure = self._failure
+        if failure is not None:
+            raise failure
+
+    def _record_failure(self, failure: Exception) -> None:
+        with self._failure_lock:
+            if self._failure is None:
+                self._failure = failure
+
+    def _run(self) -> None:
+        try:
+            with SkulkClient(
+                self._api_base_url,
+                request_timeout_s=self._request_timeout_s,
+            ) as client:
+                while not self._stop.is_set():
+                    assert_fresh_single_node(
+                        client,
+                        expected_node_id=self.expected_node_id,
+                    )
+                    if self._stop.wait(self._poll_interval_s):
+                        return
+        except Exception as exception:  # noqa: BLE001 - monitored failure boundary
+            self._record_failure(exception)
+            self._stop.set()
 
 
 class _LifecycleJournal:
@@ -198,7 +294,7 @@ class FreshInstallQualifier:
         )
         journal = _LifecycleJournal(report, self.writer)
         journal.persist()
-        with QualificationSignalGuard():
+        with QualificationSignalGuard() as signal_guard:
             if target.kind == "runpod":
                 return self._qualify_runpod(
                     target=target,
@@ -207,6 +303,7 @@ class FreshInstallQualifier:
                     report=report,
                     journal=journal,
                     artifact_directory=artifact_directory,
+                    signal_guard=signal_guard,
                 )
             return self._qualify_physical(
                 target=target,
@@ -215,6 +312,7 @@ class FreshInstallQualifier:
                 report=report,
                 journal=journal,
                 artifact_directory=artifact_directory,
+                signal_guard=signal_guard,
             )
 
     def _qualify_physical(
@@ -226,6 +324,7 @@ class FreshInstallQualifier:
         report: FreshInstallQualificationReport,
         journal: _LifecycleJournal,
         artifact_directory: Path,
+        signal_guard: QualificationSignalGuard,
     ) -> FreshInstallQualificationReport:
         if self.config.fleet_lock is None:
             raise ValueError("physical fresh-install qualification requires fleet_lock")
@@ -328,6 +427,7 @@ class FreshInstallQualifier:
                 Issue(severity="error", message=f"fresh-install leg failed: {exception}")
             )
         finally:
+            signal_guard.begin_recovery()
             isolation_restored = not isolation_entered
             if isolation_entered:
                 try:
@@ -426,6 +526,7 @@ class FreshInstallQualifier:
                         ),
                     )
                 )
+            _record_deferred_interruption(report, signal_guard)
             report = report.finish(
                 passed=(
                     not _blocking_issues(report)
@@ -448,6 +549,7 @@ class FreshInstallQualifier:
         report: FreshInstallQualificationReport,
         journal: _LifecycleJournal,
         artifact_directory: Path,
+        signal_guard: QualificationSignalGuard,
     ) -> FreshInstallQualificationReport:
         if self.fresh.runpod is None:
             raise ValueError("runpod target selected without fresh_install.runpod")
@@ -513,6 +615,7 @@ class FreshInstallQualifier:
                 Issue(severity="error", message=f"RunPod qualification failed: {exception}")
             )
         finally:
+            signal_guard.begin_recovery()
             deadline_cancelled.set()
             if deadline_timer is not None:
                 deadline_timer.cancel()
@@ -554,6 +657,7 @@ class FreshInstallQualifier:
             runpod.close()
             report.restoration_succeeded = None
             report.teardown_succeeded = teardown_succeeded
+            _record_deferred_interruption(report, signal_guard)
             report = report.finish(
                 passed=(
                     not _blocking_issues(report)
@@ -739,22 +843,41 @@ class FreshInstallQualifier:
         models = list(dict.fromkeys([*target.text_models, *target.vision_models]))
         if not models:
             raise ValueError("fresh-install target has no qualification models")
-        dashboard = DashboardQualifier(
-            api_base_url=api_base_url,
-            artifact_directory=artifact_directory / "playwright",
-            poll_interval_s=self.fresh.poll_interval_s,
-            model_ready_timeout_s=self.fresh.model_ready_timeout_s,
-            abort_check=lambda: _check_heartbeat(heartbeat),
-        )
         with SkulkClient(
             api_base_url,
             request_timeout_s=self.config.request_timeout_s,
             generation_timeout_s=self.config.generation_timeout_s,
             stream_read_timeout_s=self.config.stream_read_timeout_s,
-        ) as client:
+        ) as client, _FreshRuntimeMonitor(
+            api_base_url=api_base_url,
+            expected_node_id=assert_fresh_single_node(client),
+            poll_interval_s=self.fresh.poll_interval_s,
+            request_timeout_s=self.config.request_timeout_s,
+        ) as runtime_monitor:
+            expected_node_id = runtime_monitor.expected_node_id
+
+            def check_fresh_runtime() -> None:
+                """Fail immediately if lease health or isolation changes."""
+
+                _check_heartbeat(heartbeat)
+                runtime_monitor.raise_if_failed()
+                assert_fresh_single_node(
+                    client,
+                    expected_node_id=expected_node_id,
+                )
+                runtime_monitor.raise_if_failed()
+
+            dashboard = DashboardQualifier(
+                api_base_url=api_base_url,
+                artifact_directory=artifact_directory / "playwright",
+                poll_interval_s=self.fresh.poll_interval_s,
+                model_ready_timeout_s=self.fresh.model_ready_timeout_s,
+                abort_check=check_fresh_runtime,
+            )
             thinking_toggles = client.resolved_thinking_toggle_by_model()
             card_image_input = client.resolved_image_input_by_model()
             for model_id in models:
+                check_fresh_runtime()
                 enable_thinking = (
                     False if thinking_toggles.get(model_id, False) else None
                 )
@@ -788,7 +911,7 @@ class FreshInstallQualifier:
                                 outcome.message
                                 or f"dashboard journey failed for {model_id}"
                             )
-                        _check_heartbeat(heartbeat)
+                        check_fresh_runtime()
                 else:
                     with journal.stage(f"headless model provisioning: {model_id}"):
                         _provision_model_over_api(
@@ -797,8 +920,9 @@ class FreshInstallQualifier:
                             model_ready_timeout_s=self.fresh.model_ready_timeout_s,
                             poll_interval_s=self.fresh.poll_interval_s,
                             heartbeat=heartbeat,
+                            runtime_check=check_fresh_runtime,
                         )
-                        _check_heartbeat(heartbeat)
+                        check_fresh_runtime()
 
                 if target.served_engine_contract is not None:
                     with journal.stage(
@@ -826,9 +950,10 @@ class FreshInstallQualifier:
                                 "maximum live concurrency "
                                 f"{evidence.maximum_observed_active}"
                             )
-                        _check_heartbeat(heartbeat)
+                        check_fresh_runtime()
 
                 with journal.stage(f"direct API parity: {model_id}"):
+                    check_fresh_runtime()
                     text_outcome = qualify_direct_text(
                         client,
                         model_id=model_id,
@@ -859,9 +984,10 @@ class FreshInstallQualifier:
                                 f"direct vision API parity failed for {model_id}; "
                                 f"the model replied: {evidence.response_excerpt!r}"
                             )
-                    _check_heartbeat(heartbeat)
+                    check_fresh_runtime()
 
                 with journal.stage(f"stop temporary model placement: {model_id}"):
+                    check_fresh_runtime()
                     for placement in client.find_placements_for_model(model_id):
                         if placement.instance_id:
                             client.delete_instance(placement.instance_id)
@@ -871,7 +997,9 @@ class FreshInstallQualifier:
                         timeout_s=180,
                         poll_interval_s=self.fresh.poll_interval_s,
                         heartbeat=heartbeat,
+                        runtime_check=check_fresh_runtime,
                     )
+                    check_fresh_runtime()
 
     def _restore_physical(
         self,
@@ -1191,6 +1319,28 @@ def _blocking_issues(report: FreshInstallQualificationReport) -> list[Issue]:
     return [issue for issue in report.issues if issue.severity == "error"]
 
 
+def _record_deferred_interruption(
+    report: FreshInstallQualificationReport,
+    signal_guard: QualificationSignalGuard,
+) -> None:
+    """Record a signal deferred until mandatory recovery had completed."""
+
+    signum = signal_guard.interrupted_signum
+    if signum is None:
+        return
+    if any("interrupted" in issue.message.lower() for issue in report.issues):
+        return
+    report.issues.append(
+        Issue(
+            severity="error",
+            message=(
+                "fresh-install qualification interrupted by signal "
+                f"{signum}; mandatory recovery completed before stopping"
+            ),
+        )
+    )
+
+
 def _failed_lifecycle_stages(
     report: FreshInstallQualificationReport,
 ) -> list[FreshInstallLifecycleStage]:
@@ -1435,6 +1585,7 @@ def _provision_model_over_api(
     model_ready_timeout_s: float,
     poll_interval_s: float,
     heartbeat: AuthoritativeLeaseHeartbeat | None,
+    runtime_check: Callable[[], None] | None = None,
 ) -> None:
     """Download and mount one model through the API the dashboard itself calls.
 
@@ -1456,6 +1607,7 @@ def _provision_model_over_api(
     check against a model that was never there.
     """
 
+    _check_optional_runtime(runtime_check)
     card_error: str | None = None
     catalog = {
         str(entry.get("id"))
@@ -1483,6 +1635,7 @@ def _provision_model_over_api(
     deadline = time.monotonic() + model_ready_timeout_s
     while True:
         _check_heartbeat(heartbeat)
+        _check_optional_runtime(runtime_check)
         status = client.get_store_download_status(model_id) or {}
         state = str(status.get("status") or status.get("state") or "").lower()
         if state in _COMPLETED_DOWNLOAD_STATES:
@@ -1496,6 +1649,7 @@ def _provision_model_over_api(
         time.sleep(poll_interval_s)
 
     offered = client.get_placement_previews(model_id)
+    _check_optional_runtime(runtime_check)
     # A preview carrying an error is an option the planner examined and
     # rejected (it does not fit, or the node cannot serve it), and the API is
     # free to list one ahead of a viable option. Taking the first entry blindly
@@ -1519,6 +1673,7 @@ def _provision_model_over_api(
     ready_deadline = time.monotonic() + model_ready_timeout_s
     while True:
         _check_heartbeat(heartbeat)
+        _check_optional_runtime(runtime_check)
         placements = client.find_placements_for_model(model_id)
         if any(placement.ready for placement in placements):
             return
@@ -1542,16 +1697,25 @@ def _wait_for_no_placement(
     timeout_s: float,
     poll_interval_s: float,
     heartbeat: AuthoritativeLeaseHeartbeat | None,
+    runtime_check: Callable[[], None] | None = None,
 ) -> None:
     """Wait until one temporary model has no remaining instances."""
 
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         _check_heartbeat(heartbeat)
+        _check_optional_runtime(runtime_check)
         if not client.find_placements_for_model(model_id):
             return
         time.sleep(poll_interval_s)
     raise TimeoutError(f"temporary placement did not stop: {model_id}")
+
+
+def _check_optional_runtime(runtime_check: Callable[[], None] | None) -> None:
+    """Run an optional qualification invariant callback."""
+
+    if runtime_check is not None:
+        runtime_check()
 
 
 def _terminate_process(process: subprocess.Popen[bytes]) -> None:

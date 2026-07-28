@@ -21,6 +21,47 @@ class UnexpectedFreshInstallPeerError(RuntimeError):
     """Signal that an allegedly isolated fresh node discovered another node."""
 
 
+def assert_fresh_single_node(
+    client: SkulkClient,
+    *,
+    expected_node_id: str | None = None,
+) -> str:
+    """Require the fresh runtime to remain the same isolated one-node cluster.
+
+    Args:
+        client: Client connected directly to the temporary fresh runtime.
+        expected_node_id: Temporary runtime identity captured before user
+            journeys begin. When supplied, a process restart or identity swap
+            is also a qualification failure.
+
+    Returns:
+        The sole node identity observed in cluster state.
+
+    Raises:
+        UnexpectedFreshInstallPeerError: Another node joined the temporary
+            runtime.
+        RuntimeError: No node is present or the temporary runtime identity
+            changed.
+    """
+
+    state = client.get_state()
+    resources = _object(state.get("nodeResources"))
+    identities = _object(state.get("nodeIdentities"))
+    node_ids = resources.keys() | identities.keys()
+    if len(node_ids) > 1:
+        raise UnexpectedFreshInstallPeerError(
+            f"fresh install discovered another node; observed {len(node_ids)}"
+        )
+    if len(node_ids) != 1:
+        raise RuntimeError(
+            f"fresh install must form exactly one node; observed {len(node_ids)}"
+        )
+    node_id = next(iter(node_ids))
+    if expected_node_id is not None and node_id != expected_node_id:
+        raise RuntimeError("fresh install runtime identity changed during qualification")
+    return node_id
+
+
 @dataclass(frozen=True)
 class DirectTextQualification:
     """Result and bounded diagnostic evidence for a direct text request."""
@@ -41,16 +82,7 @@ def assert_fresh_runtime_contract(
 
     state = client.get_state()
     resources = _object(state.get("nodeResources"))
-    identities = _object(state.get("nodeIdentities"))
-    node_ids = resources.keys() | identities.keys()
-    if len(node_ids) > 1:
-        raise UnexpectedFreshInstallPeerError(
-            f"fresh install discovered another node; observed {len(node_ids)}"
-        )
-    if len(node_ids) != 1:
-        raise RuntimeError(
-            f"fresh install must form exactly one node; observed {len(node_ids)}"
-        )
+    assert_fresh_single_node(client)
     detected_backends: set[str] = set()
     transports: set[str] = set()
     for raw in resources.values():

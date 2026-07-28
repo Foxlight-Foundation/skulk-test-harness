@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tarfile
 import threading
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -77,6 +78,7 @@ from skulk_test_harness.models import (
 )
 from skulk_test_harness.qualification_checks import (
     UnexpectedFreshInstallPeerError,
+    assert_fresh_single_node,
     qualify_direct_text,
     qualify_direct_vision,
 )
@@ -766,8 +768,9 @@ def test_install_provenance_has_no_private_inventory_fields() -> None:
 
 
 def test_signal_guard_turns_sigterm_into_recoverable_exception() -> None:
+    guard = QualificationSignalGuard()
     with pytest.raises(QualificationInterruptedError, match=str(signal.SIGTERM)):
-        QualificationSignalGuard._handle(signal.SIGTERM, None)  # pyright: ignore[reportPrivateUsage]
+        guard._handle(signal.SIGTERM, None)  # pyright: ignore[reportPrivateUsage]
 
 
 def test_interruption_survives_the_broad_handlers_that_report_outcomes() -> None:
@@ -782,9 +785,10 @@ def test_interruption_survives_the_broad_handlers_that_report_outcomes() -> None
     assert not issubclass(QualificationInterruptedError, Exception)
 
     caught_by_boundary = False
+    guard = QualificationSignalGuard()
     try:
         try:
-            QualificationSignalGuard._handle(signal.SIGINT, None)  # pyright: ignore[reportPrivateUsage]
+            guard._handle(signal.SIGINT, None)  # pyright: ignore[reportPrivateUsage]
         except Exception:  # noqa: BLE001 - the boundary shape under test
             caught_by_boundary = True
     except QualificationInterruptedError:
@@ -796,14 +800,40 @@ def test_interruption_still_lets_finally_restore_state() -> None:
     """BaseException does not skip cleanup, so orderly restoration is unaffected."""
 
     restored = False
+    guard = QualificationSignalGuard()
     try:
         try:
-            QualificationSignalGuard._handle(signal.SIGTERM, None)  # pyright: ignore[reportPrivateUsage]
+            guard._handle(signal.SIGTERM, None)  # pyright: ignore[reportPrivateUsage]
         finally:
             restored = True
     except QualificationInterruptedError:
         pass
     assert restored
+
+
+def test_signal_guard_defers_interruptions_during_mandatory_recovery() -> None:
+    """A second stop request must not interrupt service or provider cleanup."""
+
+    guard = QualificationSignalGuard()
+    guard.begin_recovery()
+    report = _report_with([])
+
+    guard._handle(signal.SIGINT, None)  # pyright: ignore[reportPrivateUsage]
+    fresh_install_module._record_deferred_interruption(  # pyright: ignore[reportPrivateUsage]
+        report,
+        guard,
+    )
+
+    assert guard.interrupted_signum == signal.SIGINT
+    assert report.issues == [
+        Issue(
+            severity="error",
+            message=(
+                "fresh-install qualification interrupted by signal "
+                f"{signal.SIGINT}; mandatory recovery completed before stopping"
+            ),
+        )
+    ]
 
 
 def test_recovery_snapshot_is_mode_600_and_contains_manifest_and_config(
@@ -1627,6 +1657,99 @@ class _StubContractClient:
         return {"runtime": {"skulkCommit": self.reported_commit}}
 
 
+def test_fresh_single_node_rejects_a_peer_joining_after_startup() -> None:
+    """Isolation is a continuous invariant, not only a startup assertion."""
+
+    class PeerJoiningClient(_StubContractClient):
+        peer_joined = False
+
+        def get_state(self) -> dict[str, object]:
+            state = super().get_state()
+            if self.peer_joined:
+                resources = cast(dict[str, object], state["nodeResources"])
+                identities = cast(dict[str, object], state["nodeIdentities"])
+                resources["node-b"] = {}
+                identities["node-b"] = {}
+            return state
+
+    client = PeerJoiningClient()
+    expected_node_id = assert_fresh_single_node(cast(SkulkClient, client))
+    client.peer_joined = True
+
+    with pytest.raises(UnexpectedFreshInstallPeerError, match="observed 2"):
+        assert_fresh_single_node(
+            cast(SkulkClient, client),
+            expected_node_id=expected_node_id,
+        )
+
+
+def test_fresh_single_node_rejects_runtime_identity_replacement() -> None:
+    """A transparent fresh-process restart cannot satisfy the same leg."""
+
+    class ReplacementClient(_StubContractClient):
+        node_id = "node-a"
+
+        def get_state(self) -> dict[str, object]:
+            return {
+                "nodeResources": {self.node_id: {}},
+                "nodeIdentities": {self.node_id: {}},
+            }
+
+    client = ReplacementClient()
+    expected_node_id = assert_fresh_single_node(cast(SkulkClient, client))
+    client.node_id = "node-replacement"
+
+    with pytest.raises(RuntimeError, match="identity changed"):
+        assert_fresh_single_node(
+            cast(SkulkClient, client),
+            expected_node_id=expected_node_id,
+        )
+
+
+def test_runtime_monitor_remembers_a_transient_peer_join(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A peer that joins and leaves inside one inference still fails the leg."""
+
+    class PeerJoiningMonitorClient(_StubContractClient):
+        state_reads = 0
+
+        def __enter__(self) -> "PeerJoiningMonitorClient":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def get_state(self) -> dict[str, object]:
+            state = super().get_state()
+            self.state_reads += 1
+            if self.state_reads == 2:
+                resources = cast(dict[str, object], state["nodeResources"])
+                identities = cast(dict[str, object], state["nodeIdentities"])
+                resources["transient-peer"] = {}
+                identities["transient-peer"] = {}
+            return state
+
+    monkeypatch.setattr(
+        fresh_install_module,
+        "SkulkClient",
+        lambda *_args, **_kwargs: PeerJoiningMonitorClient(),
+    )
+    monitor = fresh_install_module._FreshRuntimeMonitor(  # pyright: ignore[reportPrivateUsage]
+        api_base_url="http://127.0.0.1:52415",
+        expected_node_id="node-a",
+        poll_interval_s=1,
+        request_timeout_s=1,
+    )
+    monitor._poll_interval_s = 0.001  # pyright: ignore[reportPrivateUsage]
+
+    with (
+        pytest.raises(UnexpectedFreshInstallPeerError, match="observed 2"),
+        monitor,
+    ):
+        time.sleep(0.05)
+
+
 @pytest.mark.parametrize(
     ("contract", "served", "expected_failure"),
     [
@@ -1844,6 +1967,35 @@ def test_headless_provisioning_walks_the_same_path_the_dashboard_drives() -> Non
         "min_nodes": 1,
         "excluded_nodes": [],
     }
+
+
+def test_headless_provisioning_checks_runtime_during_long_polls() -> None:
+    """A peer arriving during a download must abort before placement."""
+
+    model_id = "unsloth/Llama-3.2-1B-Instruct-GGUF"
+    client = _StubProvisionClient(
+        download_states=["downloading", "complete"],
+        catalog_model_ids=[model_id],
+    )
+    checks = 0
+
+    def fail_after_download_starts() -> None:
+        nonlocal checks
+        checks += 1
+        if checks == 3:
+            raise UnexpectedFreshInstallPeerError("peer joined")
+
+    with pytest.raises(UnexpectedFreshInstallPeerError, match="peer joined"):
+        _provision_model_over_api(
+            cast(SkulkClient, client),
+            model_id=model_id,
+            model_ready_timeout_s=30,
+            poll_interval_s=0,
+            heartbeat=None,
+            runtime_check=fail_after_download_starts,
+        )
+
+    assert "place_model" not in client.calls
 
 
 def test_headless_provisioning_never_overrides_a_shipped_card() -> None:
