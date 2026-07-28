@@ -48,7 +48,9 @@ For each explicitly eligible Apple or AMD target, the harness:
 6. reaches the API through an SSH tunnel and requires one-node topology,
    generated `skulk.yaml`, the expected backend, the served dashboard build,
    and Zenoh DATA continuously through a startup settling window;
-7. drives dashboard and direct-API model journeys;
+7. drives dashboard and direct-API model journeys while continuously requiring
+   the same one-node runtime identity during downloads, placement waits,
+   browser polling, inference, and cleanup;
 8. stops and removes the temporary installation;
 9. removes isolation, restores the original service, and verifies checkout status, config hashes,
    process arguments, API identity, and fleet membership; and
@@ -60,8 +62,10 @@ makes one emergency extension, leaves the lease held, and writes a critical
 recovery report.
 
 The SSH tunnel belongs to the recovery control plane and runs in a separate
-process session. An operator interrupt can stop the temporary workload without
-also removing the channel needed to verify restoration.
+process session. An operator interrupt stops product work immediately, then
+the harness defers any further termination signal until service restoration,
+tunnel teardown, provider deletion, and lease handling finish. The final report
+still records the interruption as a blocking outcome.
 
 ## RunPod lifecycle
 
