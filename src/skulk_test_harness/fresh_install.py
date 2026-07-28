@@ -315,6 +315,13 @@ class FreshInstallQualifier:
                 artifact_directory=artifact_directory,
                 heartbeat=heartbeat,
             )
+        except QualificationInterruptedError as exception:
+            report.issues.append(
+                Issue(
+                    severity="error",
+                    message=f"fresh-install leg interrupted: {exception}",
+                )
+            )
         except Exception as exception:  # noqa: BLE001 - lifecycle failure boundary
             heartbeat_failed = isinstance(exception, LeaseHeartbeatError)
             report.issues.append(
@@ -422,6 +429,7 @@ class FreshInstallQualifier:
             report = report.finish(
                 passed=(
                     not _blocking_issues(report)
+                    and not _failed_lifecycle_stages(report)
                     and restoration_succeeded
                     and not release_failed
                     and not report.critical_recovery_required
@@ -493,6 +501,13 @@ class FreshInstallQualifier:
                 )
             finally:
                 _terminate_process(tunnel)
+        except QualificationInterruptedError as exception:
+            report.issues.append(
+                Issue(
+                    severity="error",
+                    message=f"RunPod qualification interrupted: {exception}",
+                )
+            )
         except Exception as exception:  # noqa: BLE001 - provider lifecycle boundary
             report.issues.append(
                 Issue(severity="error", message=f"RunPod qualification failed: {exception}")
@@ -540,7 +555,11 @@ class FreshInstallQualifier:
             report.restoration_succeeded = None
             report.teardown_succeeded = teardown_succeeded
             report = report.finish(
-                passed=not _blocking_issues(report) and teardown_succeeded
+                passed=(
+                    not _blocking_issues(report)
+                    and not _failed_lifecycle_stages(report)
+                    and teardown_succeeded
+                )
             )
             journal.report = report
             journal.persist()
@@ -1170,6 +1189,14 @@ def _blocking_issues(report: FreshInstallQualificationReport) -> list[Issue]:
     """
 
     return [issue for issue in report.issues if issue.severity == "error"]
+
+
+def _failed_lifecycle_stages(
+    report: FreshInstallQualificationReport,
+) -> list[FreshInstallLifecycleStage]:
+    """Return failed stages so no incomplete lifecycle can publish a pass."""
+
+    return [stage for stage in report.lifecycle if stage.status == "failed"]
 
 
 def _browser_vision_expectation(
