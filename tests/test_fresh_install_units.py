@@ -43,6 +43,7 @@ from skulk_test_harness.fresh_install import (
     _blocking_issues,  # pyright: ignore[reportPrivateUsage]
     _browser_vision_expectation,  # pyright: ignore[reportPrivateUsage]
     _clean_environment_command,  # pyright: ignore[reportPrivateUsage]
+    _failed_lifecycle_stages,  # pyright: ignore[reportPrivateUsage]
     _installer_command,  # pyright: ignore[reportPrivateUsage]
     _llama_server_process_contract,  # pyright: ignore[reportPrivateUsage]
     _provision_model_over_api,  # pyright: ignore[reportPrivateUsage]
@@ -63,6 +64,7 @@ from skulk_test_harness.models import (
     DashboardContract,
     FleetLock,
     FreshInstallConfig,
+    FreshInstallLifecycleStage,
     FreshInstallQualificationReport,
     FreshInstallTarget,
     HarnessConfig,
@@ -1021,6 +1023,7 @@ def _run_failed_physical_lifecycle(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     restoration_mismatches: list[str],
+    lifecycle_failure: BaseException | None = None,
 ) -> tuple[FreshInstallQualificationReport, list[str], list[float], list[bool]]:
     lease = _held_lease(seconds=3600)
     extensions: list[float] = []
@@ -1127,6 +1130,8 @@ def _run_failed_physical_lifecycle(
         _self: object,
         **_kwargs: object,
     ) -> None:
+        if lifecycle_failure is not None:
+            raise lifecycle_failure
         raise RuntimeError("forced browser boundary failure")
 
     monkeypatch.setattr(
@@ -1176,6 +1181,53 @@ def test_browser_failure_restores_service_then_releases_lease(
     assert report.passed is False
     assert extensions == []
     assert releases == [True]
+
+
+def test_interrupt_restores_service_but_can_never_publish_a_pass(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A managed stop is a blocking verdict even when restoration is perfect."""
+
+    report, commands, extensions, releases = _run_failed_physical_lifecycle(
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        restoration_mismatches=[],
+        lifecycle_failure=QualificationInterruptedError("signal 2"),
+    )
+
+    assert commands == [
+        "stop selected service",
+        "isolate selected target",
+        "restore selected target network",
+        "start selected service",
+    ]
+    assert report.restoration_succeeded is True
+    assert report.teardown_succeeded is True
+    assert report.passed is False
+    assert releases == [True]
+    assert extensions == []
+    assert any(
+        issue.severity == "error" and "interrupted" in issue.message
+        for issue in report.issues
+    )
+
+
+def test_failed_lifecycle_stage_is_release_blocking_without_an_issue() -> None:
+    report = _report_with([])
+    report.lifecycle.append(
+        FreshInstallLifecycleStage(
+            name="start fresh runtime",
+            status="failed",
+            started_at=datetime.now(UTC),
+            finished_at=datetime.now(UTC),
+            message="operator interrupted",
+        )
+    )
+
+    assert [stage.name for stage in _failed_lifecycle_stages(report)] == [
+        "start fresh runtime"
+    ]
 
 
 def test_restore_failure_emergency_extends_and_leaves_lease_held(
