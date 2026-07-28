@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="generator" content="Docusaurus v3.10.1">
 <title data-rh="true">Fresh-install release qualification | Skulk Test Harness</title><meta data-rh="true" name="viewport" content="width=device-width,initial-scale=1"><meta data-rh="true" name="twitter:card" content="summary_large_image"><meta data-rh="true" property="og:url" content="https://foxlight-foundation.github.io/skulk-test-harness/guides/fresh-install-qualification"><meta data-rh="true" property="og:locale" content="en"><meta data-rh="true" name="docusaurus_locale" content="en"><meta data-rh="true" name="docsearch:language" content="en"><meta data-rh="true" name="docusaurus_version" content="current"><meta data-rh="true" name="docusaurus_tag" content="docs-default-current"><meta data-rh="true" name="docsearch:version" content="current"><meta data-rh="true" name="docsearch:docusaurus_tag" content="docs-default-current"><meta data-rh="true" property="og:title" content="Fresh-install release qualification | Skulk Test Harness"><meta data-rh="true" name="description" content="Fresh-install qualification is the only harness suite that can satisfy Skulk&#x27;s"><meta data-rh="true" property="og:description" content="Fresh-install qualification is the only harness suite that can satisfy Skulk&#x27;s"><link data-rh="true" rel="icon" href="/skulk-test-harness/img/skulk-logo.svg"><link data-rh="true" rel="canonical" href="https://foxlight-foundation.github.io/skulk-test-harness/guides/fresh-install-qualification"><link data-rh="true" rel="alternate" href="https://foxlight-foundation.github.io/skulk-test-harness/guides/fresh-install-qualification" hreflang="en"><link data-rh="true" rel="alternate" href="https://foxlight-foundation.github.io/skulk-test-harness/guides/fresh-install-qualification" hreflang="x-default"><script data-rh="true" type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Fresh-install release qualification","item":"https://foxlight-foundation.github.io/skulk-test-harness/guides/fresh-install-qualification"}]}</script><link rel="stylesheet" href="/skulk-test-harness/assets/css/styles.9fe42a7d.css">
-<script src="/skulk-test-harness/assets/js/runtime~main.07820158.js" defer="defer"></script>
+<script src="/skulk-test-harness/assets/js/runtime~main.9886f9ab.js" defer="defer"></script>
 <script src="/skulk-test-harness/assets/js/main.42683a4a.js" defer="defer"></script>
 </head>
 <body>
@@ -45,7 +45,8 @@ browser polling, inference, and cleanup;</li>
 <li class="">stops and removes the temporary installation;</li>
 <li class="">removes isolation, restores the original service, and verifies checkout status, config hashes,
 process arguments, API identity, and fleet membership; and</li>
-<li class="">releases the lease only after restoration succeeds.</li>
+<li class="">releases the lease only after restoration succeeds and verifies the
+intended release against an authoritative remote reread.</li>
 </ol>
 <p>The lease renews at one third of its TTL. Every renewal is followed by an
 authoritative reread. A renewal or restoration failure stops further testing,
