@@ -15,7 +15,7 @@ from collections.abc import Callable, Iterable, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import FrameType
 from typing import BinaryIO, Literal, TypeVar
 
@@ -1138,17 +1138,29 @@ class FreshInstallQualifier:
 
     @staticmethod
     def _create_temporary_home(controller: SshTargetController) -> str:
-        """Create one private empty HOME and return its verified remote root."""
+        """Create an empty HOME on the target user's real home filesystem."""
 
         result = controller.run(
             "umask 077; "
-            "root=$(mktemp -d /tmp/skulk-fresh.XXXXXX); "
+            'root=$(mktemp -d "$HOME/.skulk-fresh.XXXXXX"); '
+            'case "$root" in "$HOME"/.skulk-fresh.*) ;; *) exit 97 ;; esac; '
             'mkdir -p "$root/home" "$root/tmp"; '
             'printf "%s" "$root"',
             timeout_s=30,
         )
         temporary_root = result.stdout.strip()
-        if not temporary_root.startswith("/tmp/skulk-fresh."):
+        remote_path = PurePosixPath(temporary_root)
+        if (
+            "\n" in temporary_root
+            or "\r" in temporary_root
+            or not remote_path.is_absolute()
+            or len(remote_path.parts) < 3
+            or re.fullmatch(
+                r"\.skulk-fresh\.[A-Za-z0-9_-]+",
+                remote_path.name,
+            )
+            is None
+        ):
             raise RuntimeError("target returned an unsafe temporary root")
         return temporary_root
 
@@ -1715,16 +1727,7 @@ class FreshInstallQualifier:
         skulk_log_handle: BinaryIO | None = None
         try:
             with journal.stage("create empty temporary HOME"):
-                result = controller.run(
-                    "umask 077; "
-                    "root=$(mktemp -d /tmp/skulk-fresh.XXXXXX); "
-                    'mkdir -p "$root/home" "$root/tmp"; '
-                    'printf "%s" "$root"',
-                    timeout_s=30,
-                )
-                temporary_root = result.stdout.strip()
-                if not temporary_root.startswith("/tmp/skulk-fresh."):
-                    raise RuntimeError("target returned an unsafe temporary root")
+                temporary_root = self._create_temporary_home(controller)
 
             with journal.stage("run official installer"):
                 installer_url, installer_digest = _installer_provenance(

@@ -47,8 +47,10 @@ harness:
    target and controller;
 5. stops the existing Skulk service on every member;
 6. installs the same pinned candidate into an empty temporary `HOME` on every
-   member and runs the literal `cd "$HOME/skulk" && uv run skulk` command on
-   default ports with no sandbox, product flags, or `SKULK_*` overrides;
+   member, created on that user's real home filesystem so Linux tmpfs-backed
+   `/tmp` cannot distort model-storage capacity, and runs the literal
+   `cd "$HOME/skulk" && uv run skulk` command on default ports with no sandbox,
+   product flags, or `SKULK_*` overrides;
 7. requires the exact declared topology to form and remain stable, every member
    to report the pinned commit, its expected local backend and dashboard
    contract, generated `skulk.yaml`, and Zenoh DATA;

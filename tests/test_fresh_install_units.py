@@ -324,6 +324,60 @@ def test_declared_topology_rejects_substituted_member_view() -> None:
         )
 
 
+def test_temporary_home_uses_the_target_home_filesystem() -> None:
+    commands: list[str] = []
+
+    class FakeController:
+        def run(
+            self,
+            command: str,
+            *,
+            timeout_s: float | None = None,
+        ) -> subprocess.CompletedProcess[str]:
+            assert timeout_s == 30
+            commands.append(command)
+            return subprocess.CompletedProcess(
+                [],
+                0,
+                "/home/operator/.skulk-fresh.a1B2c3",
+                "",
+            )
+
+    temporary_root = fresh_install_module.FreshInstallQualifier._create_temporary_home(  # pyright: ignore[reportPrivateUsage]
+        cast(SshTargetController, FakeController())
+    )
+
+    assert temporary_root == "/home/operator/.skulk-fresh.a1B2c3"
+    assert 'mktemp -d "$HOME/.skulk-fresh.XXXXXX"' in commands[0]
+    assert "/tmp/skulk-fresh" not in commands[0]
+
+
+@pytest.mark.parametrize(
+    "unsafe_root",
+    [
+        "/tmp/skulk-fresh.a1B2c3",
+        "/home/operator/not-skulk.a1B2c3",
+        "relative/.skulk-fresh.a1B2c3",
+        "/home/operator/.skulk-fresh.a1B2c3\n/untrusted",
+    ],
+)
+def test_temporary_home_rejects_an_unsafe_remote_root(unsafe_root: str) -> None:
+    class FakeController:
+        def run(
+            self,
+            _command: str,
+            *,
+            timeout_s: float | None = None,
+        ) -> subprocess.CompletedProcess[str]:
+            assert timeout_s == 30
+            return subprocess.CompletedProcess([], 0, unsafe_root, "")
+
+    with pytest.raises(RuntimeError, match="unsafe temporary root"):
+        fresh_install_module.FreshInstallQualifier._create_temporary_home(  # pyright: ignore[reportPrivateUsage]
+            cast(SshTargetController, FakeController())
+        )
+
+
 def test_restoration_rejects_asymmetric_member_topology(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1306,7 +1360,7 @@ def test_temporary_install_cleanup_enters_signal_safe_recovery(
                 return subprocess.CompletedProcess(
                     [],
                     0,
-                    "/tmp/skulk-fresh.cleanup-test",
+                    "/Users/operator/.skulk-fresh.cleanup-test",
                     "",
                 )
             if command.startswith("pkill "):
@@ -1356,7 +1410,7 @@ def test_temporary_install_cleanup_enters_signal_safe_recovery(
 
     assert guard.interrupted_signum == signal.SIGINT
     assert any(command.startswith("pkill ") for command in commands)
-    assert commands[-1] == "rm -rf -- /tmp/skulk-fresh.cleanup-test"
+    assert commands[-1] == "rm -rf -- /Users/operator/.skulk-fresh.cleanup-test"
 
 
 def test_recovery_snapshot_is_mode_600_and_contains_manifest_and_config(
