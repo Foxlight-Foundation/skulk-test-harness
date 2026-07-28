@@ -1246,7 +1246,20 @@ class PlacementPolicy(HarnessBaseModel):
     strategy: PlacementStrategy = "minimum"
     sharding: ShardingMode = "Pipeline"
     instance_meta: InstanceMeta = "MlxRing"
-    min_nodes: int | None = Field(default=None, ge=1)
+    min_nodes: int | None = Field(
+        default=None,
+        ge=1,
+        description="Hard lower bound on the number of nodes in the placement.",
+    )
+    max_nodes: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Hard upper bound on the number of nodes in the placement. Use this "
+            "to prevent a qualification cell from silently widening under "
+            "transient memory pressure."
+        ),
+    )
     excluded_nodes: list[str] = Field(default_factory=list)
     eligible_nodes: list[str] = Field(
         default_factory=list,
@@ -1255,6 +1268,18 @@ class PlacementPolicy(HarnessBaseModel):
             "node not explicitly excluded."
         ),
     )
+
+    @model_validator(mode="after")
+    def validate_node_width(self) -> PlacementPolicy:
+        """Require a satisfiable inclusive node-count range."""
+
+        if (
+            self.min_nodes is not None
+            and self.max_nodes is not None
+            and self.min_nodes > self.max_nodes
+        ):
+            raise ValueError("min_nodes cannot be greater than max_nodes")
+        return self
 
 
 class RunSpec(HarnessBaseModel):

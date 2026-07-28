@@ -72,23 +72,42 @@ def test_mlx_concurrency_cells_stop_at_runtime_cap(script_name: str) -> None:
         if line.strip().startswith("cell concurrency-")
     ]
 
-    assert ["cell", "concurrency-mlx", "concurrency-8"] in cells
+    assert [
+        "cell",
+        "concurrency-mlx",
+        "concurrency-8",
+        "--max-nodes 1",
+    ] in cells
     assert [
         "cell",
         "concurrency-mlx-reasoning",
         "concurrency-reasoning-8",
+        "--max-nodes 1",
     ] in cells
-    assert any(
-        cell[:3] == ["cell", "concurrency-mlx-multinode", "concurrency-8"]
-        for cell in cells
-    )
-    assert ["cell", "concurrency-gguf", "concurrency"] in cells
-    assert ["cell", "concurrency-120b", "concurrency-reasoning"] in cells
-    assert any(
-        cell[:3]
-        == ["cell", "concurrency-gguf-pooled", "concurrency-reasoning"]
-        for cell in cells
-    )
+    assert [
+        "cell",
+        "concurrency-mlx-multinode",
+        "concurrency-8",
+        "--sharding Tensor --min-nodes 2 --max-nodes 2",
+    ] in cells
+    assert [
+        "cell",
+        "concurrency-gguf",
+        "concurrency",
+        "--max-nodes 1",
+    ] in cells
+    assert [
+        "cell",
+        "concurrency-120b",
+        "concurrency-reasoning",
+        "--max-nodes 1",
+    ] in cells
+    assert [
+        "cell",
+        "concurrency-gguf-pooled",
+        "concurrency-reasoning",
+        "--min-nodes 2 --max-nodes 2 --instance-meta LlamaRpc",
+    ] in cells
 
     test_sets = load_test_sets(root / "examples" / "foxlight" / "test_sets.yaml")
     for suite_name in ("concurrency-16", "concurrency-reasoning-16"):

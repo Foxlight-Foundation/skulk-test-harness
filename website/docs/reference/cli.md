@@ -94,7 +94,8 @@ every explicitly eligible inventory entry.
 | `--delete-staged-models` | `run` | Evict staged model weights after a run |
 | `--sharding` | `plan`, `run` | Exact contract: `Pipeline` or `Tensor` |
 | `--instance-meta` | `plan`, `run` | Exact contract: `MlxRing`, `MlxJaccl`, or `LlamaRpc` |
-| `--min-nodes` | `plan`, `run` | Override minimum node count |
+| `--min-nodes` | `plan`, `run` | Set a hard minimum node count |
+| `--max-nodes` | `plan`, `run` | Set a hard maximum node count |
 | `--exclude-nodes` | `run` | Comma-separated friendly node names to exclude from placement |
 | `--fail-on-issue` | `run` | Exit non-zero on failed results or error issues (the default; disable with `--no-fail-on-issue`) |
 

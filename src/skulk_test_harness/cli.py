@@ -696,6 +696,7 @@ def plan(
         ),
     ] = "MlxRing",
     min_nodes: Annotated[int | None, typer.Option(help="Minimum node count override")] = None,
+    max_nodes: Annotated[int | None, typer.Option(help="Maximum node count override")] = None,
 ) -> None:
     """Plan a harness run without mutating the cluster."""
 
@@ -708,6 +709,7 @@ def plan(
         sharding=sharding,  # type: ignore[arg-type]
         instance_meta=instance_meta,  # type: ignore[arg-type]
         min_nodes=min_nodes,
+        max_nodes=max_nodes,
     )
     policy = _policy_with_placement_scope(
         policy,
@@ -762,6 +764,7 @@ def run(
         ),
     ] = "MlxRing",
     min_nodes: Annotated[int | None, typer.Option(help="Minimum node count override")] = None,
+    max_nodes: Annotated[int | None, typer.Option(help="Maximum node count override")] = None,
     exclude_nodes: Annotated[
         str | None,
         typer.Option(
@@ -826,6 +829,7 @@ def run(
             sharding=sharding,  # type: ignore[arg-type]
             instance_meta=instance_meta,  # type: ignore[arg-type]
             min_nodes=min_nodes,
+            max_nodes=max_nodes,
             excluded_nodes=excluded_node_ids,
             eligible_nodes=eligible_node_ids,
         ),

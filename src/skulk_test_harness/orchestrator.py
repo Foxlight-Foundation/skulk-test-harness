@@ -121,6 +121,11 @@ class HarnessRunner:
                         for placement in existing
                         if set(placement.node_ids).issubset(eligible)
                     ]
+                existing = [
+                    placement
+                    for placement in existing
+                    if _placement_matches_policy(placement, spec.placement)
+                ]
                 if existing and spec.reuse_existing_instances:
                     report.placements.append(existing[0])
                     continue
@@ -227,7 +232,18 @@ class HarnessRunner:
         failure rather than deferred again.
         """
         placement = None
+        interrupted = False
+        preexisting_instance_ids: frozenset[str] | None = None
         try:
+            # Capture the ownership boundary before placement begins. If a
+            # KeyboardInterrupt/SystemExit lands while _ensure_model_placed is
+            # waiting for readiness, it cannot return the PlacementResult that
+            # normally carries this protected set into teardown.
+            preexisting_instance_ids = frozenset(
+                candidate.instance_id
+                for candidate in client.find_placements_for_model(model.model_id)
+                if candidate.instance_id
+            )
             placement = self._ensure_model_placed(client, model.model_id, spec, report)
             if placement is None:
                 if deferred_retry:
@@ -328,6 +344,11 @@ class HarnessRunner:
             )
             writer.write(report)
             return True
+        except BaseException:
+            # Do not swallow process-control exceptions. The flag lets finally
+            # clean a placement that was created before readiness returned.
+            interrupted = True
+            raise
         finally:
             instance_torn_down = False
             if (
@@ -341,6 +362,19 @@ class HarnessRunner:
                     placement.instance_id,
                     report,
                     protected_instance_ids=frozenset(placement.protected_instance_ids),
+                )
+            elif (
+                interrupted
+                and placement is None
+                and preexisting_instance_ids is not None
+                and not spec.retain_instances
+            ):
+                instance_torn_down = self._teardown_harness_instances(
+                    client,
+                    model.model_id,
+                    None,
+                    report,
+                    protected_instance_ids=preexisting_instance_ids,
                 )
             # Evict staged weights ONLY after the harness actually tore down the
             # instance it created (opt-in via --delete-staged-models), so test
@@ -552,6 +586,12 @@ class HarnessRunner:
                 for preview in previews
                 if _preview_node_count(preview) >= placement.min_nodes
             ]
+        if placement.max_nodes is not None:
+            previews = [
+                preview
+                for preview in previews
+                if _preview_node_count(preview) <= placement.max_nodes
+            ]
         if placement.strategy == "exact":
             previews = [
                 p
@@ -605,6 +645,11 @@ class HarnessRunner:
         if spec.placement.eligible_nodes:
             eligible = set(spec.placement.eligible_nodes)
             existing = [p for p in existing if set(p.node_ids).issubset(eligible)]
+        existing = [
+            placement
+            for placement in existing
+            if _placement_matches_policy(placement, spec.placement)
+        ]
         if existing and spec.reuse_existing_instances:
             # Resolve readiness by MODEL, not by a pinned instance id. If the
             # cluster tears the reused instance down and re-places the model
@@ -679,18 +724,38 @@ class HarnessRunner:
                     ],
                 }
             )
-        if placement.ready and placement.sharding != requested_sharding:
+        if placement.ready and not _placement_matches_policy(
+            placement, spec.placement
+        ):
             report.issues.append(
                 Issue(
                     severity="error",
                     model_id=model_id,
-                    message="Live placement did not verify the requested sharding mode",
+                    message="Live placement did not satisfy the requested placement contract",
                     evidence={
                         "requested_sharding": requested_sharding,
                         "observed_sharding": placement.sharding or "unverifiable",
+                        "requested_instance_meta": spec.placement.instance_meta,
+                        "observed_instance_meta": (
+                            placement.instance_meta or "unverifiable"
+                        ),
+                        "requested_min_nodes": spec.placement.min_nodes or "",
+                        "requested_max_nodes": spec.placement.max_nodes or "",
+                        "observed_node_count": len(placement.node_ids),
                         "instance_id": placement.instance_id or "",
                     },
                 )
+            )
+            placement = placement.model_copy(
+                update={
+                    "ready": False,
+                    "terminal_failure": True,
+                    "unavailable_reason": "placement_contract_mismatch",
+                    "runner_failure_messages": [
+                        "Live placement did not satisfy the requested placement "
+                        "shape and node-count bounds"
+                    ],
+                }
             )
         return placement
 
@@ -758,6 +823,18 @@ class HarnessRunner:
                 placements = [
                     p for p in placements if p.instance_id not in ignore_instance_ids
                 ]
+            matching_placements = [
+                p
+                for p in placements
+                if _placement_matches_policy(p, spec.placement)
+            ]
+            # Prefer the requested shape when transient duplicate/re-placement
+            # state contains both shapes. If only a mismatched placement exists,
+            # retain it so readiness can return promptly and the caller can
+            # report the contract violation instead of waiting for an
+            # appearance timeout as though no placement existed.
+            if matching_placements:
+                placements = matching_placements
             return placements
 
         start = time.monotonic()
@@ -5566,6 +5643,26 @@ def _placement_from_preview(
         sharding=str(preview.get("sharding") or ""),
         instance_meta=tag,
     )
+
+
+def _placement_matches_policy(
+    placement: PlacementResult, policy: PlacementPolicy
+) -> bool:
+    """Return whether a live placement satisfies the requested hard contract."""
+
+    node_count = len(placement.node_ids)
+    if policy.min_nodes is not None and node_count < policy.min_nodes:
+        return False
+    if policy.max_nodes is not None and node_count > policy.max_nodes:
+        return False
+    if policy.strategy == "single" and node_count != 1:
+        return False
+    if policy.strategy != "exact":
+        return True
+    if placement.sharding != policy.sharding:
+        return False
+    observed_meta = (placement.instance_meta or "").removesuffix("Instance")
+    return observed_meta == policy.instance_meta
 
 
 def _score_output(
