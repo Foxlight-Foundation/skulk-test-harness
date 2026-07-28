@@ -18,7 +18,10 @@ Skulk cluster and checking the result.
 The harness has two E2E environments. An attached run proves behavior on the
 configuration already present on a fleet. A fresh-install run proves the
 installer, generated configuration, served dashboard, and model journey a new
-user actually receives. Attached coverage cannot satisfy the release gate.
+user actually receives. Physical fresh-install qualification stops the
+declared existing services, installs every member into an empty temporary home,
+and tests the real topology they form with normal networking. Attached coverage
+and isolated single-node diagnostics cannot satisfy the physical release gate.
 
 ## Why LLM E2E Tests Are Different
 
@@ -58,7 +61,7 @@ success:
 | Read local YAML | `models sets`, `tests sets` | No cluster calls |
 | Plan | `plan` or `run` without `--execute` | Reads cluster state and writes a plan |
 | Execute | `run --execute` | Can place models and send live requests |
-| Fresh install | `fresh-install qualify` | Installs into an empty HOME, tests, then restores or deletes the target |
+| Fresh install | `fresh-install qualify` | Installs the selected physical fleet into empty homes, tests it, then restores every member; ephemeral providers are deleted |
 
 Destructive stability commands have an extra safety level. `failover`, `churn`,
 and `refusal` require `--execute-destructive` before any SSH or destructive API

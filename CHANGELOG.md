@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Physical fresh-install release qualification now installs every explicitly
+  declared fleet member together with normal networking, requires the exact
+  topology and all-member commit/backend/transport contracts throughout model
+  journeys, and restores the complete original fleet before releasing its
+  lease. Sandboxed single-node legs remain diagnostic-only.
+
 ## [0.2.0] - 2026-07-19
 
 The first versioned cut of the harness since the initial 0.1.0 (which was

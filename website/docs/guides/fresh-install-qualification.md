@@ -33,40 +33,52 @@ uv run skulk-harness fresh-install qualify \
   --config skulk-harness.fresh-install.yaml
 ```
 
-## Physical target lifecycle
+## Physical fleet lifecycle
 
-For each explicitly eligible Apple or AMD target, the harness:
+The release gate treats the operator's real Apple and AMD hardware as one
+freshly installed topology. For each explicitly eligible physical fleet, the
+harness:
 
 1. acquires and rereads the authoritative fleet lease;
-2. creates checksummed, mode-600 recovery archives on the target and controller;
-3. stops only that target's configured Skulk service;
-4. applies the target's reversible, SSH-preserving Skulk-network isolation;
-5. installs into an empty temporary `HOME` and runs the printed
-   `cd "$HOME/skulk" && uv run skulk` command on default ports, optionally
-   inside an inventory-declared operating-system network sandbox that cannot
-   add `SKULK_*` overrides or product flags;
-6. reaches the API through an SSH tunnel and requires one-node topology,
-   generated `skulk.yaml`, the expected backend, the served dashboard build,
-   and Zenoh DATA continuously through a startup settling window;
-7. drives dashboard and direct-API model journeys while continuously requiring
-   the same one-node runtime identity during downloads, placement waits,
-   browser polling, inference, and cleanup;
-8. stops and removes the temporary installation;
-9. removes isolation, restores the original service, and verifies checkout status, config hashes,
-   process arguments, API identity, and fleet membership; and
-10. releases the lease only after restoration succeeds and verifies the
+2. opens an independent SSH recovery channel to every declared member;
+3. requires those members to be the complete live topology and refuses to stop
+   a fleet with active model instances or runners;
+4. creates checksummed, mode-600 recovery archives for every member on both the
+   target and controller;
+5. stops the existing Skulk service on every member;
+6. installs the same pinned candidate into an empty temporary `HOME` on every
+   member and runs the literal `cd "$HOME/skulk" && uv run skulk` command on
+   default ports with no sandbox, product flags, or `SKULK_*` overrides;
+7. requires the exact declared topology to form and remain stable, every member
+   to report the pinned commit, its expected local backend and dashboard
+   contract, generated `skulk.yaml`, and Zenoh DATA;
+8. drives the dashboard and direct API through the declared entrypoint while
+   ordinary placement selects compatible Apple or AMD members, continuously
+   requiring the same complete node-identity set;
+9. inspects a served engine on whichever compatible member placement selected
+   and proves its shipped concurrency and unified-KV settings;
+10. stops every temporary runtime and proves every temporary `HOME` is gone;
+11. restores and verifies every original service, checkout, config hash,
+    process arguments, API identity, and the complete original topology; and
+12. releases the lease only after restoration succeeds and verifies the
     intended release against an authoritative remote reread.
+
+Legacy single-target diagnostic legs can still declare paired isolation
+commands. They are not the physical release gate. A target used by
+`physical_fleets` declares `whole_fleet_member: true`, supplies no isolation
+wrapper, and is never run individually by the default complete-matrix command.
 
 The lease renews at one third of its TTL. Every renewal is followed by an
 authoritative reread. A renewal or restoration failure stops further testing,
 makes one emergency extension, leaves the lease held, and writes a critical
 recovery report.
 
-The SSH tunnel belongs to the recovery control plane and runs in a separate
-process session. An operator interrupt stops product work immediately, then
-the harness defers any further termination signal until service restoration,
-tunnel teardown, provider deletion, and lease handling finish. The final report
-still records the interruption as a blocking outcome.
+The SSH tunnels belong to the recovery control plane and run in separate
+process sessions. An operator interrupt stops product work immediately, then
+the harness defers any further termination signal until all temporary homes are
+removed, all services are restored, tunnel teardown, provider deletion, and
+lease handling finish. The final report still records the interruption as a
+blocking outcome.
 
 ## RunPod lifecycle
 

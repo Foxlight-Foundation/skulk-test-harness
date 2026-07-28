@@ -43,7 +43,7 @@ TestKind = Literal[
 RunMode = Literal["plan", "execute"]
 IssueSeverity = Literal["info", "warning", "error"]
 FreshInstallProfile = Literal["candidate", "shipping"]
-FreshInstallPlatform = Literal["apple", "amd", "nvidia"]
+FreshInstallPlatform = Literal["apple", "amd", "nvidia", "mixed"]
 FreshInstallTargetKind = Literal["physical", "runpod"]
 ServiceManager = Literal["launchd", "systemd", "command"]
 FreshInstallStageStatus = Literal["pending", "running", "passed", "failed", "skipped"]
@@ -263,6 +263,13 @@ class FreshInstallTarget(HarnessBaseModel):
             "overrides."
         ),
     )
+    whole_fleet_member: bool = Field(
+        default=False,
+        description=(
+            "Whether this physical target is controlled only as part of a "
+            "physical_fleets entry and therefore runs with normal networking."
+        ),
+    )
     original_checkout: str | None = Field(
         default=None,
         description="Existing Skulk checkout inspected during snapshot and restoration.",
@@ -320,11 +327,29 @@ class FreshInstallTarget(HarnessBaseModel):
                     "physical targets require service_stop_command and "
                     "service_start_command"
                 )
-            if not self.isolation_enter_command or not self.isolation_exit_command:
+            if bool(self.isolation_enter_command) != bool(
+                self.isolation_exit_command
+            ):
+                raise ValueError(
+                    "physical target isolation commands must be supplied as a pair"
+                )
+            if (
+                not self.whole_fleet_member
+                and (
+                    not self.isolation_enter_command
+                    or not self.isolation_exit_command
+                )
+            ):
                 raise ValueError(
                     "physical targets require reversible Skulk-network isolation "
-                    "commands"
+                    "commands unless whole_fleet_member=true"
                 )
+            if self.whole_fleet_member and self.runtime_isolation_prefix:
+                raise ValueError(
+                    "whole-fleet members cannot declare runtime isolation prefixes"
+                )
+            if self.platform == "mixed":
+                raise ValueError("individual fresh-install targets cannot be mixed")
         if self.kind == "runpod" and self.platform != "nvidia":
             raise ValueError("runpod targets must use platform='nvidia'")
         if self.vision_contract == "positive" and not self.vision_models:
@@ -342,6 +367,54 @@ class FreshInstallTarget(HarnessBaseModel):
             raise ValueError(
                 "runtime_isolation_prefix cannot add Skulk environment overrides"
             )
+        return self
+
+
+class FreshInstallPhysicalFleet(HarnessBaseModel):
+    """A real multi-node hardware topology qualified as one fresh installation."""
+
+    hardware_class: str = Field(
+        min_length=1,
+        description="Public description of the complete physical topology.",
+    )
+    eligible: bool = Field(
+        default=False,
+        description="Explicit opt-in required before the fleet can be selected.",
+    )
+    exclusion_reason: str | None = Field(
+        default=None,
+        description="Operator-facing reason an ineligible fleet is excluded.",
+    )
+    member_targets: list[str] = Field(
+        min_length=2,
+        description="Physical target inventory keys installed and restored together.",
+    )
+    entrypoint_target: str = Field(
+        min_length=1,
+        description="Member whose dashboard and API drive qualification.",
+    )
+    qualification_targets: list[str] = Field(
+        min_length=1,
+        description=(
+            "Members whose platform model contracts compose the fleet matrix. "
+            "Other members still install, join, and contribute backend capacity."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate_members(self) -> "FreshInstallPhysicalFleet":
+        """Require a stable, unambiguous member and contract selection."""
+
+        if self.eligible and self.exclusion_reason:
+            raise ValueError("eligible physical fleets cannot declare exclusion_reason")
+        if len(set(self.member_targets)) != len(self.member_targets):
+            raise ValueError("physical fleet member_targets must be unique")
+        if self.entrypoint_target not in self.member_targets:
+            raise ValueError("physical fleet entrypoint_target must be a member")
+        if not set(self.qualification_targets).issubset(self.member_targets):
+            raise ValueError("physical fleet qualification_targets must be members")
+        if len(set(self.qualification_targets)) != len(self.qualification_targets):
+            raise ValueError("physical fleet qualification_targets must be unique")
         return self
 
 
@@ -401,6 +474,12 @@ class FreshInstallConfig(HarnessBaseModel):
         default_factory=dict,
         description="Named inventory. Selection considers only eligible entries.",
     )
+    physical_fleets: dict[str, FreshInstallPhysicalFleet] = Field(
+        default_factory=dict,
+        description=(
+            "Named physical topologies installed and qualified as complete fleets."
+        ),
+    )
     snapshot_root: Path = Field(
         default=Path("fresh-install-snapshots"),
         description="Controller-side private recovery archive root.",
@@ -428,7 +507,7 @@ class FreshInstallConfig(HarnessBaseModel):
         gt=0,
         description=(
             "Continuous duration for which the fresh runtime must retain its "
-            "one-node topology and shipped backend, transport, commit, and "
+            "declared topology and shipped backend, transport, commit, and "
             "dashboard contract before model qualification begins."
         ),
     )
@@ -445,6 +524,30 @@ class FreshInstallConfig(HarnessBaseModel):
             raise ValueError(
                 "lease_heartbeat_s must not exceed one third of lease_ttl_s"
             )
+        for fleet_name, fleet in self.physical_fleets.items():
+            unknown = set(fleet.member_targets) - self.targets.keys()
+            if unknown:
+                raise ValueError(
+                    f"physical fleet {fleet_name!r} references unknown target(s): "
+                    f"{sorted(unknown)}"
+                )
+            for target_name in fleet.member_targets:
+                target = self.targets[target_name]
+                if target.kind != "physical":
+                    raise ValueError(
+                        f"physical fleet {fleet_name!r} member {target_name!r} "
+                        "is not physical"
+                    )
+                if fleet.eligible and not target.eligible:
+                    raise ValueError(
+                        f"physical fleet {fleet_name!r} member {target_name!r} "
+                        "is not eligible"
+                    )
+                if not target.whole_fleet_member:
+                    raise ValueError(
+                        f"physical fleet {fleet_name!r} member {target_name!r} "
+                        "must declare whole_fleet_member=true"
+                    )
         return self
 
     @property
@@ -473,13 +576,57 @@ class FreshInstallConfig(HarnessBaseModel):
             raise ValueError(f"fresh-install target(s) are not eligible: {excluded}")
         return selected
 
+    def eligible_physical_fleets(
+        self, requested: list[str] | None = None
+    ) -> list[tuple[str, FreshInstallPhysicalFleet]]:
+        """Select explicitly eligible physical topologies in inventory order."""
+
+        requested_names = set(requested or ())
+        unknown = requested_names - self.physical_fleets.keys()
+        if unknown:
+            raise ValueError(
+                f"unknown fresh-install physical fleet(s): {sorted(unknown)}"
+            )
+        selected: list[tuple[str, FreshInstallPhysicalFleet]] = []
+        for name, fleet in self.physical_fleets.items():
+            if requested_names and name not in requested_names:
+                continue
+            if fleet.eligible:
+                selected.append((name, fleet))
+        if requested_names and len(selected) != len(requested_names):
+            excluded = sorted(requested_names - {name for name, _ in selected})
+            raise ValueError(
+                f"fresh-install physical fleet(s) are not eligible: {excluded}"
+            )
+        return selected
+
+    def physical_fleet_targets(
+        self, fleet: FreshInstallPhysicalFleet
+    ) -> list[tuple[str, FreshInstallTarget]]:
+        """Resolve a validated physical fleet to its ordered target inventory."""
+
+        return [(name, self.targets[name]) for name in fleet.member_targets]
+
+    def physical_fleet_contract_targets(
+        self, fleet: FreshInstallPhysicalFleet
+    ) -> list[tuple[str, FreshInstallTarget]]:
+        """Resolve the member contracts exercised by a physical fleet."""
+
+        return [(name, self.targets[name]) for name in fleet.qualification_targets]
+
     def assert_complete_release_matrix(
         self,
         selected: list[tuple[str, FreshInstallTarget]],
+        physical_fleets: list[tuple[str, FreshInstallPhysicalFleet]] | None = None,
     ) -> None:
         """Require every configured release-blocking platform."""
 
         selected_platforms = {target.platform for _name, target in selected}
+        for _fleet_name, fleet in physical_fleets or []:
+            selected_platforms.update(
+                self.targets[target_name].platform
+                for target_name in fleet.member_targets
+            )
         missing = sorted(set(self.required_platforms) - selected_platforms)
         if missing:
             raise ValueError(
@@ -1790,10 +1937,28 @@ class ServedEngineEvidence(HarnessBaseModel):
     passed: bool
 
 
+class FreshInstallMemberEvidence(HarnessBaseModel):
+    """Publishable install evidence for one anonymous physical-fleet member."""
+
+    ordinal: int = Field(ge=1)
+    platform: FreshInstallPlatform
+    hardware_class: str
+    requested_ref: str | None = None
+    resolved_commit: str | None = None
+    generated_config_sha256: str | None = None
+    expected_backends: list[str] = Field(default_factory=list)
+    detected_backends: list[str] = Field(default_factory=list)
+    data_transport: DataTransport | None = None
+    dashboard_build_present: bool | None = None
+    snapshot_target_sha256: str | None = None
+    snapshot_controller_sha256: str | None = None
+    restored: bool | None = None
+
+
 class FreshInstallQualificationReport(HarnessBaseModel):
     """Complete private report for one clean-install target leg."""
 
-    schema_version: str = "1.1"
+    schema_version: str = "1.2"
     qualification_id: str
     profile: FreshInstallProfile
     platform: FreshInstallPlatform
@@ -1807,6 +1972,7 @@ class FreshInstallQualificationReport(HarnessBaseModel):
     api_vision: list[VisionFixtureEvidence] = Field(default_factory=list)
     browser: list[DashboardJourneyOutcome] = Field(default_factory=list)
     served_engines: list[ServedEngineEvidence] = Field(default_factory=list)
+    members: list[FreshInstallMemberEvidence] = Field(default_factory=list)
     snapshot_target_sha256: str | None = None
     snapshot_controller_sha256: str | None = None
     lease_renewal_expiries: list[datetime] = Field(default_factory=list)

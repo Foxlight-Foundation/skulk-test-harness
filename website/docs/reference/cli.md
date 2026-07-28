@@ -23,7 +23,7 @@ current directory, falling back to built-in defaults if absent).
 | `goal --execute` | Yes | Yes | Execute the parsed goal |
 | `compare` | No | No | Compare two local run sets like-for-like |
 | `submit` | No | No | Submit a local run to the community benchmarks ledger |
-| `fresh-install qualify` | No pre-existing clean target | Yes, selected target only | Install and qualify the candidate or shipping product experience |
+| `fresh-install qualify` | Existing services are snapshotted and stopped | Yes, every selected physical-fleet member | Install and qualify the candidate or shipping product experience on the real topology |
 
 `compare` and `submit` work entirely from local report files under
 `output_dir`; neither contacts a Skulk cluster (`submit` contacts only the

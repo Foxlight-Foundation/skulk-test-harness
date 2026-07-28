@@ -260,9 +260,29 @@ def _fresh_install_markdown(report: FreshInstallQualificationReport) -> str:
         f"- Teardown: `{report.teardown_succeeded}`",
         f"- Critical recovery required: `{report.critical_recovery_required}`",
         "",
-        "## Served engines",
+        "## Physical members",
         "",
     ]
+    if report.members:
+        for member in report.members:
+            lines.append(
+                f"- Member `{member.ordinal}` / `{member.platform}` / "
+                f"`{member.hardware_class}`: commit "
+                f"`{member.resolved_commit or 'unknown'}`, transport "
+                f"`{member.data_transport or 'unknown'}`, backends "
+                f"`{', '.join(member.detected_backends) or 'unknown'}`, "
+                f"dashboard `{member.dashboard_build_present}`, "
+                f"restored `{member.restored}`"
+            )
+    else:
+        lines.append("- Not applicable")
+    lines.extend(
+        [
+        "",
+        "## Served engines",
+        "",
+        ]
+    )
     if report.served_engines:
         for evidence in report.served_engines:
             lines.append(
