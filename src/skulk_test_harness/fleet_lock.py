@@ -18,8 +18,11 @@ constructed, so community users of the public harness are unaffected.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import subprocess
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -136,6 +139,26 @@ class FleetLockStore:
     def __init__(self, config: FleetLock) -> None:
         self._config = config
         self._dir = (config.cache_dir or _default_cache_dir()).expanduser()
+        self._local_lock_path = self._dir.parent / f".{self._dir.name}.lock"
+
+    @contextmanager
+    def _local_cache_lock(self) -> Iterator[None]:
+        """Serialize every process that mutates or resets this local clone.
+
+        Git provides the cross-host compare-and-swap at push time, but every
+        process on one controller shares the same cache clone. A concurrent
+        read runs ``reset --hard`` during synchronization; without this local
+        lock it can erase another process's pending lease write before that
+        writer commits it, causing a false-successful no-op release.
+        """
+
+        self._local_lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with self._local_lock_path.open("a+b") as lock_handle:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
 
     # --- git plumbing ---------------------------------------------------------
 
@@ -191,7 +214,10 @@ class FleetLockStore:
         self._git("add", "--", self._config.path)
         # Idempotent no-op writes (identical content) need no commit or push.
         if not self._git("status", "--porcelain").stdout.strip():
-            return True
+            # A no-op is successful only when an authoritative reread contains
+            # the intended lease. This catches interference from an older
+            # harness process that does not yet honor the local cache lock.
+            return self._read_unlocked() == lease
         self._git(
             "-c",
             "user.name=skulk-harness",
@@ -206,7 +232,16 @@ class FleetLockStore:
             "push", "origin", f"HEAD:{self._config.branch}", check=False
         )
         if push.returncode == 0:
-            return True
+            authoritative = self._read_unlocked()
+            if authoritative == lease:
+                return True
+            # A new holder can legitimately acquire immediately after a
+            # successful release push. The release still achieved its goal.
+            return (
+                lease.state == "free"
+                and authoritative.state == "held"
+                and authoritative.holder != self._config.holder
+            )
         # Lost the CAS: reset to the remote tip so a subsequent read is truthful.
         self._git("fetch", "--quiet", "origin", self._config.branch, check=False)
         self._git(
@@ -220,14 +255,20 @@ class FleetLockStore:
 
     # --- lease operations -----------------------------------------------------
 
-    def read(self) -> FleetLease:
-        """Fetch the latest lock and return the current lease (free if absent)."""
+    def _read_unlocked(self) -> FleetLease:
+        """Fetch the lease while the caller owns the local cache lock."""
 
         self._ensure_clone()
         lock_path = self._dir / self._config.path
         if not lock_path.exists():
             return FleetLease()
         return FleetLease.model_validate_json(lock_path.read_text())
+
+    def read(self) -> FleetLease:
+        """Fetch the latest lock and return the current lease (free if absent)."""
+
+        with self._local_cache_lock():
+            return self._read_unlocked()
 
     def acquire(
         self,
@@ -240,7 +281,27 @@ class FleetLockStore:
     ) -> LeaseOutcome:
         """Acquire the fleet, or refuse if another agent holds it unexpired."""
 
-        current = self.read()
+        with self._local_cache_lock():
+            return self._acquire_locked(
+                branch=branch,
+                host=host,
+                battery=battery,
+                ttl_s=ttl_s,
+                note=note,
+            )
+
+    def _acquire_locked(
+        self,
+        *,
+        branch: str,
+        host: str,
+        battery: str | None,
+        ttl_s: float | None,
+        note: str | None,
+    ) -> LeaseOutcome:
+        """Acquire while holding the controller-local cache lock."""
+
+        current = self._read_unlocked()
         now = _utcnow()
         if current.is_held(now) and current.holder != self._config.holder:
             return LeaseOutcome(
@@ -271,7 +332,7 @@ class FleetLockStore:
         ):
             return LeaseOutcome(
                 False,
-                self.read(),
+                self._read_unlocked(),
                 "lost the acquire race; another agent claimed the fleet first",
             )
         message = "acquired the fleet"
@@ -282,7 +343,13 @@ class FleetLockStore:
     def extend(self, *, ttl_s: float | None = None) -> LeaseOutcome:
         """Push the TTL forward. Only the current holder may extend."""
 
-        current = self.read()
+        with self._local_cache_lock():
+            return self._extend_locked(ttl_s=ttl_s)
+
+    def _extend_locked(self, *, ttl_s: float | None) -> LeaseOutcome:
+        """Extend while holding the controller-local cache lock."""
+
+        current = self._read_unlocked()
         now = _utcnow()
         if current.state != "held" or current.holder != self._config.holder:
             return LeaseOutcome(
@@ -301,14 +368,22 @@ class FleetLockStore:
             lease, f"fleet: {self._config.holder} extend"
         ):
             return LeaseOutcome(
-                False, self.read(), "lost the extend race; re-read the lease"
+                False,
+                self._read_unlocked(),
+                "lost the extend race; re-read the lease",
             )
         return LeaseOutcome(True, lease, "extended the lease")
 
     def release(self, *, force: bool = False) -> LeaseOutcome:
         """Free the fleet. Only the holder may release without ``force``."""
 
-        current = self.read()
+        with self._local_cache_lock():
+            return self._release_locked(force=force)
+
+    def _release_locked(self, *, force: bool) -> LeaseOutcome:
+        """Release while holding the controller-local cache lock."""
+
+        current = self._read_unlocked()
         if current.state == "free":
             return LeaseOutcome(True, current, "fleet is already free")
         if not force and current.holder != self._config.holder:
@@ -323,7 +398,7 @@ class FleetLockStore:
         if not self._commit_and_push(
             free, f"fleet: {self._config.holder} release"
         ):
-            latest = self.read()
+            latest = self._read_unlocked()
             if latest.state == "free":
                 return LeaseOutcome(True, latest, "fleet is free")
             return LeaseOutcome(
