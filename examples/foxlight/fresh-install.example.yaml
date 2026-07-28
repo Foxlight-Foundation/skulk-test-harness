@@ -18,6 +18,7 @@ fresh_install:
   required_platforms: [apple, amd, nvidia]
   snapshot_root: fresh-install-snapshots
   snapshot_retention_days: 30
+  runtime_contract_stability_s: 30
   lease_ttl_s: 3600
   emergency_lease_ttl_s: 21600
   targets:

@@ -45,6 +45,7 @@ from skulk_test_harness.models import (
     ServedEngineEvidence,
 )
 from skulk_test_harness.qualification_checks import (
+    UnexpectedFreshInstallPeerError,
     assert_fresh_runtime_contract,
     qualify_direct_text,
     qualify_direct_vision,
@@ -652,6 +653,7 @@ class FreshInstallQualifier:
                     expected_commit=expected_commit,
                     timeout_s=self.fresh.readiness_timeout_s,
                     poll_interval_s=self.fresh.poll_interval_s,
+                    stability_s=self.fresh.runtime_contract_stability_s,
                     heartbeat=heartbeat,
                 )
                 report.install = report.install.model_copy(
@@ -1282,26 +1284,43 @@ def _wait_for_runtime_contract(
     expected_commit: str | None,
     timeout_s: float,
     poll_interval_s: float,
+    stability_s: float,
     heartbeat: AuthoritativeLeaseHeartbeat | None,
 ) -> InstallProvenance:
-    """Poll until startup telemetry proves every shipped runtime invariant."""
+    """Require every shipped runtime invariant to remain continuously stable."""
 
     deadline = time.monotonic() + timeout_s
+    stable_since: float | None = None
+    stable_provenance: InstallProvenance | None = None
     last_error: Exception | None = None
     with SkulkClient(api_base_url) as client:
         while time.monotonic() < deadline:
             _check_heartbeat(heartbeat)
             try:
-                return assert_fresh_runtime_contract(
+                stable_provenance = assert_fresh_runtime_contract(
                     client,
                     expected_backends=target.expected_backends,
                     expected_transport=target.expected_data_transport,
                     expected_commit=expected_commit,
                     dashboard_contract=target.dashboard_contract,
                 )
+                now = time.monotonic()
+                if stable_since is None:
+                    stable_since = now
+                if now - stable_since >= stability_s:
+                    return stable_provenance
+            except UnexpectedFreshInstallPeerError:
+                # Once another node appears, the clean install is not isolated.
+                # Waiting for it to disappear would turn a real qualification
+                # failure into a timing-dependent pass.
+                raise
             except Exception as exception:  # noqa: BLE001 - startup is eventually consistent
                 last_error = exception
+                stable_since = None
+                stable_provenance = None
                 time.sleep(poll_interval_s)
+                continue
+            time.sleep(poll_interval_s)
     raise TimeoutError(f"fresh runtime contract did not settle: {last_error}")
 
 

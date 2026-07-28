@@ -17,6 +17,10 @@ from skulk_test_harness.models import (
 from skulk_test_harness.vision_fixture import VisionFixture
 
 
+class UnexpectedFreshInstallPeerError(RuntimeError):
+    """Signal that an allegedly isolated fresh node discovered another node."""
+
+
 @dataclass(frozen=True)
 class DirectTextQualification:
     """Result and bounded diagnostic evidence for a direct text request."""
@@ -39,6 +43,10 @@ def assert_fresh_runtime_contract(
     resources = _object(state.get("nodeResources"))
     identities = _object(state.get("nodeIdentities"))
     node_ids = resources.keys() | identities.keys()
+    if len(node_ids) > 1:
+        raise UnexpectedFreshInstallPeerError(
+            f"fresh install discovered another node; observed {len(node_ids)}"
+        )
     if len(node_ids) != 1:
         raise RuntimeError(
             f"fresh install must form exactly one node; observed {len(node_ids)}"

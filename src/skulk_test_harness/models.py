@@ -410,6 +410,15 @@ class FreshInstallConfig(HarnessBaseModel):
     shipping_installer_ref: str = "main"
     remote_port: int = Field(default=52415, ge=1, le=65535)
     readiness_timeout_s: float = Field(default=600.0, gt=0)
+    runtime_contract_stability_s: float = Field(
+        default=30.0,
+        gt=0,
+        description=(
+            "Continuous duration for which the fresh runtime must retain its "
+            "one-node topology and shipped backend, transport, commit, and "
+            "dashboard contract before model qualification begins."
+        ),
+    )
     model_ready_timeout_s: float = Field(default=7200.0, gt=0)
     poll_interval_s: float = Field(default=2.0, gt=0)
     runpod: RunPodFreshInstallConfig | None = None
