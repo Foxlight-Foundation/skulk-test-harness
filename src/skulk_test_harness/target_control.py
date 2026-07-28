@@ -103,6 +103,10 @@ class SshTargetController:
             ],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
+            # The tunnel is part of the recovery control plane. Keep a
+            # terminal SIGINT aimed at the qualification workload from killing
+            # the very channel restoration must use.
+            start_new_session=True,
         )
         time.sleep(0.5)
         if process.poll() is not None:

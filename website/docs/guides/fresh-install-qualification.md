@@ -42,10 +42,12 @@ For each explicitly eligible Apple or AMD target, the harness:
 3. stops only that target's configured Skulk service;
 4. applies the target's reversible, SSH-preserving Skulk-network isolation;
 5. installs into an empty temporary `HOME` and runs the printed
-   `cd "$HOME/skulk" && uv run skulk` command on default ports;
+   `cd "$HOME/skulk" && uv run skulk` command on default ports, optionally
+   inside an inventory-declared operating-system network sandbox that cannot
+   add `SKULK_*` overrides or product flags;
 6. reaches the API through an SSH tunnel and requires one-node topology,
    generated `skulk.yaml`, the expected backend, the served dashboard build,
-   and Zenoh DATA;
+   and Zenoh DATA continuously through a startup settling window;
 7. drives dashboard and direct-API model journeys;
 8. stops and removes the temporary installation;
 9. removes isolation, restores the original service, and verifies checkout status, config hashes,
@@ -56,6 +58,10 @@ The lease renews at one third of its TTL. Every renewal is followed by an
 authoritative reread. A renewal or restoration failure stops further testing,
 makes one emergency extension, leaves the lease held, and writes a critical
 recovery report.
+
+The SSH tunnel belongs to the recovery control plane and runs in a separate
+process session. An operator interrupt can stop the temporary workload without
+also removing the channel needed to verify restoration.
 
 ## RunPod lifecycle
 

@@ -27,6 +27,7 @@ from pydantic import ValidationError
 import skulk_test_harness.dashboard_qualification as dashboard_qualification_module
 import skulk_test_harness.fresh_install as fresh_install_module
 import skulk_test_harness.qualification_checks as qualification_checks_module
+import skulk_test_harness.target_control as target_control_module
 from skulk_test_harness import runpod as runpod_module
 from skulk_test_harness.client import SkulkClient
 from skulk_test_harness.dashboard_qualification import (
@@ -48,9 +49,11 @@ from skulk_test_harness.fresh_install import (
     _qualify_served_engine,  # pyright: ignore[reportPrivateUsage]
     _run_remote_logged_command,  # pyright: ignore[reportPrivateUsage]
     _runpod_ephemeral_target,  # pyright: ignore[reportPrivateUsage]
+    _runtime_start_command,  # pyright: ignore[reportPrivateUsage]
     _self_safe_process_pattern,  # pyright: ignore[reportPrivateUsage]
     _served_engine_envelope,  # pyright: ignore[reportPrivateUsage]
     _wait_for_api_identity,  # pyright: ignore[reportPrivateUsage]
+    _wait_for_runtime_contract,  # pyright: ignore[reportPrivateUsage]
 )
 from skulk_test_harness.lease_heartbeat import (
     AuthoritativeLeaseHeartbeat,
@@ -71,6 +74,7 @@ from skulk_test_harness.models import (
     ServedEngineEvidence,
 )
 from skulk_test_harness.qualification_checks import (
+    UnexpectedFreshInstallPeerError,
     qualify_direct_text,
     qualify_direct_vision,
 )
@@ -337,6 +341,114 @@ def test_heartbeat_must_not_exceed_one_third_of_ttl() -> None:
     with pytest.raises(ValidationError, match="one third"):
         FreshInstallConfig(lease_ttl_s=90, lease_heartbeat_s=31)
     assert FreshInstallConfig(lease_ttl_s=90).resolved_lease_heartbeat_s == 30
+
+
+def test_fresh_runtime_contract_requires_a_stable_one_node_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A peer arriving just after startup must fail before model work begins."""
+
+    class PeerJoiningClient(_StubContractClient):
+        state_reads = 0
+
+        def __enter__(self) -> "PeerJoiningClient":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def get_state(self) -> dict[str, object]:
+            state = super().get_state()
+            self.state_reads += 1
+            if self.state_reads > 1:
+                resources = cast(dict[str, object], state["nodeResources"])
+                identities = cast(dict[str, object], state["nodeIdentities"])
+                resources["node-b"] = {
+                    "backends": ["llama_server"],
+                    "dataTransport": "zenoh",
+                }
+                identities["node-b"] = {}
+            return state
+
+    client = PeerJoiningClient()
+    monkeypatch.setattr(fresh_install_module, "SkulkClient", lambda *_args: client)
+    monkeypatch.setattr(
+        qualification_checks_module.httpx,
+        "get",
+        lambda *_args, **_kwargs: httpx.Response(
+            200,
+            text='<html><body><div id="root"></div></body></html>',
+        ),
+    )
+
+    with pytest.raises(UnexpectedFreshInstallPeerError, match="observed 2"):
+        _wait_for_runtime_contract(
+            "http://127.0.0.1:52415",
+            target=FreshInstallTarget(
+                kind="runpod",
+                platform="nvidia",
+                hardware_class="nvidia-cuda",
+                eligible=True,
+                expected_backends=["llama_server"],
+                vision_contract="unavailable",
+            ),
+            expected_commit=None,
+            timeout_s=1,
+            poll_interval_s=0.001,
+            stability_s=0.1,
+            heartbeat=None,
+        )
+
+
+def test_recovery_tunnel_isolated_from_terminal_interrupt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The SSH recovery tunnel must survive a signal to the caller's session."""
+
+    captured: dict[str, object] = {}
+
+    class FakeTunnel:
+        stderr = None
+
+        def poll(self) -> None:
+            return None
+
+    def fake_popen(*args: object, **kwargs: object) -> FakeTunnel:
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return FakeTunnel()
+
+    monkeypatch.setattr(target_control_module.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(target_control_module.time, "sleep", lambda _seconds: None)
+
+    controller = SshTargetController(_physical_target())
+    _local_port, process = controller.open_tunnel(remote_port=52415)
+
+    assert isinstance(process, FakeTunnel)
+    assert cast(dict[str, object], captured["kwargs"])["start_new_session"] is True
+
+
+def test_runtime_isolation_wraps_the_literal_clean_command() -> None:
+    payload = _physical_target().model_dump()
+    payload["runtime_isolation_prefix"] = "sandbox-exec -f isolation.sb"
+    target = FreshInstallTarget.model_validate(payload)
+
+    command = _runtime_start_command(
+        temporary_root="/tmp/fresh",
+        target=target,
+    )
+
+    assert command.startswith("sandbox-exec -f isolation.sb env -i ")
+    assert 'cd "$HOME/skulk" && exec uv run skulk' in command
+    assert "SKULK_" not in command
+
+
+def test_runtime_isolation_rejects_product_overrides() -> None:
+    payload = _physical_target().model_dump()
+    payload["runtime_isolation_prefix"] = "env SKULK_DATA_TRANSPORT=zenoh"
+
+    with pytest.raises(ValidationError, match="cannot add Skulk"):
+        FreshInstallTarget.model_validate(payload)
 
 
 def test_random_vision_fixture_has_exact_judge_free_contract(tmp_path: Path) -> None:

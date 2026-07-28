@@ -18,6 +18,7 @@ fresh_install:
   required_platforms: [apple, amd, nvidia]
   snapshot_root: fresh-install-snapshots
   snapshot_retention_days: 30
+  runtime_contract_stability_s: 30
   lease_ttl_s: 3600
   emergency_lease_ttl_s: 21600
   targets:
@@ -34,6 +35,9 @@ fresh_install:
       service_status_command: replace-with-stable-launchctl-status
       isolation_enter_command: replace-with-target-local-skulk-traffic-isolation
       isolation_exit_command: replace-with-target-local-isolation-removal
+      # Optional OS-level wrapper, for example a macOS sandbox profile. It may
+      # isolate networking but cannot add SKULK_* overrides or product flags.
+      runtime_isolation_prefix: replace-with-runtime-isolation-wrapper
       original_checkout: replace-with-existing-checkout
       original_config_paths:
         - replace-with-existing-skulk-yaml
