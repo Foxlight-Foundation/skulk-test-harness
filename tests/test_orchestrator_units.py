@@ -260,6 +260,57 @@ def test_minimum_placement_enforces_requested_node_width() -> None:
     ]
 
 
+def test_placement_policy_rejects_inverted_node_width() -> None:
+    """A qualification contract cannot have an impossible node-count range."""
+
+    with pytest.raises(ValueError, match="min_nodes cannot be greater"):
+        PlacementPolicy(min_nodes=3, max_nodes=2)
+
+
+def test_preview_enforces_maximum_node_width() -> None:
+    """Transient memory pressure must not silently widen a one-node cell."""
+
+    class _PreviewClient:
+        def get_placement_previews(
+            self,
+            _model_id: str,
+            *,
+            excluded_node_ids: list[str],
+        ) -> list[dict[str, object]]:
+            assert excluded_node_ids == []
+            return [
+                {
+                    "sharding": "Pipeline",
+                    "instance_meta": "MlxRing",
+                    "instance": {
+                        "MlxRingInstance": {
+                            "shardAssignments": {
+                                "nodeToRunner": {
+                                    "node-a": "runner-a",
+                                    "node-b": "runner-b",
+                                },
+                                "runnerToShard": {},
+                            }
+                        }
+                    },
+                }
+            ]
+
+    runner = HarnessRunner(
+        config=HarnessConfig(preview_settle_attempts=1),
+        model_sets={},
+        test_sets={},
+    )
+
+    chosen = runner._choose_preview_once(
+        cast(SkulkClient, cast(object, _PreviewClient())),
+        "mlx-community/Foo",
+        PlacementPolicy(max_nodes=1),
+    )
+
+    assert chosen is None
+
+
 def test_exact_placement_does_not_fall_back_to_another_sharding_mode() -> None:
     """Qualification must fail preview selection instead of relabeling Pipeline."""
 
@@ -3614,6 +3665,7 @@ def test_ensure_model_placed_reports_unverified_requested_sharding(
         lambda *_args, **_kwargs: PlacementResult(
             model_id="m/Foo",
             instance_id="instance-a",
+            node_ids=["node-a", "node-b"],
             sharding=None,
             instance_meta="MlxRingInstance",
             ready=True,
@@ -3635,14 +3687,23 @@ def test_ensure_model_placed_reports_unverified_requested_sharding(
     placement = runner._ensure_model_placed(client, "m/Foo", spec, report)  # type: ignore[arg-type]
 
     assert placement is not None
-    assert placement.ready is True
+    assert placement.ready is False
+    assert placement.unavailable_reason == "placement_contract_mismatch"
     assert placement.sharding is None
     assert [(issue.severity, issue.message) for issue in report.issues] == [
-        ("error", "Live placement did not verify the requested sharding mode")
+        (
+            "error",
+            "Live placement did not satisfy the requested placement contract",
+        )
     ]
     assert report.issues[0].evidence == {
         "requested_sharding": "Tensor",
         "observed_sharding": "unverifiable",
+        "requested_instance_meta": "MlxRing",
+        "observed_instance_meta": "MlxRingInstance",
+        "requested_min_nodes": 2,
+        "requested_max_nodes": "",
+        "observed_node_count": 2,
         "instance_id": "instance-a",
     }
 
@@ -4770,6 +4831,51 @@ def test_teardown_never_deletes_protected_preexisting_instance() -> None:
     assert "mine" in client.deleted
     assert "preexisting" not in client.deleted
     assert torn is True
+
+
+def test_lifecycle_interrupt_sweeps_new_instance_and_preserves_preexisting(
+    tmp_path: Path,
+) -> None:
+    """Ctrl-C during readiness must not orphan the placement it just created."""
+
+    preexisting = PlacementResult(
+        model_id="m/Foo",
+        instance_id="preexisting",
+        ready=True,
+    )
+    created = PlacementResult(
+        model_id="m/Foo",
+        instance_id="created-during-wait",
+        ready=False,
+    )
+    client = _FakeClient(live_placements=[preexisting])
+    runner = _runner()
+
+    def interrupted_placement(*_args: object, **_kwargs: object) -> None:
+        client._live.append(created)
+        raise KeyboardInterrupt
+
+    runner._ensure_model_placed = interrupted_placement  # type: ignore[method-assign]
+    spec = RunSpec(
+        model_set="m",
+        test_set="t",
+        mode="execute",
+        retain_instances=False,
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        runner._run_model_lifecycle(
+            client,  # type: ignore[arg-type]
+            ModelRef(model_id="m/Foo", source="explicit"),
+            spec,
+            RunReport.start("run-1", spec, []),
+            HarnessTestSet(name="t", tests=[]),
+            ReportWriter(tmp_path),
+            {},
+        )
+
+    assert "created-during-wait" in client.deleted
+    assert "preexisting" not in client.deleted
 
 
 def test_wait_for_model_ready_never_adopts_ignored_ready_instance() -> None:

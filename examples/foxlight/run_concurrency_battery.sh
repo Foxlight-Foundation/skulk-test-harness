@@ -54,22 +54,22 @@ cell() {
 say "CONCURRENCY BATTERY START (MLX shipped default 1/4/8; GGUF 1/4/8/16/32/64; reasoning-sized output budgets)"
 
 # --- MLX, single rank (rank 0), small -> large ------------------------------
-cell concurrency-mlx            concurrency-8
+cell concurrency-mlx            concurrency-8  "--max-nodes 1"
 
 # --- MLX reasoning, single rank (larger budget, shipped cap 8) ---------------
-cell concurrency-mlx-reasoning  concurrency-reasoning-8
+cell concurrency-mlx-reasoning  concurrency-reasoning-8  "--max-nodes 1"
 
 # --- MLX, multiple ranks (large dense forced across Apple nodes) -------------
-cell concurrency-mlx-multinode  concurrency-8  "--sharding Tensor --min-nodes 2"
+cell concurrency-mlx-multinode  concurrency-8  "--sharding Tensor --min-nodes 2 --max-nodes 2"
 
 # --- llama.cpp / AMD GPU node, single rank, small -> large ------------------
-cell concurrency-gguf           concurrency
+cell concurrency-gguf           concurrency  "--max-nodes 1"
 
 # --- llama.cpp / AMD reasoning model, single rank (larger output budget) ----
-cell concurrency-120b           concurrency-reasoning
+cell concurrency-120b           concurrency-reasoning  "--max-nodes 1"
 
 # --- llama.cpp / AMD, multiple ranks (RPC memory pooling, driver + donor) ---
-cell concurrency-gguf-pooled    concurrency-reasoning  "--min-nodes 2 --instance-meta LlamaRpc"
+cell concurrency-gguf-pooled    concurrency-reasoning  "--min-nodes 2 --max-nodes 2 --instance-meta LlamaRpc"
 
 say "CONCURRENCY BATTERY COMPLETE (rc=$battery_rc)"
 

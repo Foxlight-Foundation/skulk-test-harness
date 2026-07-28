@@ -107,6 +107,8 @@ def test_run_treats_requested_placement_as_exact_contract(
             "MlxJaccl",
             "--min-nodes",
             "2",
+            "--max-nodes",
+            "2",
         ],
     )
 
@@ -116,6 +118,7 @@ def test_run_treats_requested_placement_as_exact_contract(
     assert policy.sharding == "Tensor"
     assert policy.instance_meta == "MlxJaccl"
     assert policy.min_nodes == 2
+    assert policy.max_nodes == 2
 
 
 def test_plan_uses_the_same_exact_placement_contract(monkeypatch, tmp_path) -> None:
@@ -137,6 +140,8 @@ def test_plan_uses_the_same_exact_placement_contract(monkeypatch, tmp_path) -> N
             "MlxRing",
             "--min-nodes",
             "2",
+            "--max-nodes",
+            "2",
         ],
     )
 
@@ -146,6 +151,7 @@ def test_plan_uses_the_same_exact_placement_contract(monkeypatch, tmp_path) -> N
     assert policy.sharding == "Tensor"
     assert policy.instance_meta == "MlxRing"
     assert policy.min_nodes == 2
+    assert policy.max_nodes == 2
 
 
 def test_shipping_transport_requirement_accepts_uniform_fleet() -> None:

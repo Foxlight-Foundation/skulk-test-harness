@@ -126,12 +126,12 @@ cell mtp-served-9b    mtp-correctness  "--exclude-nodes kite4 --delete-staged-mo
 # SKULK_E2E_CONCURRENCY=0 to run the correctness/benchmark battery without this
 # long leg.
 if [ "${SKULK_E2E_CONCURRENCY:-1}" = "1" ]; then
-  cell concurrency-mlx            concurrency-8
-  cell concurrency-mlx-reasoning  concurrency-reasoning-8
-  cell concurrency-mlx-multinode  concurrency-8  "--sharding Tensor --min-nodes 2"
-  cell concurrency-gguf           concurrency
-  cell concurrency-120b           concurrency-reasoning
-  cell concurrency-gguf-pooled    concurrency-reasoning  "--min-nodes 2 --instance-meta LlamaRpc"
+  cell concurrency-mlx            concurrency-8  "--max-nodes 1"
+  cell concurrency-mlx-reasoning  concurrency-reasoning-8  "--max-nodes 1"
+  cell concurrency-mlx-multinode  concurrency-8  "--sharding Tensor --min-nodes 2 --max-nodes 2"
+  cell concurrency-gguf           concurrency  "--max-nodes 1"
+  cell concurrency-120b           concurrency-reasoning  "--max-nodes 1"
+  cell concurrency-gguf-pooled    concurrency-reasoning  "--min-nodes 2 --max-nodes 2 --instance-meta LlamaRpc"
 else
   say "==== CONCURRENCY LEG SKIPPED (SKULK_E2E_CONCURRENCY=0) ===="
 fi
