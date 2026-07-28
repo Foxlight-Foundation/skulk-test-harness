@@ -134,6 +134,7 @@ fresh_install:
       service_start_command: replace-me
       isolation_enter_command: replace-with-target-local-skulk-traffic-isolation
       isolation_exit_command: replace-with-target-local-isolation-removal
+      runtime_isolation_prefix: replace-with-optional-os-network-sandbox
       expected_backends: [mlx, mlx-metal]
       expected_data_transport: zenoh
       vision_contract: positive

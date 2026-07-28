@@ -42,7 +42,9 @@ For each explicitly eligible Apple or AMD target, the harness:
 3. stops only that target's configured Skulk service;
 4. applies the target's reversible, SSH-preserving Skulk-network isolation;
 5. installs into an empty temporary `HOME` and runs the printed
-   `cd "$HOME/skulk" && uv run skulk` command on default ports;
+   `cd "$HOME/skulk" && uv run skulk` command on default ports, optionally
+   inside an inventory-declared operating-system network sandbox that cannot
+   add `SKULK_*` overrides or product flags;
 6. reaches the API through an SSH tunnel and requires one-node topology,
    generated `skulk.yaml`, the expected backend, the served dashboard build,
    and Zenoh DATA continuously through a startup settling window;

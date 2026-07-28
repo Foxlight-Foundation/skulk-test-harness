@@ -631,9 +631,9 @@ class FreshInstallQualifier:
                 _check_heartbeat(heartbeat)
 
             with journal.stage("start installer-printed Skulk command"):
-                start_command = _clean_environment_command(
-                    temporary_root,
-                    'cd "$HOME/skulk" && exec uv run skulk',
+                start_command = _runtime_start_command(
+                    temporary_root=temporary_root,
+                    target=target,
                 )
                 skulk_process, skulk_log_handle = controller.start(
                     start_command,
@@ -1256,6 +1256,22 @@ def _clean_environment_command(temporary_root: str, command: str) -> str:
         f"LANG=C.UTF-8 PATH={shlex.quote(path)} "
         f"bash -c {shlex.quote(command)}"
     )
+
+
+def _runtime_start_command(
+    *,
+    temporary_root: str,
+    target: FreshInstallTarget,
+) -> str:
+    """Wrap the literal clean runtime command only in declared OS isolation."""
+
+    command = _clean_environment_command(
+        temporary_root,
+        'cd "$HOME/skulk" && exec uv run skulk',
+    )
+    if target.runtime_isolation_prefix:
+        return f"{target.runtime_isolation_prefix} {command}"
+    return command
 
 
 def _remote_sha256(

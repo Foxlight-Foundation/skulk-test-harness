@@ -254,6 +254,15 @@ class FreshInstallTarget(HarnessBaseModel):
             "Command that reverses isolation before restoring the original service."
         ),
     )
+    runtime_isolation_prefix: str | None = Field(
+        default=None,
+        description=(
+            "Optional infrastructure-only process wrapper placed before the "
+            "literal installer-printed runtime command. It may enforce target "
+            "network isolation but must not add Skulk flags or environment "
+            "overrides."
+        ),
+    )
     original_checkout: str | None = Field(
         default=None,
         description="Existing Skulk checkout inspected during snapshot and restoration.",
@@ -328,6 +337,10 @@ class FreshInstallTarget(HarnessBaseModel):
         ):
             raise ValueError(
                 "served_engine_contract backend must be listed in expected_backends"
+            )
+        if self.runtime_isolation_prefix and "SKULK_" in self.runtime_isolation_prefix:
+            raise ValueError(
+                "runtime_isolation_prefix cannot add Skulk environment overrides"
             )
         return self
 

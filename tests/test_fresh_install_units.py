@@ -49,6 +49,7 @@ from skulk_test_harness.fresh_install import (
     _qualify_served_engine,  # pyright: ignore[reportPrivateUsage]
     _run_remote_logged_command,  # pyright: ignore[reportPrivateUsage]
     _runpod_ephemeral_target,  # pyright: ignore[reportPrivateUsage]
+    _runtime_start_command,  # pyright: ignore[reportPrivateUsage]
     _self_safe_process_pattern,  # pyright: ignore[reportPrivateUsage]
     _served_engine_envelope,  # pyright: ignore[reportPrivateUsage]
     _wait_for_api_identity,  # pyright: ignore[reportPrivateUsage]
@@ -425,6 +426,29 @@ def test_recovery_tunnel_isolated_from_terminal_interrupt(
 
     assert isinstance(process, FakeTunnel)
     assert cast(dict[str, object], captured["kwargs"])["start_new_session"] is True
+
+
+def test_runtime_isolation_wraps_the_literal_clean_command() -> None:
+    payload = _physical_target().model_dump()
+    payload["runtime_isolation_prefix"] = "sandbox-exec -f isolation.sb"
+    target = FreshInstallTarget.model_validate(payload)
+
+    command = _runtime_start_command(
+        temporary_root="/tmp/fresh",
+        target=target,
+    )
+
+    assert command.startswith("sandbox-exec -f isolation.sb env -i ")
+    assert 'cd "$HOME/skulk" && exec uv run skulk' in command
+    assert "SKULK_" not in command
+
+
+def test_runtime_isolation_rejects_product_overrides() -> None:
+    payload = _physical_target().model_dump()
+    payload["runtime_isolation_prefix"] = "env SKULK_DATA_TRANSPORT=zenoh"
+
+    with pytest.raises(ValidationError, match="cannot add Skulk"):
+        FreshInstallTarget.model_validate(payload)
 
 
 def test_random_vision_fixture_has_exact_judge_free_contract(tmp_path: Path) -> None:
