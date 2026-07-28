@@ -1206,10 +1206,12 @@ class FreshInstallQualifier:
     ) -> None:
         """Assert and retain each member's own backend and dashboard contract."""
 
+        local_node_ids: list[str] = []
+        member_observed_node_ids: list[frozenset[str]] = []
         for member in members:
             assert member.local_port is not None
             api_base_url = f"http://127.0.0.1:{member.local_port}"
-            _wait_for_exact_cluster(
+            observed_node_ids = _wait_for_exact_cluster(
                 api_base_url,
                 expected_node_count=expected_node_count,
                 timeout_s=self.fresh.readiness_timeout_s,
@@ -1225,6 +1227,8 @@ class FreshInstallQualifier:
                     f"member {member.ordinal} observed {node_count} nodes; "
                     f"expected {expected_node_count}"
                 )
+            local_node_ids.append(node_id)
+            member_observed_node_ids.append(observed_node_ids)
             with SkulkClient(api_base_url) as client:
                 state = client.get_state()
             resources = state.get("nodeResources")
@@ -1281,6 +1285,11 @@ class FreshInstallQualifier:
                     "dashboard_build_present": dashboard_present,
                 }
             )
+        _assert_declared_member_topologies(
+            expected_node_count=expected_node_count,
+            local_node_ids=local_node_ids,
+            member_observed_node_ids=member_observed_node_ids,
+        )
 
     def _qualify_fleet_models(
         self,

@@ -424,6 +424,94 @@ def test_restoration_rejects_asymmetric_member_topology(
     assert [member.restored for member in report.members] == [None, None]
 
 
+def test_fresh_runtime_evidence_rejects_asymmetric_member_topology(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    members = [
+        _PhysicalFleetMemberRuntime(
+            ordinal=ordinal,
+            target_name=f"apple-{ordinal}",
+            target=_whole_fleet_target("apple"),
+            controller=SshTargetController(_whole_fleet_target("apple")),
+            local_port=53000 + ordinal,
+        )
+        for ordinal in (1, 2)
+    ]
+    local_ids = {
+        "http://127.0.0.1:53001": ("node-a", 2),
+        "http://127.0.0.1:53002": ("node-b", 2),
+    }
+    member_views = {
+        "http://127.0.0.1:53001": frozenset({"node-a", "node-b"}),
+        "http://127.0.0.1:53002": frozenset(
+            {"node-a", "incidental-node"}
+        ),
+    }
+    monkeypatch.setattr(
+        fresh_install_module,
+        "_wait_for_api_identity",
+        lambda api_base_url, **_kwargs: local_ids[api_base_url],
+    )
+    monkeypatch.setattr(
+        fresh_install_module,
+        "_wait_for_exact_cluster",
+        lambda api_base_url, **_kwargs: member_views[api_base_url],
+    )
+
+    class FakeSkulkClient:
+        def __init__(self, api_base_url: str) -> None:
+            self.api_base_url = api_base_url
+
+        def __enter__(self) -> "FakeSkulkClient":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            pass
+
+        def get_state(self) -> dict[str, object]:
+            node_id = local_ids[self.api_base_url][0]
+            return {
+                "nodeResources": {
+                    node_id: {
+                        "backends": ["mlx"],
+                        "dataTransport": "zenoh",
+                    }
+                }
+            }
+
+    monkeypatch.setattr(fresh_install_module, "SkulkClient", FakeSkulkClient)
+    monkeypatch.setattr(
+        fresh_install_module.httpx,
+        "get",
+        lambda *_args, **_kwargs: httpx.Response(
+            200,
+            text='<html><div id="root"></div></html>',
+        ),
+    )
+    report = _report_with([]).model_copy(
+        update={
+            "members": [
+                FreshInstallMemberEvidence(
+                    ordinal=ordinal,
+                    platform="apple",
+                    hardware_class="apple-hardware",
+                )
+                for ordinal in (1, 2)
+            ]
+        }
+    )
+    qualifier = fresh_install_module.FreshInstallQualifier(
+        HarnessConfig(fresh_install=FreshInstallConfig())
+    )
+
+    with pytest.raises(RuntimeError, match=r"mismatched member views \[2\]"):
+        qualifier._record_member_runtime_evidence(  # pyright: ignore[reportPrivateUsage]
+            members=members,
+            expected_node_count=2,
+            report=report,
+        )
+
+
 def test_target_contract_rejects_adaptive_vision_skip() -> None:
     with pytest.raises(ValidationError, match="positive vision"):
         FreshInstallTarget(
