@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import threading
+import time
 from pathlib import Path
 
 import pytest
 
-from skulk_test_harness.fleet_lock import FleetLease, FleetLockStore
+from skulk_test_harness.fleet_lock import FleetLease, FleetLockStore, LeaseOutcome
 from skulk_test_harness.models import FleetLock, HarnessConfig
 
 pytestmark = pytest.mark.skipif(
@@ -148,6 +150,94 @@ def test_commit_and_push_loses_cas_when_remote_advances(
     assert lost is False
     # The remote still reflects codex's claim.
     assert claude.read().holder == "codex"
+
+
+def test_concurrent_read_cannot_erase_pending_release(
+    remote: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A status reader must not reset the shared clone during a lease write."""
+
+    cache_dir = tmp_path / "shared-cache"
+    writer = _store(remote, cache_dir, "claude")
+    reader = _store(remote, cache_dir, "claude")
+    assert writer.acquire(branch="feature/x", host="devbox").ok
+
+    writer_reached_status = threading.Event()
+    allow_writer_to_continue = threading.Event()
+    reader_finished = threading.Event()
+    original_git = writer._git  # pyright: ignore[reportPrivateUsage]
+
+    def pause_before_release_status(
+        *args: str,
+        check: bool = True,
+    ) -> subprocess.CompletedProcess[str]:
+        if args == ("status", "--porcelain"):
+            writer_reached_status.set()
+            assert allow_writer_to_continue.wait(timeout=5)
+        return original_git(*args, check=check)
+
+    monkeypatch.setattr(writer, "_git", pause_before_release_status)
+    release_outcomes: list[LeaseOutcome] = []
+    observed_leases: list[FleetLease] = []
+
+    def release() -> None:
+        release_outcomes.append(writer.release())
+
+    def read() -> None:
+        observed_leases.append(reader.read())
+        reader_finished.set()
+
+    writer_thread = threading.Thread(target=release)
+    reader_thread = threading.Thread(target=read)
+    writer_thread.start()
+    assert writer_reached_status.wait(timeout=5)
+    reader_thread.start()
+    time.sleep(0.05)
+    assert not reader_finished.is_set()
+
+    allow_writer_to_continue.set()
+    writer_thread.join(timeout=5)
+    reader_thread.join(timeout=5)
+
+    assert not writer_thread.is_alive()
+    assert not reader_thread.is_alive()
+    assert release_outcomes and release_outcomes[0].ok
+    assert observed_leases == [FleetLease()]
+
+
+def test_clobbered_no_op_write_fails_authoritative_verification(
+    remote: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An older unsynchronized reader cannot create a false-successful release."""
+
+    store = _store(remote, tmp_path / "cache", "claude")
+    assert store.acquire(branch="feature/x", host="devbox").ok
+    original_git = store._git  # pyright: ignore[reportPrivateUsage]
+    clobbered = False
+
+    def clobber_before_status(
+        *args: str,
+        check: bool = True,
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal clobbered
+        if args == ("status", "--porcelain") and not clobbered:
+            clobbered = True
+            original_git("reset", "--quiet", "--hard", "origin/main")
+        return original_git(*args, check=check)
+
+    monkeypatch.setattr(store, "_git", clobber_before_status)
+
+    released = store._commit_and_push(  # pyright: ignore[reportPrivateUsage]
+        FleetLease(),
+        "release clobbered by old reader",
+    )
+
+    assert released is False
+    assert store.read().state == "held"
 
 
 def test_disabled_when_unconfigured() -> None:

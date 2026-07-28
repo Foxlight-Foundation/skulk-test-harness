@@ -54,7 +54,8 @@ For each explicitly eligible Apple or AMD target, the harness:
 8. stops and removes the temporary installation;
 9. removes isolation, restores the original service, and verifies checkout status, config hashes,
    process arguments, API identity, and fleet membership; and
-10. releases the lease only after restoration succeeds.
+10. releases the lease only after restoration succeeds and verifies the
+    intended release against an authoritative remote reread.
 
 The lease renews at one third of its TTL. Every renewal is followed by an
 authoritative reread. A renewal or restoration failure stops further testing,

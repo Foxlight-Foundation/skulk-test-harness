@@ -21,7 +21,11 @@ The **fleet lease** is a mutex over the fleet, backed by a small JSON file
 can push to. The mutex is git itself: acquiring the lease means committing a
 claim and pushing it, and a push rejected as non-fast-forward means the other
 side got there first. Git's atomic ref update is the compare-and-swap, so
-there is no race window.
+there is no cross-host race window. Operations that share one controller are
+also serialized with a filesystem lock around the local clone; a concurrent
+status read therefore cannot reset the clone while another process is
+committing a lease update. Every apparent no-op write is accepted only after
+an authoritative remote reread matches the intended lease.
 
 ## Configuration
 
@@ -53,7 +57,8 @@ fleet_lock:
 
 The harness keeps a local clone of the coordination repo (by default under
 `~/.cache/skulk-test-harness/fleet-lock`; override with `cache_dir`). You
-never touch that clone directly.
+never touch that clone directly. Multiple harness processes may use it safely;
+they coordinate through a sibling lock file.
 
 ## The session bracket
 
