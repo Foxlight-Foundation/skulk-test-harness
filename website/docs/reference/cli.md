@@ -92,11 +92,16 @@ every explicitly eligible inventory entry.
 | `--retain-instances` | `run` | Leave created instances running (the default) |
 | `--delete-created-instances` | `run` | Delete instances the harness created |
 | `--delete-staged-models` | `run` | Evict staged model weights after a run |
-| `--sharding` | `plan`, `run` | `Pipeline` or `Tensor` |
-| `--instance-meta` | `plan`, `run` | `MlxRing`, `MlxJaccl`, or `LlamaRpc` |
+| `--sharding` | `plan`, `run` | Exact contract: `Pipeline` or `Tensor` |
+| `--instance-meta` | `plan`, `run` | Exact contract: `MlxRing`, `MlxJaccl`, or `LlamaRpc` |
 | `--min-nodes` | `plan`, `run` | Override minimum node count |
 | `--exclude-nodes` | `run` | Comma-separated friendly node names to exclude from placement |
 | `--fail-on-issue` | `run` | Exit non-zero on failed results or error issues (the default; disable with `--no-fail-on-issue`) |
+
+`plan` and `run` do not substitute another placement shape when the requested
+sharding or instance metadata is unavailable. Preview selection fails visibly
+instead, so a Tensor or `LlamaRpc` qualification cannot pass by exercising a
+Pipeline or `MlxRing` placement.
 
 ## Compare Flags
 

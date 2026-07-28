@@ -685,14 +685,26 @@ def plan(
     model_set: Annotated[str, typer.Option("--model-set", "-m")],
     test_set: Annotated[str, typer.Option("--test-set", "-t")],
     config: ConfigPath = Path("skulk-harness.yaml"),
-    sharding: Annotated[str, typer.Option(help="Pipeline or Tensor")] = "Pipeline",
-    instance_meta: Annotated[str, typer.Option(help="MlxRing, MlxJaccl, or LlamaRpc")] = "MlxRing",
+    sharding: Annotated[
+        str,
+        typer.Option(help="Exact placement sharding contract: Pipeline or Tensor."),
+    ] = "Pipeline",
+    instance_meta: Annotated[
+        str,
+        typer.Option(
+            help="Exact placement shape contract: MlxRing, MlxJaccl, or LlamaRpc."
+        ),
+    ] = "MlxRing",
     min_nodes: Annotated[int | None, typer.Option(help="Minimum node count override")] = None,
 ) -> None:
     """Plan a harness run without mutating the cluster."""
 
     cfg, runner = _load_runner(config)
     policy = PlacementPolicy(
+        # CLI placement flags are qualification contracts. A plan that silently
+        # substitutes Pipeline for Tensor would not describe the run requested
+        # by the operator and could make a later E2E result look valid.
+        strategy="exact",
         sharding=sharding,  # type: ignore[arg-type]
         instance_meta=instance_meta,  # type: ignore[arg-type]
         min_nodes=min_nodes,
@@ -739,8 +751,16 @@ def run(
             "(benchmark hygiene; off by default to keep the store warm).",
         ),
     ] = False,
-    sharding: Annotated[str, typer.Option(help="Pipeline or Tensor")] = "Pipeline",
-    instance_meta: Annotated[str, typer.Option(help="MlxRing, MlxJaccl, or LlamaRpc")] = "MlxRing",
+    sharding: Annotated[
+        str,
+        typer.Option(help="Exact placement sharding contract: Pipeline or Tensor."),
+    ] = "Pipeline",
+    instance_meta: Annotated[
+        str,
+        typer.Option(
+            help="Exact placement shape contract: MlxRing, MlxJaccl, or LlamaRpc."
+        ),
+    ] = "MlxRing",
     min_nodes: Annotated[int | None, typer.Option(help="Minimum node count override")] = None,
     exclude_nodes: Annotated[
         str | None,
@@ -799,6 +819,10 @@ def run(
         retain_instances=retain_instances,
         delete_staged_models=delete_staged_models,
         placement=PlacementPolicy(
+            # An executed qualification must fail when the requested shape is
+            # unavailable. Falling back here can produce internally consistent
+            # metrics for the wrong engine topology.
+            strategy="exact",
             sharding=sharding,  # type: ignore[arg-type]
             instance_meta=instance_meta,  # type: ignore[arg-type]
             min_nodes=min_nodes,
