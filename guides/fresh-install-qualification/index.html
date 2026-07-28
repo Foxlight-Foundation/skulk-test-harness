@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="generator" content="Docusaurus v3.10.1">
 <title data-rh="true">Fresh-install release qualification | Skulk Test Harness</title><meta data-rh="true" name="viewport" content="width=device-width,initial-scale=1"><meta data-rh="true" name="twitter:card" content="summary_large_image"><meta data-rh="true" property="og:url" content="https://foxlight-foundation.github.io/skulk-test-harness/guides/fresh-install-qualification"><meta data-rh="true" property="og:locale" content="en"><meta data-rh="true" name="docusaurus_locale" content="en"><meta data-rh="true" name="docsearch:language" content="en"><meta data-rh="true" name="docusaurus_version" content="current"><meta data-rh="true" name="docusaurus_tag" content="docs-default-current"><meta data-rh="true" name="docsearch:version" content="current"><meta data-rh="true" name="docsearch:docusaurus_tag" content="docs-default-current"><meta data-rh="true" property="og:title" content="Fresh-install release qualification | Skulk Test Harness"><meta data-rh="true" name="description" content="Fresh-install qualification is the only harness suite that can satisfy Skulk&#x27;s"><meta data-rh="true" property="og:description" content="Fresh-install qualification is the only harness suite that can satisfy Skulk&#x27;s"><link data-rh="true" rel="icon" href="/skulk-test-harness/img/skulk-logo.svg"><link data-rh="true" rel="canonical" href="https://foxlight-foundation.github.io/skulk-test-harness/guides/fresh-install-qualification"><link data-rh="true" rel="alternate" href="https://foxlight-foundation.github.io/skulk-test-harness/guides/fresh-install-qualification" hreflang="en"><link data-rh="true" rel="alternate" href="https://foxlight-foundation.github.io/skulk-test-harness/guides/fresh-install-qualification" hreflang="x-default"><script data-rh="true" type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Fresh-install release qualification","item":"https://foxlight-foundation.github.io/skulk-test-harness/guides/fresh-install-qualification"}]}</script><link rel="stylesheet" href="/skulk-test-harness/assets/css/styles.9fe42a7d.css">
-<script src="/skulk-test-harness/assets/js/runtime~main.b03d366e.js" defer="defer"></script>
+<script src="/skulk-test-harness/assets/js/runtime~main.4cbfc2cb.js" defer="defer"></script>
 <script src="/skulk-test-harness/assets/js/main.42683a4a.js" defer="defer"></script>
 </head>
 <body>
@@ -33,10 +33,12 @@ is published.</p>
 <li class="">stops only that target&#x27;s configured Skulk service;</li>
 <li class="">applies the target&#x27;s reversible, SSH-preserving Skulk-network isolation;</li>
 <li class="">installs into an empty temporary <code>HOME</code> and runs the printed
-<code>cd &quot;$HOME/skulk&quot; &amp;&amp; uv run skulk</code> command on default ports;</li>
+<code>cd &quot;$HOME/skulk&quot; &amp;&amp; uv run skulk</code> command on default ports, optionally
+inside an inventory-declared operating-system network sandbox that cannot
+add <code>SKULK_*</code> overrides or product flags;</li>
 <li class="">reaches the API through an SSH tunnel and requires one-node topology,
 generated <code>skulk.yaml</code>, the expected backend, the served dashboard build,
-and Zenoh DATA;</li>
+and Zenoh DATA continuously through a startup settling window;</li>
 <li class="">drives dashboard and direct-API model journeys;</li>
 <li class="">stops and removes the temporary installation;</li>
 <li class="">removes isolation, restores the original service, and verifies checkout status, config hashes,
@@ -47,6 +49,9 @@ process arguments, API identity, and fleet membership; and</li>
 authoritative reread. A renewal or restoration failure stops further testing,
 makes one emergency extension, leaves the lease held, and writes a critical
 recovery report.</p>
+<p>The SSH tunnel belongs to the recovery control plane and runs in a separate
+process session. An operator interrupt can stop the temporary workload without
+also removing the channel needed to verify restoration.</p>
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="runpod-lifecycle">RunPod lifecycle<a href="#runpod-lifecycle" class="hash-link" aria-label="Direct link to RunPod lifecycle" title="Direct link to RunPod lifecycle" translate="no">​</a></h2>
 <p>The NVIDIA leg creates an ephemeral pod from a neutral CUDA image, provisions
 Node and SSH as infrastructure prerequisites, attaches no network volume, and
