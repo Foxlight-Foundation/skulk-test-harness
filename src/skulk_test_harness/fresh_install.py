@@ -1044,7 +1044,6 @@ class FreshInstallQualifier:
                 try:
                     service_restoration_succeeded = self._restore_physical_fleet(
                         members=members,
-                        entrypoint=entrypoint,
                         report=report,
                         journal=journal,
                     )
@@ -1492,7 +1491,6 @@ class FreshInstallQualifier:
         self,
         *,
         members: list[_PhysicalFleetMemberRuntime],
-        entrypoint: _PhysicalFleetMemberRuntime,
         report: FreshInstallQualificationReport,
         journal: _LifecycleJournal,
     ) -> bool:
@@ -1510,9 +1508,9 @@ class FreshInstallQualifier:
 
             _run_member_operations(members, start_original)
             failures: list[str] = []
+            restored_local_node_ids: list[str] = []
+            restored_member_node_ids: list[frozenset[str]] = []
             for member in members:
-                if not member.service_stopped:
-                    continue
                 if member.snapshot is None or member.local_port is None:
                     failures.append(
                         f"member {member.ordinal} lacks recovery metadata"
@@ -1521,6 +1519,12 @@ class FreshInstallQualifier:
                 api_base_url = f"http://127.0.0.1:{member.local_port}"
                 node_id, node_count = _wait_for_api_identity(
                     api_base_url,
+                    timeout_s=self.fresh.readiness_timeout_s,
+                    poll_interval_s=self.fresh.poll_interval_s,
+                )
+                observed_node_ids = _wait_for_exact_cluster(
+                    api_base_url,
+                    expected_node_count=len(members),
                     timeout_s=self.fresh.readiness_timeout_s,
                     poll_interval_s=self.fresh.poll_interval_s,
                 )
@@ -1534,20 +1538,22 @@ class FreshInstallQualifier:
                         f"member {member.ordinal}: {'; '.join(mismatches)}"
                     )
                     continue
+                restored_local_node_ids.append(node_id)
+                restored_member_node_ids.append(observed_node_ids)
+            if not failures:
+                _assert_declared_member_topologies(
+                    expected_node_count=len(members),
+                    local_node_ids=restored_local_node_ids,
+                    member_observed_node_ids=restored_member_node_ids,
+                )
+            if failures:
+                raise RuntimeError("; ".join(failures))
+            for member in members:
                 evidence = report.members[member.ordinal - 1]
                 report.members[member.ordinal - 1] = evidence.model_copy(
                     update={"restored": True}
                 )
                 member.service_stopped = False
-            if failures:
-                raise RuntimeError("; ".join(failures))
-            assert entrypoint.local_port is not None
-            _wait_for_exact_cluster(
-                f"http://127.0.0.1:{entrypoint.local_port}",
-                expected_node_count=len(members),
-                timeout_s=self.fresh.readiness_timeout_s,
-                poll_interval_s=self.fresh.poll_interval_s,
-            )
             journal.persist()
         return True
 

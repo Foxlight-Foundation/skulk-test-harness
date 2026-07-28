@@ -14,6 +14,7 @@ import sys
 import tarfile
 import threading
 import time
+from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -69,6 +70,7 @@ from skulk_test_harness.models import (
     FleetLock,
     FreshInstallConfig,
     FreshInstallLifecycleStage,
+    FreshInstallMemberEvidence,
     FreshInstallPhysicalFleet,
     FreshInstallQualificationReport,
     FreshInstallTarget,
@@ -320,6 +322,106 @@ def test_declared_topology_rejects_substituted_member_view() -> None:
                 declared,
             ),
         )
+
+
+def test_restoration_rejects_asymmetric_member_topology(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = OriginalTargetState(
+        git_commit="commit-a",
+        git_status="clean",
+        config_sha256={},
+        process_arguments=["uv run skulk"],
+        service_status="running",
+        api_node_id="old-node",
+        cluster_node_count=2,
+    )
+
+    class FakeController:
+        def run(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def verify_restored_state(
+            self,
+            _original: OriginalTargetState,
+            *,
+            api_node_id: str | None,
+            cluster_node_count: int | None,
+        ) -> list[str]:
+            assert api_node_id is not None
+            assert cluster_node_count == 2
+            return []
+
+    members = [
+        _PhysicalFleetMemberRuntime(
+            ordinal=ordinal,
+            target_name=f"apple-{ordinal}",
+            target=_whole_fleet_target("apple"),
+            controller=cast(SshTargetController, FakeController()),
+            local_port=52000 + ordinal,
+            snapshot=RecoverySnapshot(
+                remote_path="/private/recovery.tar.gz",
+                remote_sha256="remote-digest",
+                controller_path=tmp_path / f"recovery-{ordinal}.tar.gz",
+                controller_sha256="controller-digest",
+                original=original,
+            ),
+            service_stopped=True,
+        )
+        for ordinal in (1, 2)
+    ]
+    local_ids = {
+        "http://127.0.0.1:52001": ("node-a", 2),
+        "http://127.0.0.1:52002": ("node-b", 2),
+    }
+    member_views = {
+        "http://127.0.0.1:52001": frozenset({"node-a", "node-b"}),
+        "http://127.0.0.1:52002": frozenset(
+            {"node-a", "incidental-node"}
+        ),
+    }
+    monkeypatch.setattr(
+        fresh_install_module,
+        "_wait_for_api_identity",
+        lambda api_base_url, **_kwargs: local_ids[api_base_url],
+    )
+    monkeypatch.setattr(
+        fresh_install_module,
+        "_wait_for_exact_cluster",
+        lambda api_base_url, **_kwargs: member_views[api_base_url],
+    )
+
+    class FakeJournal:
+        def stage(self, _name: str) -> object:
+            return nullcontext()
+
+        def persist(self) -> None:
+            pass
+
+    report = _report_with([]).model_copy(
+        update={
+            "members": [
+                FreshInstallMemberEvidence(
+                    ordinal=ordinal,
+                    platform="apple",
+                    hardware_class="apple-hardware",
+                )
+                for ordinal in (1, 2)
+            ]
+        }
+    )
+    qualifier = fresh_install_module.FreshInstallQualifier(
+        HarnessConfig(fresh_install=FreshInstallConfig())
+    )
+
+    with pytest.raises(RuntimeError, match=r"mismatched member views \[2\]"):
+        qualifier._restore_physical_fleet(  # pyright: ignore[reportPrivateUsage]
+            members=members,
+            report=report,
+            journal=cast(fresh_install_module._LifecycleJournal, FakeJournal()),  # pyright: ignore[reportPrivateUsage]
+        )
+    assert [member.restored for member in report.members] == [None, None]
 
 
 def test_target_contract_rejects_adaptive_vision_skip() -> None:
