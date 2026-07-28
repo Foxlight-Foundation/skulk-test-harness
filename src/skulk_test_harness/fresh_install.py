@@ -708,6 +708,7 @@ class FreshInstallQualifier:
         heartbeat_failed = False
         release_failed = False
         original_api: dict[int, tuple[str, int, dict[str, object]]] = {}
+        observed_member_node_ids: dict[int, frozenset[str]] = {}
         installer_url: str | None = None
         installer_digest: str | None = None
         expected_node_count = len(members)
@@ -728,7 +729,14 @@ class FreshInstallQualifier:
             with journal.stage("open API tunnels to every physical member"):
                 def open_member(
                     member: _PhysicalFleetMemberRuntime,
-                ) -> tuple[int, subprocess.Popen[bytes], str, int, dict[str, object]]:
+                ) -> tuple[
+                    int,
+                    subprocess.Popen[bytes],
+                    str,
+                    int,
+                    dict[str, object],
+                    frozenset[str],
+                ]:
                     local_port, tunnel = member.controller.open_tunnel(
                         remote_port=self.fresh.remote_port
                     )
@@ -741,11 +749,29 @@ class FreshInstallQualifier:
                     )
                     with SkulkClient(f"http://127.0.0.1:{local_port}") as client:
                         diagnostics = client.get_diagnostics_node()
-                    return local_port, tunnel, node_id, node_count, diagnostics
+                        observed_node_ids = assert_fresh_cluster(
+                            client,
+                            expected_node_count=expected_node_count,
+                        )
+                    return (
+                        local_port,
+                        tunnel,
+                        node_id,
+                        node_count,
+                        diagnostics,
+                        observed_node_ids,
+                    )
 
                 opened = _run_member_operations(members, open_member)
                 for member, result in zip(members, opened, strict=True):
-                    local_port, tunnel, node_id, node_count, diagnostics = result
+                    (
+                        local_port,
+                        tunnel,
+                        node_id,
+                        node_count,
+                        diagnostics,
+                        observed_node_ids,
+                    ) = result
                     member.local_port = local_port
                     member.tunnel = tunnel
                     original_api[member.ordinal] = (
@@ -753,23 +779,18 @@ class FreshInstallQualifier:
                         node_count,
                         diagnostics,
                     )
-                original_node_ids = {
-                    node_id
-                    for node_id, _node_count, _diagnostics in original_api.values()
-                }
-                observed_counts = {
-                    node_count
-                    for _node_id, node_count, _diagnostics in original_api.values()
-                }
-                if (
-                    len(original_node_ids) != expected_node_count
-                    or observed_counts != {expected_node_count}
-                ):
-                    raise RuntimeError(
-                        "declared physical fleet does not match the complete "
-                        f"live topology: expected {expected_node_count} members, "
-                        f"member APIs observed counts {sorted(observed_counts)}"
-                    )
+                    observed_member_node_ids[member.ordinal] = observed_node_ids
+                _assert_declared_member_topologies(
+                    expected_node_count=expected_node_count,
+                    local_node_ids=(
+                        node_id
+                        for node_id, _node_count, _diagnostics in original_api.values()
+                    ),
+                    member_observed_node_ids=(
+                        observed_member_node_ids[member.ordinal]
+                        for member in members
+                    ),
+                )
                 assert entrypoint.local_port is not None
                 with SkulkClient(
                     f"http://127.0.0.1:{entrypoint.local_port}"
@@ -2109,11 +2130,42 @@ def _run_member_operations(
     for member in members:
         try:
             results.append(operation(member))
+        except LeaseHeartbeatError:
+            raise
         except Exception as exception:  # noqa: BLE001 - aggregate member failures
             failures.append(f"member {member.ordinal}: {exception}")
     if failures:
         raise RuntimeError("; ".join(failures))
     return results
+
+
+def _assert_declared_member_topologies(
+    *,
+    expected_node_count: int,
+    local_node_ids: Iterable[str],
+    member_observed_node_ids: Iterable[frozenset[str]],
+) -> frozenset[str]:
+    """Require every declared member to observe exactly the declared fleet."""
+
+    declared_node_ids = frozenset(local_node_ids)
+    observed_topologies = tuple(member_observed_node_ids)
+    mismatched_members = [
+        ordinal
+        for ordinal, observed_node_ids in enumerate(observed_topologies, start=1)
+        if observed_node_ids != declared_node_ids
+    ]
+    if (
+        len(declared_node_ids) != expected_node_count
+        or len(observed_topologies) != expected_node_count
+        or mismatched_members
+    ):
+        raise RuntimeError(
+            "declared physical fleet does not match one complete live topology: "
+            f"expected {expected_node_count} members, observed "
+            f"{len(declared_node_ids)} unique local identities, mismatched "
+            f"member views {mismatched_members}"
+        )
+    return declared_node_ids
 
 
 def _aggregate_digests(digests: Iterable[str]) -> str:

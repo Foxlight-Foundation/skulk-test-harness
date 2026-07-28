@@ -41,6 +41,7 @@ from skulk_test_harness.fleet_lock import FleetLease, LeaseOutcome
 from skulk_test_harness.fresh_install import (
     QualificationInterruptedError,
     QualificationSignalGuard,
+    _assert_declared_member_topologies,  # pyright: ignore[reportPrivateUsage]
     _blocking_issues,  # pyright: ignore[reportPrivateUsage]
     _browser_vision_expectation,  # pyright: ignore[reportPrivateUsage]
     _clean_environment_command,  # pyright: ignore[reportPrivateUsage]
@@ -209,6 +210,28 @@ def test_physical_fleet_accepts_normal_networking_and_composes_platforms() -> No
     config.assert_complete_release_matrix([], selected_fleets)
 
 
+def test_physical_fleet_release_coverage_uses_only_qualification_targets() -> None:
+    config = FreshInstallConfig(
+        required_platforms=["apple", "amd"],
+        targets={
+            "apple-contract": _whole_fleet_target("apple"),
+            "amd-capacity-only": _whole_fleet_target("amd"),
+        },
+        physical_fleets={
+            "release-fleet": FreshInstallPhysicalFleet(
+                hardware_class="mixed-two-node",
+                eligible=True,
+                member_targets=["apple-contract", "amd-capacity-only"],
+                entrypoint_target="apple-contract",
+                qualification_targets=["apple-contract"],
+            )
+        },
+    )
+
+    with pytest.raises(ValueError, match="amd"):
+        config.assert_complete_release_matrix([], config.eligible_physical_fleets())
+
+
 def test_physical_fleet_rejects_nonmember_contract_and_isolated_member() -> None:
     with pytest.raises(ValidationError, match="qualification_targets must be members"):
         FreshInstallPhysicalFleet(
@@ -252,6 +275,51 @@ def test_member_operations_do_not_swallow_recovery_interrupt() -> None:
 
     with pytest.raises(QualificationInterruptedError, match="stop now"):
         _run_member_operations([member], interrupted)
+
+
+def test_member_operations_propagate_lease_failure_immediately() -> None:
+    target = _whole_fleet_target("apple")
+    members = [
+        _PhysicalFleetMemberRuntime(
+            ordinal=ordinal,
+            target_name=f"apple-{ordinal}",
+            target=target,
+            controller=SshTargetController(target),
+        )
+        for ordinal in (1, 2)
+    ]
+    attempted: list[int] = []
+
+    def heartbeat_failed(member: _PhysicalFleetMemberRuntime) -> None:
+        attempted.append(member.ordinal)
+        raise LeaseHeartbeatError("lease ownership lost")
+
+    with pytest.raises(LeaseHeartbeatError, match="lease ownership lost"):
+        _run_member_operations(members, heartbeat_failed)
+    assert attempted == [1]
+
+
+def test_declared_topology_rejects_substituted_member_view() -> None:
+    declared = frozenset({"node-a", "node-b", "node-c"})
+
+    assert (
+        _assert_declared_member_topologies(
+            expected_node_count=3,
+            local_node_ids=declared,
+            member_observed_node_ids=(declared, declared, declared),
+        )
+        == declared
+    )
+    with pytest.raises(RuntimeError, match=r"mismatched member views \[2\]"):
+        _assert_declared_member_topologies(
+            expected_node_count=3,
+            local_node_ids=declared,
+            member_observed_node_ids=(
+                declared,
+                frozenset({"node-a", "node-b", "incidental-node"}),
+                declared,
+            ),
+        )
 
 
 def test_target_contract_rejects_adaptive_vision_skip() -> None:

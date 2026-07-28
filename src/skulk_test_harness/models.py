@@ -625,7 +625,7 @@ class FreshInstallConfig(HarnessBaseModel):
         for _fleet_name, fleet in physical_fleets or []:
             selected_platforms.update(
                 self.targets[target_name].platform
-                for target_name in fleet.member_targets
+                for target_name in fleet.qualification_targets
             )
         missing = sorted(set(self.required_platforms) - selected_platforms)
         if missing:
