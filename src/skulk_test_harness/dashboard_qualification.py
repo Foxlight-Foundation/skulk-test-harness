@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -155,14 +156,37 @@ class DashboardQualifier:
                 return progress.outcome(passed=False, message=str(exception))
             finally:
                 safe_name = _safe_model_name(model_id)
-                page.screenshot(
-                    path=str(self.artifact_directory / f"{safe_name}.final.png"),
-                    full_page=True,
-                )
-                context.tracing.stop(
-                    path=str(self.artifact_directory / f"{safe_name}.trace.zip")
-                )
-                browser.close()
+                active_exception = sys.exception()
+                cleanup_error: Exception | None = None
+                try:
+                    page.screenshot(
+                        path=str(
+                            self.artifact_directory / f"{safe_name}.final.png"
+                        ),
+                        full_page=True,
+                    )
+                except Exception as exception:  # noqa: BLE001 - cleanup boundary
+                    cleanup_error = exception
+                try:
+                    context.tracing.stop(
+                        path=str(
+                            self.artifact_directory / f"{safe_name}.trace.zip"
+                        )
+                    )
+                except Exception as exception:  # noqa: BLE001 - cleanup boundary
+                    if cleanup_error is None:
+                        cleanup_error = exception
+                try:
+                    browser.close()
+                except Exception as exception:  # noqa: BLE001 - cleanup boundary
+                    if cleanup_error is None:
+                        cleanup_error = exception
+                # Artifact failures remain fatal during an otherwise normal
+                # journey, but cleanup must never replace an operator signal
+                # or another active BaseException with a secondary Playwright
+                # "page has been closed" error.
+                if active_exception is None and cleanup_error is not None:
+                    raise cleanup_error
 
     def _run_journey(
         self,

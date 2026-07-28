@@ -812,6 +812,80 @@ def test_interruption_still_lets_finally_restore_state() -> None:
     assert restored
 
 
+def test_dashboard_cleanup_does_not_mask_an_operator_interruption(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A closed Playwright page cannot replace the signal that closed it."""
+
+    cleanup_events: list[str] = []
+
+    class FakePage:
+        def on(self, _event: str, _handler: object) -> None:
+            return None
+
+        def screenshot(self, **_kwargs: object) -> None:
+            cleanup_events.append("screenshot")
+            raise RuntimeError("page has been closed")
+
+    class FakeTracing:
+        def start(self, **_kwargs: object) -> None:
+            return None
+
+        def stop(self, **_kwargs: object) -> None:
+            cleanup_events.append("trace")
+
+    class FakeContext:
+        tracing = FakeTracing()
+
+        def new_page(self) -> FakePage:
+            return FakePage()
+
+    class FakeBrowser:
+        def new_context(self, **_kwargs: object) -> FakeContext:
+            return FakeContext()
+
+        def close(self) -> None:
+            cleanup_events.append("browser")
+
+    class FakeChromium:
+        def launch(self, **_kwargs: object) -> FakeBrowser:
+            return FakeBrowser()
+
+    class FakePlaywrightContext:
+        def __enter__(self) -> SimpleNamespace:
+            return SimpleNamespace(chromium=FakeChromium())
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+    monkeypatch.setattr(
+        dashboard_qualification_module,
+        "sync_playwright",
+        lambda: FakePlaywrightContext(),
+    )
+    qualifier = DashboardQualifier(
+        api_base_url="http://127.0.0.1:52415",
+        artifact_directory=tmp_path,
+        poll_interval_s=0.01,
+        model_ready_timeout_s=1,
+    )
+
+    def interrupt(*_args: object, **_kwargs: object) -> object:
+        raise QualificationInterruptedError("signal 2")
+
+    monkeypatch.setattr(qualifier, "_run_journey", interrupt)
+
+    with pytest.raises(QualificationInterruptedError, match="signal 2"):
+        qualifier.qualify(
+            model_id="model",
+            vision_contract="unavailable",
+            fixture=None,
+        )
+
+    assert cleanup_events == ["screenshot", "trace", "browser"]
+
+
 def test_signal_guard_defers_interruptions_during_mandatory_recovery() -> None:
     """A second stop request must not interrupt service or provider cleanup."""
 
