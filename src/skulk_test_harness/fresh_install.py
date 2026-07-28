@@ -11,12 +11,13 @@ import socket
 import subprocess
 import threading
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from contextlib import AbstractContextManager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from types import FrameType
-from typing import BinaryIO, Literal
+from typing import BinaryIO, Literal, TypeVar
 
 import httpx
 
@@ -34,6 +35,8 @@ from skulk_test_harness.lease_heartbeat import (
 )
 from skulk_test_harness.models import (
     FreshInstallLifecycleStage,
+    FreshInstallMemberEvidence,
+    FreshInstallPhysicalFleet,
     FreshInstallProfile,
     FreshInstallQualificationReport,
     FreshInstallTarget,
@@ -46,6 +49,7 @@ from skulk_test_harness.models import (
 )
 from skulk_test_harness.qualification_checks import (
     UnexpectedFreshInstallPeerError,
+    assert_fresh_cluster,
     assert_fresh_runtime_contract,
     assert_fresh_single_node,
     qualify_direct_text,
@@ -59,6 +63,25 @@ from skulk_test_harness.target_control import (
     SshTargetController,
 )
 from skulk_test_harness.vision_fixture import generate_vision_fixture
+
+ResultT = TypeVar("ResultT")
+
+
+@dataclass
+class _PhysicalFleetMemberRuntime:
+    """Private mutable lifecycle state for one whole-fleet member."""
+
+    ordinal: int
+    target_name: str
+    target: FreshInstallTarget
+    controller: SshTargetController
+    local_port: int | None = None
+    tunnel: subprocess.Popen[bytes] | None = None
+    snapshot: RecoverySnapshot | None = None
+    service_stopped: bool = False
+    temporary_root: str | None = None
+    skulk_process: subprocess.Popen[bytes] | None = None
+    skulk_log_handle: BinaryIO | None = None
 
 
 class QualificationInterruptedError(BaseException):
@@ -133,11 +156,15 @@ class _FreshRuntimeMonitor(AbstractContextManager["_FreshRuntimeMonitor"]):
         self,
         *,
         api_base_url: str,
-        expected_node_id: str,
+        expected_node_id: str | None = None,
+        expected_node_ids: frozenset[str] | None = None,
+        expected_node_count: int = 1,
         poll_interval_s: float,
         request_timeout_s: float,
     ) -> None:
         self.expected_node_id = expected_node_id
+        self.expected_node_ids = expected_node_ids
+        self.expected_node_count = expected_node_count
         self._api_base_url = api_base_url
         self._poll_interval_s = max(poll_interval_s, 1.0)
         self._request_timeout_s = request_timeout_s
@@ -186,10 +213,17 @@ class _FreshRuntimeMonitor(AbstractContextManager["_FreshRuntimeMonitor"]):
                 request_timeout_s=self._request_timeout_s,
             ) as client:
                 while not self._stop.is_set():
-                    assert_fresh_single_node(
-                        client,
-                        expected_node_id=self.expected_node_id,
-                    )
+                    if self.expected_node_count == 1:
+                        assert_fresh_single_node(
+                            client,
+                            expected_node_id=self.expected_node_id,
+                        )
+                    else:
+                        assert_fresh_cluster(
+                            client,
+                            expected_node_count=self.expected_node_count,
+                            expected_node_ids=self.expected_node_ids,
+                        )
                     if self._stop.wait(self._poll_interval_s):
                         return
         except Exception as exception:  # noqa: BLE001 - monitored failure boundary
@@ -315,6 +349,98 @@ class FreshInstallQualifier:
                 signal_guard=signal_guard,
             )
 
+    def qualify_physical_fleet(
+        self,
+        *,
+        fleet_name: str,
+        fleet: FreshInstallPhysicalFleet,
+        profile: FreshInstallProfile,
+        expected_commit: str | None,
+    ) -> FreshInstallQualificationReport:
+        """Install and qualify every member of one physical topology together."""
+
+        if not fleet.eligible:
+            raise ValueError(
+                f"fresh-install physical fleet {fleet_name!r} is not eligible"
+            )
+        _require_commit_sha(expected_commit)
+        members = [
+            _PhysicalFleetMemberRuntime(
+                ordinal=index,
+                target_name=target_name,
+                target=target,
+                controller=SshTargetController(target),
+            )
+            for index, (target_name, target) in enumerate(
+                self.fresh.physical_fleet_targets(fleet),
+                start=1,
+            )
+        ]
+        entrypoint = next(
+            member
+            for member in members
+            if member.target_name == fleet.entrypoint_target
+        )
+        contract_members = [
+            next(
+                member
+                for member in members
+                if member.target_name == target_name
+            )
+            for target_name in fleet.qualification_targets
+        ]
+        qualification_id = (
+            f"fresh-{profile}-mixed-"
+            f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}"
+        )
+        artifact_directory = self.writer.run_dir(qualification_id)
+        artifact_directory.mkdir(parents=True, exist_ok=True)
+        artifact_directory.chmod(0o700)
+        report = FreshInstallQualificationReport(
+            qualification_id=qualification_id,
+            profile=profile,
+            platform="mixed",
+            hardware_class=fleet.hardware_class,
+            started_at=datetime.now(UTC),
+            install=InstallProvenance(
+                mode="fresh_install",
+                environment="fresh_install",
+                profile=profile,
+                platform="mixed",
+                hardware_class=fleet.hardware_class,
+                expected_commit=expected_commit,
+                environment_override_names=[],
+            ),
+            members=[
+                FreshInstallMemberEvidence(
+                    ordinal=member.ordinal,
+                    platform=member.target.platform,
+                    hardware_class=member.target.hardware_class,
+                    requested_ref=(
+                        expected_commit if profile == "candidate" else "main"
+                    ),
+                    expected_backends=member.target.expected_backends,
+                )
+                for member in members
+            ],
+            artifact_directory=artifact_directory,
+        )
+        journal = _LifecycleJournal(report, self.writer)
+        journal.persist()
+        with QualificationSignalGuard() as signal_guard:
+            return self._qualify_physical_fleet(
+                fleet=fleet,
+                members=members,
+                entrypoint=entrypoint,
+                contract_members=contract_members,
+                profile=profile,
+                expected_commit=expected_commit,
+                report=report,
+                journal=journal,
+                artifact_directory=artifact_directory,
+                signal_guard=signal_guard,
+            )
+
     def _qualify_physical(
         self,
         *,
@@ -328,6 +454,11 @@ class FreshInstallQualifier:
     ) -> FreshInstallQualificationReport:
         if self.config.fleet_lock is None:
             raise ValueError("physical fresh-install qualification requires fleet_lock")
+        if not target.isolation_enter_command or not target.isolation_exit_command:
+            raise ValueError(
+                "single-node physical qualification requires reversible "
+                "Skulk-network isolation; use a physical_fleet for normal networking"
+            )
         store = FleetLockStore(self.config.fleet_lock)
         controller = SshTargetController(target)
         heartbeat = AuthoritativeLeaseHeartbeat(
@@ -540,6 +671,900 @@ class FreshInstallQualifier:
             journal.report = report
             journal.persist()
         return report
+
+    def _qualify_physical_fleet(
+        self,
+        *,
+        fleet: FreshInstallPhysicalFleet,
+        members: list[_PhysicalFleetMemberRuntime],
+        entrypoint: _PhysicalFleetMemberRuntime,
+        contract_members: list[_PhysicalFleetMemberRuntime],
+        profile: FreshInstallProfile,
+        expected_commit: str | None,
+        report: FreshInstallQualificationReport,
+        journal: _LifecycleJournal,
+        artifact_directory: Path,
+        signal_guard: QualificationSignalGuard,
+    ) -> FreshInstallQualificationReport:
+        """Run one fail-safe unsandboxed whole-fleet qualification lifecycle."""
+
+        if self.config.fleet_lock is None:
+            raise ValueError("physical fresh-install qualification requires fleet_lock")
+        if any(member.target.runtime_isolation_prefix for member in members):
+            raise ValueError(
+                "whole-fleet qualification must not declare runtime isolation prefixes"
+            )
+        store = FleetLockStore(self.config.fleet_lock)
+        heartbeat = AuthoritativeLeaseHeartbeat(
+            store,
+            holder=self.config.fleet_lock.holder,
+            ttl_s=self.fresh.lease_ttl_s,
+            interval_s=self.fresh.resolved_lease_heartbeat_s,
+            on_verified_expiry=report.lease_renewal_expiries.append,
+        )
+        acquired = False
+        restoration_succeeded = False
+        cleanup_succeeded = True
+        heartbeat_failed = False
+        release_failed = False
+        original_api: dict[int, tuple[str, int, dict[str, object]]] = {}
+        observed_member_node_ids: dict[int, frozenset[str]] = {}
+        installer_url: str | None = None
+        installer_digest: str | None = None
+        expected_node_count = len(members)
+        try:
+            with journal.stage("acquire authoritative fleet lease"):
+                outcome = store.acquire(
+                    branch=expected_commit or "main",
+                    host=socket.gethostname(),
+                    battery="fresh-install-whole-fleet-qualification",
+                    ttl_s=self.fresh.lease_ttl_s,
+                    note=f"{profile} mixed {expected_node_count} nodes",
+                )
+                if not outcome.ok:
+                    raise RuntimeError(outcome.message)
+                acquired = True
+                heartbeat.start()
+
+            with journal.stage("open API tunnels to every physical member"):
+                def open_member(
+                    member: _PhysicalFleetMemberRuntime,
+                ) -> tuple[
+                    int,
+                    subprocess.Popen[bytes],
+                    str,
+                    int,
+                    dict[str, object],
+                    frozenset[str],
+                ]:
+                    local_port, tunnel = member.controller.open_tunnel(
+                        remote_port=self.fresh.remote_port
+                    )
+                    member.local_port = local_port
+                    member.tunnel = tunnel
+                    node_id, node_count = _wait_for_api_identity(
+                        f"http://127.0.0.1:{local_port}",
+                        timeout_s=self.fresh.readiness_timeout_s,
+                        poll_interval_s=self.fresh.poll_interval_s,
+                    )
+                    with SkulkClient(f"http://127.0.0.1:{local_port}") as client:
+                        diagnostics = client.get_diagnostics_node()
+                        observed_node_ids = assert_fresh_cluster(
+                            client,
+                            expected_node_count=expected_node_count,
+                        )
+                    return (
+                        local_port,
+                        tunnel,
+                        node_id,
+                        node_count,
+                        diagnostics,
+                        observed_node_ids,
+                    )
+
+                opened = _run_member_operations(members, open_member)
+                for member, result in zip(members, opened, strict=True):
+                    (
+                        local_port,
+                        tunnel,
+                        node_id,
+                        node_count,
+                        diagnostics,
+                        observed_node_ids,
+                    ) = result
+                    member.local_port = local_port
+                    member.tunnel = tunnel
+                    original_api[member.ordinal] = (
+                        node_id,
+                        node_count,
+                        diagnostics,
+                    )
+                    observed_member_node_ids[member.ordinal] = observed_node_ids
+                _assert_declared_member_topologies(
+                    expected_node_count=expected_node_count,
+                    local_node_ids=(
+                        node_id
+                        for node_id, _node_count, _diagnostics in original_api.values()
+                    ),
+                    member_observed_node_ids=(
+                        observed_member_node_ids[member.ordinal]
+                        for member in members
+                    ),
+                )
+                assert entrypoint.local_port is not None
+                with SkulkClient(
+                    f"http://127.0.0.1:{entrypoint.local_port}"
+                ) as client:
+                    original_state = client.get_state()
+                instances = original_state.get("instances")
+                runners = original_state.get("runners")
+                if (
+                    isinstance(instances, dict)
+                    and instances
+                    or isinstance(runners, dict)
+                    and runners
+                ):
+                    raise RuntimeError(
+                        "physical fleet must be idle before fresh-install "
+                        "qualification; active instances or runners were observed"
+                    )
+                heartbeat.raise_if_failed()
+
+            with journal.stage("capture recovery snapshots for every member"):
+                for member in members:
+                    node_id, node_count, diagnostics = original_api[member.ordinal]
+                    snapshot = member.controller.capture_recovery_snapshot(
+                        qualification_id=(
+                            f"{report.qualification_id}-member-{member.ordinal:02d}"
+                        ),
+                        controller_root=self.fresh.snapshot_root,
+                        retention_days=self.fresh.snapshot_retention_days,
+                        api_node_id=node_id,
+                        cluster_node_count=node_count,
+                        api_diagnostics=diagnostics,
+                    )
+                    member.snapshot = snapshot
+                    evidence = report.members[member.ordinal - 1]
+                    report.members[member.ordinal - 1] = evidence.model_copy(
+                        update={
+                            "snapshot_target_sha256": snapshot.remote_sha256,
+                            "snapshot_controller_sha256": snapshot.controller_sha256,
+                        }
+                    )
+                    journal.persist()
+                    heartbeat.raise_if_failed()
+                report.snapshot_target_sha256 = _aggregate_digests(
+                    snapshot.remote_sha256
+                    for snapshot in (
+                        member.snapshot for member in members
+                    )
+                    if snapshot is not None
+                )
+                report.snapshot_controller_sha256 = _aggregate_digests(
+                    snapshot.controller_sha256
+                    for snapshot in (
+                        member.snapshot for member in members
+                    )
+                    if snapshot is not None
+                )
+                journal.persist()
+
+            with journal.stage("stop existing Skulk service on every member"):
+                for member in members:
+                    assert member.target.service_stop_command is not None
+                    member.service_stopped = True
+                    member.controller.run(
+                        member.target.service_stop_command,
+                        timeout_s=120,
+                    )
+                    heartbeat.raise_if_failed()
+
+            with journal.stage("create empty temporary HOME on every member"):
+                def create_member_home(
+                    member: _PhysicalFleetMemberRuntime,
+                ) -> None:
+                    root = self._create_temporary_home(member.controller)
+                    member.temporary_root = root
+
+                _run_member_operations(members, create_member_home)
+
+            with journal.stage("run official installer on every member"):
+                installer_url, installer_digest = _installer_provenance(
+                    self.fresh.installer_url,
+                    profile=profile,
+                    expected_commit=expected_commit,
+                    shipping_ref=self.fresh.shipping_installer_ref,
+                )
+
+                def install_member(
+                    member: _PhysicalFleetMemberRuntime,
+                ) -> tuple[str, str]:
+                    assert member.temporary_root is not None
+                    member_artifacts = (
+                        artifact_directory / "members" / f"{member.ordinal:02d}"
+                    )
+                    member_artifacts.mkdir(parents=True, exist_ok=True)
+                    member_artifacts.chmod(0o700)
+                    return self._install_member(
+                        member=member,
+                        profile=profile,
+                        expected_commit=expected_commit,
+                        installer_url=installer_url,
+                        artifact_directory=member_artifacts,
+                        heartbeat=heartbeat,
+                    )
+
+                installed = _run_member_operations(members, install_member)
+                for member, (resolved_commit, config_digest) in zip(
+                    members, installed, strict=True
+                ):
+                    evidence = report.members[member.ordinal - 1]
+                    report.members[member.ordinal - 1] = evidence.model_copy(
+                        update={
+                            "resolved_commit": resolved_commit,
+                            "generated_config_sha256": config_digest,
+                        }
+                    )
+                report.install = report.install.model_copy(
+                    update={
+                        "installer_url": installer_url,
+                        "installer_sha256": installer_digest,
+                        "requested_ref": (
+                            expected_commit if profile == "candidate" else "main"
+                        ),
+                        "generated_config_sha256": _aggregate_digests(
+                            evidence.generated_config_sha256
+                            for evidence in report.members
+                            if evidence.generated_config_sha256 is not None
+                        ),
+                    }
+                )
+                journal.persist()
+                heartbeat.raise_if_failed()
+
+            with journal.stage("start fresh Skulk on every member without isolation"):
+                def start_member(member: _PhysicalFleetMemberRuntime) -> None:
+                    assert member.temporary_root is not None
+                    assert member.local_port is not None
+                    member_artifacts = (
+                        artifact_directory / "members" / f"{member.ordinal:02d}"
+                    )
+                    command = _clean_environment_command(
+                        member.temporary_root,
+                        'cd "$HOME/skulk" && exec uv run skulk',
+                    )
+                    process, log_handle = member.controller.start(
+                        command,
+                        log_path=member_artifacts / "skulk.log",
+                    )
+                    member.skulk_process = process
+                    member.skulk_log_handle = log_handle
+                    _wait_for_http(
+                        f"http://127.0.0.1:{member.local_port}/state",
+                        timeout_s=self.fresh.readiness_timeout_s,
+                        poll_interval_s=self.fresh.poll_interval_s,
+                        heartbeat=heartbeat,
+                    )
+
+                _run_member_operations(members, start_member)
+
+            assert entrypoint.local_port is not None
+            api_base_url = f"http://127.0.0.1:{entrypoint.local_port}"
+            expected_backends = sorted(
+                {
+                    backend
+                    for member in members
+                    for backend in member.target.expected_backends
+                }
+            )
+            with journal.stage("assert fresh whole-fleet runtime contract"):
+                provenance = _wait_for_runtime_contract(
+                    api_base_url,
+                    target=entrypoint.target,
+                    expected_commit=expected_commit,
+                    timeout_s=self.fresh.readiness_timeout_s,
+                    poll_interval_s=self.fresh.poll_interval_s,
+                    stability_s=self.fresh.runtime_contract_stability_s,
+                    heartbeat=heartbeat,
+                    expected_node_count=expected_node_count,
+                    expected_backends=expected_backends,
+                )
+                with SkulkClient(api_base_url) as client:
+                    fresh_node_ids = assert_fresh_cluster(
+                        client,
+                        expected_node_count=expected_node_count,
+                    )
+                report.install = report.install.model_copy(
+                    update={
+                        **provenance.model_dump(),
+                        "profile": profile,
+                        "platform": "mixed",
+                        "hardware_class": fleet.hardware_class,
+                        "installer_url": installer_url,
+                        "installer_sha256": installer_digest,
+                        "requested_ref": (
+                            expected_commit if profile == "candidate" else "main"
+                        ),
+                        "expected_commit": expected_commit,
+                        "generated_config_sha256": (
+                            report.install.generated_config_sha256
+                        ),
+                    }
+                )
+                self._record_member_runtime_evidence(
+                    members=members,
+                    expected_node_count=expected_node_count,
+                    report=report,
+                )
+                journal.persist()
+                heartbeat.raise_if_failed()
+
+            self._qualify_fleet_models(
+                api_base_url=api_base_url,
+                members=members,
+                contract_members=contract_members,
+                expected_node_ids=fresh_node_ids,
+                report=report,
+                journal=journal,
+                artifact_directory=artifact_directory,
+                heartbeat=heartbeat,
+            )
+        except QualificationInterruptedError as exception:
+            report.issues.append(
+                Issue(
+                    severity="error",
+                    message=f"fresh-install fleet interrupted: {exception}",
+                )
+            )
+        except Exception as exception:  # noqa: BLE001 - lifecycle failure boundary
+            heartbeat_failed = isinstance(exception, LeaseHeartbeatError)
+            report.issues.append(
+                Issue(
+                    severity="error",
+                    message=f"fresh-install fleet failed: {exception}",
+                )
+            )
+        finally:
+            signal_guard.begin_recovery()
+            try:
+                with journal.stage("stop and remove every temporary installation"):
+                    _run_member_operations(
+                        members,
+                        self._cleanup_physical_fleet_member,
+                    )
+            except Exception as exception:  # noqa: BLE001 - recovery boundary
+                cleanup_succeeded = False
+                report.issues.append(
+                    Issue(
+                        severity="error",
+                        message=f"critical temporary-fleet cleanup failure: {exception}",
+                    )
+                )
+            if any(member.service_stopped for member in members):
+                try:
+                    service_restoration_succeeded = self._restore_physical_fleet(
+                        members=members,
+                        report=report,
+                        journal=journal,
+                    )
+                    restoration_succeeded = (
+                        cleanup_succeeded and service_restoration_succeeded
+                    )
+                except Exception as exception:  # noqa: BLE001 - recovery boundary
+                    report.issues.append(
+                        Issue(
+                            severity="error",
+                            message=f"critical whole-fleet restoration failure: {exception}",
+                        )
+                    )
+                    restoration_succeeded = False
+            elif acquired:
+                restoration_succeeded = cleanup_succeeded
+            report.restoration_succeeded = restoration_succeeded
+            report.teardown_succeeded = restoration_succeeded
+            try:
+                heartbeat.raise_if_failed()
+            except LeaseHeartbeatError as exception:
+                heartbeat_failed = True
+                report.issues.append(
+                    Issue(severity="error", message=f"lease heartbeat failed: {exception}")
+                )
+            heartbeat.stop()
+            try:
+                heartbeat.raise_if_failed()
+            except LeaseHeartbeatError as exception:
+                if not heartbeat_failed:
+                    report.issues.append(
+                        Issue(
+                            severity="error",
+                            message=f"lease heartbeat failed: {exception}",
+                        )
+                    )
+                heartbeat_failed = True
+            for member in members:
+                if member.tunnel is not None:
+                    _terminate_process(member.tunnel)
+            if acquired and restoration_succeeded and not heartbeat_failed:
+                try:
+                    with journal.stage("release restored fleet lease"):
+                        release = store.release()
+                        if not release.ok:
+                            raise RuntimeError(release.message)
+                except Exception as exception:  # noqa: BLE001 - keep lease held
+                    release_failed = True
+                    report.issues.append(
+                        Issue(
+                            severity="error",
+                            message=f"fleet lease release failed: {exception}",
+                        )
+                    )
+            if acquired and (
+                not restoration_succeeded or heartbeat_failed or release_failed
+            ):
+                report.critical_recovery_required = True
+                try:
+                    heartbeat.emergency_extend(
+                        ttl_s=self.fresh.emergency_lease_ttl_s
+                    )
+                except LeaseHeartbeatError as exception:
+                    report.issues.append(
+                        Issue(
+                            severity="error",
+                            message=f"emergency lease extension failed: {exception}",
+                        )
+                    )
+                report.issues.append(
+                    Issue(
+                        severity="error",
+                        message=(
+                            "fleet lease intentionally remains held pending "
+                            "operator recovery"
+                        ),
+                    )
+                )
+            _record_deferred_interruption(report, signal_guard)
+            report = report.finish(
+                passed=(
+                    not _blocking_issues(report)
+                    and not _failed_lifecycle_stages(report)
+                    and restoration_succeeded
+                    and not release_failed
+                    and not report.critical_recovery_required
+                )
+            )
+            journal.report = report
+            journal.persist()
+        return report
+
+    @staticmethod
+    def _create_temporary_home(controller: SshTargetController) -> str:
+        """Create one private empty HOME and return its verified remote root."""
+
+        result = controller.run(
+            "umask 077; "
+            "root=$(mktemp -d /tmp/skulk-fresh.XXXXXX); "
+            'mkdir -p "$root/home" "$root/tmp"; '
+            'printf "%s" "$root"',
+            timeout_s=30,
+        )
+        temporary_root = result.stdout.strip()
+        if not temporary_root.startswith("/tmp/skulk-fresh."):
+            raise RuntimeError("target returned an unsafe temporary root")
+        return temporary_root
+
+    def _install_member(
+        self,
+        *,
+        member: _PhysicalFleetMemberRuntime,
+        profile: FreshInstallProfile,
+        expected_commit: str | None,
+        installer_url: str,
+        artifact_directory: Path,
+        heartbeat: AuthoritativeLeaseHeartbeat,
+    ) -> tuple[str, str]:
+        """Install one fleet member from the same official installer bytes."""
+
+        assert member.temporary_root is not None
+        command = _installer_command(
+            installer_url=installer_url,
+            profile=profile,
+            expected_commit=expected_commit,
+        )
+        returncode = _run_remote_logged_command(
+            controller=member.controller,
+            command=_clean_environment_command(member.temporary_root, command),
+            log_path=artifact_directory / "installer.log",
+            timeout_s=14400,
+            poll_interval_s=self.fresh.poll_interval_s,
+            heartbeat=heartbeat,
+        )
+        if returncode != 0:
+            raise RuntimeError(f"official installer exited {returncode}")
+        checkout = shlex.quote(member.temporary_root + "/home/skulk")
+        resolved_commit = member.controller.run(
+            f"git -C {checkout} rev-parse HEAD",
+            timeout_s=30,
+        ).stdout.strip()
+        if expected_commit and resolved_commit != expected_commit:
+            raise RuntimeError("installer resolved a different candidate commit")
+        config_path = member.temporary_root + "/home/skulk/skulk.yaml"
+        config_digest = _remote_sha256(member.controller, config_path)
+        if config_digest is None:
+            raise RuntimeError("installer did not generate skulk.yaml")
+        member.controller.copy_from(
+            config_path,
+            artifact_directory / "generated-skulk.yaml",
+        )
+        return resolved_commit, config_digest
+
+    def _record_member_runtime_evidence(
+        self,
+        *,
+        members: list[_PhysicalFleetMemberRuntime],
+        expected_node_count: int,
+        report: FreshInstallQualificationReport,
+    ) -> None:
+        """Assert and retain each member's own backend and dashboard contract."""
+
+        local_node_ids: list[str] = []
+        member_observed_node_ids: list[frozenset[str]] = []
+        for member in members:
+            assert member.local_port is not None
+            api_base_url = f"http://127.0.0.1:{member.local_port}"
+            observed_node_ids = _wait_for_exact_cluster(
+                api_base_url,
+                expected_node_count=expected_node_count,
+                timeout_s=self.fresh.readiness_timeout_s,
+                poll_interval_s=self.fresh.poll_interval_s,
+            )
+            node_id, node_count = _wait_for_api_identity(
+                api_base_url,
+                timeout_s=self.fresh.readiness_timeout_s,
+                poll_interval_s=self.fresh.poll_interval_s,
+            )
+            if node_count != expected_node_count:
+                raise RuntimeError(
+                    f"member {member.ordinal} observed {node_count} nodes; "
+                    f"expected {expected_node_count}"
+                )
+            local_node_ids.append(node_id)
+            member_observed_node_ids.append(observed_node_ids)
+            with SkulkClient(api_base_url) as client:
+                state = client.get_state()
+            resources = state.get("nodeResources")
+            raw_resource = (
+                resources.get(node_id)
+                if isinstance(resources, dict)
+                else None
+            )
+            resource = raw_resource if isinstance(raw_resource, dict) else {}
+            raw_backends = resource.get("backends")
+            detected_backends = sorted(
+                backend
+                for backend in (
+                    raw_backends if isinstance(raw_backends, list) else []
+                )
+                if isinstance(backend, str)
+            )
+            missing = sorted(
+                set(member.target.expected_backends) - set(detected_backends)
+            )
+            if missing:
+                raise RuntimeError(
+                    f"member {member.ordinal} did not detect expected backends: "
+                    f"{missing}"
+                )
+            transport = resource.get("dataTransport")
+            if transport != member.target.expected_data_transport:
+                raise RuntimeError(
+                    f"member {member.ordinal} DATA transport mismatch: {transport!r}"
+                )
+            response = httpx.get(
+                api_base_url,
+                timeout=self.config.request_timeout_s,
+            )
+            dashboard_present = (
+                response.status_code == 200
+                and "<html" in response.text.lower()
+                and 'id="root"' in response.text
+            )
+            expected_dashboard = member.target.dashboard_contract
+            if expected_dashboard == "required" and not dashboard_present:
+                raise RuntimeError(
+                    f"member {member.ordinal} did not serve the dashboard build"
+                )
+            if expected_dashboard == "absent" and dashboard_present:
+                raise RuntimeError(
+                    f"member {member.ordinal} unexpectedly served a dashboard"
+                )
+            evidence = report.members[member.ordinal - 1]
+            report.members[member.ordinal - 1] = evidence.model_copy(
+                update={
+                    "detected_backends": detected_backends,
+                    "data_transport": transport,
+                    "dashboard_build_present": dashboard_present,
+                }
+            )
+        _assert_declared_member_topologies(
+            expected_node_count=expected_node_count,
+            local_node_ids=local_node_ids,
+            member_observed_node_ids=member_observed_node_ids,
+        )
+
+    def _qualify_fleet_models(
+        self,
+        *,
+        api_base_url: str,
+        members: list[_PhysicalFleetMemberRuntime],
+        contract_members: list[_PhysicalFleetMemberRuntime],
+        expected_node_ids: frozenset[str],
+        report: FreshInstallQualificationReport,
+        journal: _LifecycleJournal,
+        artifact_directory: Path,
+        heartbeat: AuthoritativeLeaseHeartbeat,
+    ) -> None:
+        """Exercise each platform contract through the formed mixed fleet."""
+
+        model_contracts: list[tuple[str, _PhysicalFleetMemberRuntime]] = []
+        seen_models: set[str] = set()
+        for contract_member in contract_members:
+            models = [
+                *contract_member.target.text_models,
+                *contract_member.target.vision_models,
+            ]
+            for model_id in models:
+                if model_id in seen_models:
+                    continue
+                seen_models.add(model_id)
+                model_contracts.append((model_id, contract_member))
+        if not model_contracts:
+            raise ValueError("fresh-install physical fleet has no qualification models")
+        with SkulkClient(
+            api_base_url,
+            request_timeout_s=self.config.request_timeout_s,
+            generation_timeout_s=self.config.generation_timeout_s,
+            stream_read_timeout_s=self.config.stream_read_timeout_s,
+        ) as client, _FreshRuntimeMonitor(
+            api_base_url=api_base_url,
+            expected_node_ids=expected_node_ids,
+            expected_node_count=len(members),
+            poll_interval_s=self.fresh.poll_interval_s,
+            request_timeout_s=self.config.request_timeout_s,
+        ) as runtime_monitor:
+            def check_fresh_runtime() -> None:
+                """Fail immediately if lease health or fleet membership changes."""
+
+                _check_heartbeat(heartbeat)
+                runtime_monitor.raise_if_failed()
+                assert_fresh_cluster(
+                    client,
+                    expected_node_count=len(members),
+                    expected_node_ids=expected_node_ids,
+                )
+                runtime_monitor.raise_if_failed()
+
+            dashboard = DashboardQualifier(
+                api_base_url=api_base_url,
+                artifact_directory=artifact_directory / "playwright",
+                poll_interval_s=self.fresh.poll_interval_s,
+                model_ready_timeout_s=self.fresh.model_ready_timeout_s,
+                abort_check=check_fresh_runtime,
+            )
+            thinking_toggles = client.resolved_thinking_toggle_by_model()
+            card_image_input = client.resolved_image_input_by_model()
+            for model_id, contract_member in model_contracts:
+                target = contract_member.target
+                check_fresh_runtime()
+                enable_thinking = (
+                    False if thinking_toggles.get(model_id, False) else None
+                )
+                with journal.stage(f"dashboard fleet journey: {model_id}"):
+                    expectation = _browser_vision_expectation(
+                        model_id,
+                        vision_models=target.vision_models,
+                        card_image_input=card_image_input.get(model_id),
+                    )
+                    browser_fixture = (
+                        generate_vision_fixture()
+                        if expectation == "positive"
+                        else None
+                    )
+                    outcome = dashboard.qualify(
+                        model_id=model_id,
+                        vision_contract=expectation,
+                        fixture=browser_fixture,
+                    )
+                    report.browser.append(outcome)
+                    journal.persist()
+                    if not outcome.passed:
+                        raise RuntimeError(
+                            outcome.message
+                            or f"dashboard journey failed for {model_id}"
+                        )
+                    check_fresh_runtime()
+
+                if target.served_engine_contract is not None:
+                    with journal.stage(
+                        f"served engine fleet contract: {model_id}"
+                    ):
+                        evidence = _qualify_served_engine_fleet(
+                            members=[
+                                member
+                                for member in members
+                                if member.target.platform == target.platform
+                            ],
+                            api_base_url=api_base_url,
+                            model_id=model_id,
+                            contract=target.served_engine_contract,
+                            request_timeout_s=self.config.request_timeout_s,
+                            stream_read_timeout_s=self.config.stream_read_timeout_s,
+                        )
+                        report.served_engines.append(evidence)
+                        journal.persist()
+                        if not evidence.passed:
+                            raise RuntimeError(
+                                "fresh served-engine fleet contract failed for "
+                                f"{model_id}: expected --parallel "
+                                f"{evidence.expected_parallel}, observed "
+                                f"{evidence.observed_parallel}; expected "
+                                f"kv-unified={evidence.kv_unified_required}, "
+                                f"observed={evidence.kv_unified_observed}; "
+                                "maximum live concurrency "
+                                f"{evidence.maximum_observed_active}"
+                            )
+                        check_fresh_runtime()
+
+                with journal.stage(f"direct fleet API parity: {model_id}"):
+                    text_outcome = qualify_direct_text(
+                        client,
+                        model_id=model_id,
+                        enable_thinking=enable_thinking,
+                    )
+                    if not text_outcome.passed:
+                        raise RuntimeError(
+                            f"direct text API parity failed for {model_id}; "
+                            f"the model replied: {text_outcome.response!r}"
+                        )
+                    if model_id in target.vision_models:
+                        api_fixture = generate_vision_fixture()
+                        api_fixture.write(
+                            artifact_directory
+                            / "api-fixtures"
+                            / f"{_safe_model_name(model_id)}.png"
+                        )
+                        vision_outcome = qualify_direct_vision(
+                            client,
+                            model_id=model_id,
+                            fixture=api_fixture,
+                            enable_thinking=enable_thinking,
+                        )
+                        report.api_vision.append(vision_outcome)
+                        journal.persist()
+                        if not vision_outcome.passed:
+                            raise RuntimeError(
+                                f"direct vision API parity failed for {model_id}; "
+                                "the model replied: "
+                                f"{vision_outcome.response_excerpt!r}"
+                            )
+                    check_fresh_runtime()
+
+                with journal.stage(f"stop temporary fleet placement: {model_id}"):
+                    check_fresh_runtime()
+                    for placement in client.find_placements_for_model(model_id):
+                        if placement.instance_id:
+                            client.delete_instance(placement.instance_id)
+                    _wait_for_no_placement(
+                        client,
+                        model_id=model_id,
+                        timeout_s=180,
+                        poll_interval_s=self.fresh.poll_interval_s,
+                        heartbeat=heartbeat,
+                        runtime_check=check_fresh_runtime,
+                    )
+                    check_fresh_runtime()
+
+    def _cleanup_physical_fleet_member(
+        self,
+        member: _PhysicalFleetMemberRuntime,
+    ) -> None:
+        """Stop one temporary runtime and remove only its private HOME."""
+
+        if member.skulk_process is not None:
+            _terminate_process(member.skulk_process)
+            member.skulk_process = None
+        if member.skulk_log_handle is not None:
+            member.skulk_log_handle.close()
+            member.skulk_log_handle = None
+        if member.temporary_root is None:
+            return
+        process_pattern = _self_safe_process_pattern(
+            member.temporary_root + "/home/skulk"
+        )
+        member.controller.run(
+            f"pkill -TERM -f {shlex.quote(process_pattern)} 2>/dev/null || true",
+            check=False,
+            timeout_s=30,
+        )
+        member.controller.run(
+            f"rm -rf -- {shlex.quote(member.temporary_root)}",
+            timeout_s=300,
+        )
+        member.controller.run(
+            f"test ! -e {shlex.quote(member.temporary_root)} && "
+            f"! pgrep -f {shlex.quote(process_pattern)} >/dev/null",
+            timeout_s=30,
+        )
+        member.temporary_root = None
+
+    def _restore_physical_fleet(
+        self,
+        *,
+        members: list[_PhysicalFleetMemberRuntime],
+        report: FreshInstallQualificationReport,
+        journal: _LifecycleJournal,
+    ) -> bool:
+        """Restore and verify every original service and the complete topology."""
+
+        with journal.stage("restore original service on every member"):
+            def start_original(member: _PhysicalFleetMemberRuntime) -> None:
+                if not member.service_stopped:
+                    return
+                assert member.target.service_start_command is not None
+                member.controller.run(
+                    member.target.service_start_command,
+                    timeout_s=120,
+                )
+
+            _run_member_operations(members, start_original)
+            failures: list[str] = []
+            restored_local_node_ids: list[str] = []
+            restored_member_node_ids: list[frozenset[str]] = []
+            for member in members:
+                if member.snapshot is None or member.local_port is None:
+                    failures.append(
+                        f"member {member.ordinal} lacks recovery metadata"
+                    )
+                    continue
+                api_base_url = f"http://127.0.0.1:{member.local_port}"
+                node_id, node_count = _wait_for_api_identity(
+                    api_base_url,
+                    timeout_s=self.fresh.readiness_timeout_s,
+                    poll_interval_s=self.fresh.poll_interval_s,
+                )
+                observed_node_ids = _wait_for_exact_cluster(
+                    api_base_url,
+                    expected_node_count=len(members),
+                    timeout_s=self.fresh.readiness_timeout_s,
+                    poll_interval_s=self.fresh.poll_interval_s,
+                )
+                mismatches = member.controller.verify_restored_state(
+                    member.snapshot.original,
+                    api_node_id=node_id,
+                    cluster_node_count=node_count,
+                )
+                if mismatches:
+                    failures.append(
+                        f"member {member.ordinal}: {'; '.join(mismatches)}"
+                    )
+                    continue
+                restored_local_node_ids.append(node_id)
+                restored_member_node_ids.append(observed_node_ids)
+            if not failures:
+                _assert_declared_member_topologies(
+                    expected_node_count=len(members),
+                    local_node_ids=restored_local_node_ids,
+                    member_observed_node_ids=restored_member_node_ids,
+                )
+            if failures:
+                raise RuntimeError("; ".join(failures))
+            for member in members:
+                evidence = report.members[member.ordinal - 1]
+                report.members[member.ordinal - 1] = evidence.model_copy(
+                    update={"restored": True}
+                )
+                member.service_stopped = False
+            journal.persist()
+        return True
 
     def _qualify_runpod(
         self,
@@ -1104,6 +2129,180 @@ def _runpod_ephemeral_target(
     )
 
 
+def _run_member_operations(
+    members: Sequence[_PhysicalFleetMemberRuntime],
+    operation: Callable[[_PhysicalFleetMemberRuntime], ResultT],
+) -> list[ResultT]:
+    """Run every member operation sequentially and report all ordinary failures.
+
+    Sequential execution is deliberate. A signal raised in the main thread can
+    immediately enter mandatory recovery; a thread-pool context would wait for
+    every in-flight remote installer before unwinding.
+    """
+
+    results: list[ResultT] = []
+    failures: list[str] = []
+    for member in members:
+        try:
+            results.append(operation(member))
+        except LeaseHeartbeatError:
+            raise
+        except Exception as exception:  # noqa: BLE001 - aggregate member failures
+            failures.append(f"member {member.ordinal}: {exception}")
+    if failures:
+        raise RuntimeError("; ".join(failures))
+    return results
+
+
+def _assert_declared_member_topologies(
+    *,
+    expected_node_count: int,
+    local_node_ids: Iterable[str],
+    member_observed_node_ids: Iterable[frozenset[str]],
+) -> frozenset[str]:
+    """Require every declared member to observe exactly the declared fleet."""
+
+    declared_node_ids = frozenset(local_node_ids)
+    observed_topologies = tuple(member_observed_node_ids)
+    mismatched_members = [
+        ordinal
+        for ordinal, observed_node_ids in enumerate(observed_topologies, start=1)
+        if observed_node_ids != declared_node_ids
+    ]
+    if (
+        len(declared_node_ids) != expected_node_count
+        or len(observed_topologies) != expected_node_count
+        or mismatched_members
+    ):
+        raise RuntimeError(
+            "declared physical fleet does not match one complete live topology: "
+            f"expected {expected_node_count} members, observed "
+            f"{len(declared_node_ids)} unique local identities, mismatched "
+            f"member views {mismatched_members}"
+        )
+    return declared_node_ids
+
+
+def _aggregate_digests(digests: Iterable[str]) -> str:
+    """Return an order-stable digest over anonymous member digests."""
+
+    normalized = sorted(str(digest) for digest in digests)
+    payload = "\n".join(normalized).encode()
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _wait_for_exact_cluster(
+    api_base_url: str,
+    *,
+    expected_node_count: int,
+    timeout_s: float,
+    poll_interval_s: float,
+) -> frozenset[str]:
+    """Wait until one API observes the complete exact physical topology."""
+
+    deadline = time.monotonic() + timeout_s
+    last_error: Exception | None = None
+    with SkulkClient(api_base_url) as client:
+        while time.monotonic() < deadline:
+            try:
+                return assert_fresh_cluster(
+                    client,
+                    expected_node_count=expected_node_count,
+                )
+            except UnexpectedFreshInstallPeerError:
+                raise
+            except Exception as exception:  # noqa: BLE001 - topology converges
+                last_error = exception
+                time.sleep(poll_interval_s)
+    raise TimeoutError(
+        f"fresh physical fleet did not form {expected_node_count} nodes: {last_error}"
+    )
+
+
+def _qualify_served_engine_fleet(
+    *,
+    members: Sequence[_PhysicalFleetMemberRuntime],
+    api_base_url: str,
+    model_id: str,
+    contract: ServedEngineContract,
+    request_timeout_s: float,
+    stream_read_timeout_s: float,
+) -> ServedEngineEvidence:
+    """Verify one served runner wherever placement selected it in the fleet."""
+
+    before: list[tuple[int, int, int, bool]] = []
+    for member in members:
+        assert member.temporary_root is not None
+        listing = member.controller.run(
+            "ps -axo pid=,command=",
+            timeout_s=30,
+        ).stdout
+        for pid, parallel, kv_unified in _llama_server_process_candidates(
+            listing,
+            installation_root=member.temporary_root,
+        ):
+            before.append((member.ordinal, pid, parallel, kv_unified))
+    if len(before) != 1:
+        raise RuntimeError(
+            "expected exactly one fresh llama-server child across compatible "
+            f"fleet members, observed {len(before)}"
+        )
+    member_ordinal, before_pid, observed_parallel, kv_unified_observed = before[0]
+    _run_served_engine_overlap_probe(
+        api_base_url=api_base_url,
+        model_id=model_id,
+        concurrency=contract.probe_concurrency,
+        request_timeout_s=request_timeout_s,
+        stream_read_timeout_s=stream_read_timeout_s,
+    )
+    maximum_observed_active, batching_reported = _served_engine_envelope(
+        api_base_url=api_base_url,
+        model_id=model_id,
+        backend=contract.backend,
+        request_timeout_s=request_timeout_s,
+    )
+    after: list[tuple[int, int, int, bool]] = []
+    for member in members:
+        assert member.temporary_root is not None
+        listing = member.controller.run(
+            "ps -axo pid=,command=",
+            timeout_s=30,
+        ).stdout
+        for pid, parallel, kv_unified in _llama_server_process_candidates(
+            listing,
+            installation_root=member.temporary_root,
+        ):
+            after.append((member.ordinal, pid, parallel, kv_unified))
+    runner_survived = after == [
+        (
+            member_ordinal,
+            before_pid,
+            observed_parallel,
+            kv_unified_observed,
+        )
+    ]
+    passed = (
+        observed_parallel == contract.parallel
+        and kv_unified_observed == contract.kv_unified
+        and maximum_observed_active >= 2
+        and batching_reported
+        and runner_survived
+    )
+    return ServedEngineEvidence(
+        model_id=model_id,
+        backend=contract.backend,
+        expected_parallel=contract.parallel,
+        observed_parallel=observed_parallel,
+        kv_unified_required=contract.kv_unified,
+        kv_unified_observed=kv_unified_observed,
+        probe_concurrency=contract.probe_concurrency,
+        maximum_observed_active=maximum_observed_active,
+        batching_reported=batching_reported,
+        runner_survived=runner_survived,
+        passed=passed,
+    )
+
+
 def _qualify_served_engine(
     *,
     controller: SshTargetController,
@@ -1175,7 +2374,26 @@ def _llama_server_process_contract(
 ) -> tuple[int, int, bool]:
     """Return process identity, parallel slots, and unified-KV state."""
 
-    candidates: list[tuple[int, list[str]]] = []
+    candidates = _llama_server_process_candidates(
+        process_listing,
+        installation_root=installation_root,
+    )
+    if len(candidates) != 1:
+        raise RuntimeError(
+            "expected exactly one fresh llama-server child, observed "
+            f"{len(candidates)}"
+        )
+    return candidates[0]
+
+
+def _llama_server_process_candidates(
+    process_listing: str,
+    *,
+    installation_root: str,
+) -> list[tuple[int, int, bool]]:
+    """Return every served child owned by one temporary installation."""
+
+    raw_candidates: list[tuple[int, list[str]]] = []
     for line in process_listing.splitlines():
         if installation_root not in line:
             continue
@@ -1188,32 +2406,29 @@ def _llama_server_process_contract(
         except ValueError:
             continue
         if any(Path(argument).name == "llama-server" for argument in arguments):
-            candidates.append((pid, arguments))
-    if len(candidates) != 1:
-        raise RuntimeError(
-            "expected exactly one fresh llama-server child, observed "
-            f"{len(candidates)}"
-        )
-    pid, arguments = candidates[0]
-    parallel: int | None = None
-    for index, argument in enumerate(arguments):
-        if argument == "--parallel" and index + 1 < len(arguments):
-            try:
-                parallel = int(arguments[index + 1])
-            except ValueError as exception:
-                raise RuntimeError(
-                    "fresh llama-server --parallel value was not an integer"
-                ) from exception
-        elif argument.startswith("--parallel="):
-            try:
-                parallel = int(argument.partition("=")[2])
-            except ValueError as exception:
-                raise RuntimeError(
-                    "fresh llama-server --parallel value was not an integer"
-                ) from exception
-    if parallel is None:
-        raise RuntimeError("fresh llama-server child omitted --parallel")
-    return pid, parallel, "--kv-unified" in arguments
+            raw_candidates.append((pid, arguments))
+    parsed: list[tuple[int, int, bool]] = []
+    for pid, arguments in raw_candidates:
+        parallel: int | None = None
+        for index, argument in enumerate(arguments):
+            if argument == "--parallel" and index + 1 < len(arguments):
+                try:
+                    parallel = int(arguments[index + 1])
+                except ValueError as exception:
+                    raise RuntimeError(
+                        "fresh llama-server --parallel value was not an integer"
+                    ) from exception
+            elif argument.startswith("--parallel="):
+                try:
+                    parallel = int(argument.partition("=")[2])
+                except ValueError as exception:
+                    raise RuntimeError(
+                        "fresh llama-server --parallel value was not an integer"
+                    ) from exception
+        if parallel is None:
+            raise RuntimeError("fresh llama-server child omitted --parallel")
+        parsed.append((pid, parallel, "--kv-unified" in arguments))
+    return parsed
 
 
 def _run_served_engine_overlap_probe(
@@ -1486,6 +2701,9 @@ def _wait_for_runtime_contract(
     poll_interval_s: float,
     stability_s: float,
     heartbeat: AuthoritativeLeaseHeartbeat | None,
+    expected_node_count: int = 1,
+    expected_node_ids: frozenset[str] | None = None,
+    expected_backends: list[str] | None = None,
 ) -> InstallProvenance:
     """Require every shipped runtime invariant to remain continuously stable."""
 
@@ -1499,10 +2717,12 @@ def _wait_for_runtime_contract(
             try:
                 stable_provenance = assert_fresh_runtime_contract(
                     client,
-                    expected_backends=target.expected_backends,
+                    expected_backends=expected_backends or target.expected_backends,
                     expected_transport=target.expected_data_transport,
                     expected_commit=expected_commit,
                     dashboard_contract=target.dashboard_contract,
+                    expected_node_count=expected_node_count,
+                    expected_node_ids=expected_node_ids,
                 )
                 now = time.monotonic()
                 if stable_since is None:

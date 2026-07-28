@@ -2,15 +2,22 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from typer.testing import CliRunner
 
 from skulk_test_harness import cli
 from skulk_test_harness.models import (
+    FreshInstallConfig,
+    FreshInstallPhysicalFleet,
+    FreshInstallQualificationReport,
+    FreshInstallTarget,
     GenerationMetrics,
     HarnessConfig,
+    InstallProvenance,
     RunReport,
     RunSpec,
 )
@@ -237,6 +244,145 @@ def test_shipping_transport_requirement_rejects_missing_advertisements() -> None
 
 def test_generic_profile_has_no_shipping_transport_requirement() -> None:
     cli._require_shipping_data_transport(HarnessConfig(), {})
+
+
+def _fresh_cli_config(tmp_path: Path) -> HarnessConfig:
+    apple = FreshInstallTarget(
+        kind="physical",
+        platform="apple",
+        hardware_class="apple",
+        eligible=True,
+        whole_fleet_member=True,
+        ssh_host="apple",
+        service_stop_command="stop",
+        service_start_command="start",
+        expected_backends=["mlx"],
+        vision_contract="positive",
+        vision_models=["vision/model"],
+    )
+    amd = FreshInstallTarget(
+        kind="physical",
+        platform="amd",
+        hardware_class="amd",
+        eligible=True,
+        whole_fleet_member=True,
+        ssh_host="amd",
+        service_stop_command="stop",
+        service_start_command="start",
+        expected_backends=["llama_server"],
+        vision_contract="unavailable",
+        text_models=["text/model"],
+    )
+    nvidia = FreshInstallTarget(
+        kind="runpod",
+        platform="nvidia",
+        hardware_class="nvidia",
+        eligible=True,
+        expected_backends=["llama_server"],
+        vision_contract="unavailable",
+        text_models=["text/model"],
+    )
+    return HarnessConfig(
+        output_dir=tmp_path,
+        fresh_install=FreshInstallConfig(
+            targets={"apple": apple, "amd": amd, "nvidia": nvidia},
+            physical_fleets={
+                "release": FreshInstallPhysicalFleet(
+                    hardware_class="mixed",
+                    eligible=True,
+                    member_targets=["apple", "amd"],
+                    entrypoint_target="apple",
+                    qualification_targets=["apple", "amd"],
+                )
+            },
+        ),
+    )
+
+
+class _StubFreshQualifier:
+    calls: list[tuple[str, str]]
+
+    def __init__(self, config: HarnessConfig) -> None:
+        self.calls = []
+        self.writer = SimpleNamespace(run_dir=lambda qualification_id: Path(qualification_id))
+        _fresh_qualifiers.append(self)
+
+    @staticmethod
+    def _report(platform: str) -> FreshInstallQualificationReport:
+        return FreshInstallQualificationReport(
+            qualification_id=f"fresh-{platform}",
+            profile="candidate",
+            platform=platform,  # pyright: ignore[reportArgumentType]
+            hardware_class=platform,
+            started_at=datetime.now(UTC),
+            install=InstallProvenance(
+                mode="fresh_install",
+                environment="fresh_install",
+            ),
+        ).finish(passed=True)
+
+    def qualify_physical_fleet(self, *, fleet_name: str, **_kwargs: object):
+        self.calls.append(("fleet", fleet_name))
+        return self._report("mixed")
+
+    def qualify_target(self, *, target_name: str, **_kwargs: object):
+        self.calls.append(("target", target_name))
+        return self._report("nvidia")
+
+
+_fresh_qualifiers: list[_StubFreshQualifier] = []
+
+
+def test_fresh_cli_explicit_physical_fleet_does_not_also_run_provider(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _fresh_qualifiers.clear()
+    monkeypatch.setattr(cli, "load_config", lambda _path: _fresh_cli_config(tmp_path))
+    monkeypatch.setattr(cli, "FreshInstallQualifier", _StubFreshQualifier)
+
+    result = runner_cli.invoke(
+        cli.app,
+        [
+            "fresh-install",
+            "qualify",
+            "--profile",
+            "candidate",
+            "--expected-commit",
+            "a" * 40,
+            "--physical-fleet",
+            "release",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert _fresh_qualifiers[-1].calls == [("fleet", "release")]
+
+
+def test_fresh_cli_explicit_provider_does_not_also_run_physical_fleet(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _fresh_qualifiers.clear()
+    monkeypatch.setattr(cli, "load_config", lambda _path: _fresh_cli_config(tmp_path))
+    monkeypatch.setattr(cli, "FreshInstallQualifier", _StubFreshQualifier)
+
+    result = runner_cli.invoke(
+        cli.app,
+        [
+            "fresh-install",
+            "qualify",
+            "--profile",
+            "candidate",
+            "--expected-commit",
+            "a" * 40,
+            "--target",
+            "nvidia",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert _fresh_qualifiers[-1].calls == [("target", "nvidia")]
 
 
 def test_eligible_fleet_ignores_incidental_transport() -> None:

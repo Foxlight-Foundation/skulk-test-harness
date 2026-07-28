@@ -122,19 +122,17 @@ fresh_install:
   lease_ttl_s: 3600
   emergency_lease_ttl_s: 21600
   targets:
-    apple:
+    apple-1: &apple-member
       kind: physical
       platform: apple
       hardware_class: apple-silicon-32gb
       eligible: false
       exclusion_reason: replace placeholders before enabling
-      ssh_host: replace-me
+      whole_fleet_member: true
+      ssh_host: replace-apple-1
       service_manager: launchd
       service_stop_command: replace-me
       service_start_command: replace-me
-      isolation_enter_command: replace-with-target-local-skulk-traffic-isolation
-      isolation_exit_command: replace-with-target-local-isolation-removal
-      runtime_isolation_prefix: replace-with-optional-os-network-sandbox
       expected_backends: [mlx, mlx-metal]
       expected_data_transport: zenoh
       vision_contract: positive
@@ -144,6 +142,33 @@ fresh_install:
       vision_models:
         - mlx-community/Qwen3.5-2B-4bit
         - mlx-community/Qwen3-VL-4B-Instruct-4bit
+    apple-2:
+      <<: *apple-member
+      ssh_host: replace-apple-2
+    amd-1:
+      kind: physical
+      platform: amd
+      hardware_class: amd-vulkan
+      eligible: false
+      exclusion_reason: replace placeholders before enabling
+      whole_fleet_member: true
+      ssh_host: replace-amd-1
+      service_manager: systemd
+      service_stop_command: replace-me
+      service_start_command: replace-me
+      expected_backends: [llama_server, llama_server-vulkan]
+      expected_data_transport: zenoh
+      vision_contract: unavailable
+      text_models:
+        - unsloth/Llama-3.2-1B-Instruct-GGUF
+  physical_fleets:
+    release-fleet:
+      hardware_class: mixed-apple-amd
+      eligible: false
+      exclusion_reason: replace every placeholder before enabling
+      member_targets: [apple-1, apple-2, amd-1]
+      entrypoint_target: apple-1
+      qualification_targets: [apple-1, amd-1]
 ```
 
 AMD and NVIDIA release targets also declare the effective served-engine
@@ -160,11 +185,13 @@ served_engine_contract:
   probe_concurrency: 4
 ```
 
-When `fresh-install qualify` is run without `--target`, every
-`required_platforms` entry must have at least one explicitly eligible target or
-the release matrix is refused before any lifecycle mutation begins. Repeated
-`--target` options are for deliberate single-leg qualification and do not claim
-the complete release status.
+When `fresh-install qualify` is run without selection flags, every
+`required_platforms` entry must be represented by either an eligible physical
+fleet member or an explicitly eligible standalone target such as RunPod. The
+release matrix is refused before mutation otherwise. `--physical-fleet` selects
+a complete physical topology deliberately; repeated `--target` options retain
+the legacy diagnostic/single-provider behavior and do not claim a complete
+physical release status.
 
 The heartbeat defaults to one third of `lease_ttl_s` and cannot be configured
 less safely. Physical targets also declare config paths and an existing
@@ -172,9 +199,9 @@ checkout for hash/commit restoration checks. RunPod settings include its
 neutral image, SSH keys, GPU choices, maximum hourly price and runtime, and
 never include a network volume.
 
-Eligible physical targets must also provide reversible isolation commands.
-They block only Skulk discovery and fabric traffic on the selected target while
-preserving SSH. This is how a default, override-free temporary process is
-required to observe exactly one node even when the ordinary dev fleet remains
-online. Isolation removal is part of mandatory restoration; failure leaves the
-lease held.
+Targets referenced by `physical_fleets` set `whole_fleet_member: true` and
+provide no isolation commands or runtime wrapper. The harness stops every
+declared member, starts their temporary installations with normal networking,
+and requires that exact topology to form. Legacy one-node diagnostic targets
+still require paired reversible isolation commands. Mixing the two modes is
+rejected by configuration validation.

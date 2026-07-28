@@ -14,10 +14,11 @@ import sys
 import tarfile
 import threading
 import time
+from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from typing import BinaryIO, cast
+from typing import BinaryIO, Literal, cast
 
 import httpx
 import pytest
@@ -41,14 +42,17 @@ from skulk_test_harness.fleet_lock import FleetLease, LeaseOutcome
 from skulk_test_harness.fresh_install import (
     QualificationInterruptedError,
     QualificationSignalGuard,
+    _assert_declared_member_topologies,  # pyright: ignore[reportPrivateUsage]
     _blocking_issues,  # pyright: ignore[reportPrivateUsage]
     _browser_vision_expectation,  # pyright: ignore[reportPrivateUsage]
     _clean_environment_command,  # pyright: ignore[reportPrivateUsage]
     _failed_lifecycle_stages,  # pyright: ignore[reportPrivateUsage]
     _installer_command,  # pyright: ignore[reportPrivateUsage]
     _llama_server_process_contract,  # pyright: ignore[reportPrivateUsage]
+    _PhysicalFleetMemberRuntime,  # pyright: ignore[reportPrivateUsage]
     _provision_model_over_api,  # pyright: ignore[reportPrivateUsage]
     _qualify_served_engine,  # pyright: ignore[reportPrivateUsage]
+    _run_member_operations,  # pyright: ignore[reportPrivateUsage]
     _run_remote_logged_command,  # pyright: ignore[reportPrivateUsage]
     _runpod_ephemeral_target,  # pyright: ignore[reportPrivateUsage]
     _runtime_start_command,  # pyright: ignore[reportPrivateUsage]
@@ -66,6 +70,8 @@ from skulk_test_harness.models import (
     FleetLock,
     FreshInstallConfig,
     FreshInstallLifecycleStage,
+    FreshInstallMemberEvidence,
+    FreshInstallPhysicalFleet,
     FreshInstallQualificationReport,
     FreshInstallTarget,
     HarnessConfig,
@@ -78,6 +84,8 @@ from skulk_test_harness.models import (
 )
 from skulk_test_harness.qualification_checks import (
     UnexpectedFreshInstallPeerError,
+    assert_fresh_cluster,
+    assert_fresh_runtime_contract,
     assert_fresh_single_node,
     qualify_direct_text,
     qualify_direct_vision,
@@ -117,6 +125,42 @@ def _physical_target(*, eligible: bool = True) -> FreshInstallTarget:
     )
 
 
+def _whole_fleet_target(
+    platform: Literal["apple", "amd"],
+    *,
+    eligible: bool = True,
+) -> FreshInstallTarget:
+    common: dict[str, object] = {
+        "kind": "physical",
+        "platform": platform,
+        "hardware_class": f"{platform}-hardware",
+        "eligible": eligible,
+        "ssh_host": f"{platform}-alias",
+        "service_stop_command": "stop",
+        "service_start_command": "start",
+        "whole_fleet_member": True,
+        "expected_data_transport": "zenoh",
+    }
+    if platform == "apple":
+        common.update(
+            {
+                "expected_backends": ["mlx"],
+                "vision_contract": "positive",
+                "text_models": ["mlx-community/Qwen3.5-2B-4bit"],
+                "vision_models": ["mlx-community/Qwen3.5-2B-4bit"],
+            }
+        )
+    else:
+        common.update(
+            {
+                "expected_backends": ["llama_server"],
+                "vision_contract": "unavailable",
+                "text_models": ["unsloth/Llama-3.2-1B-Instruct-GGUF"],
+            }
+        )
+    return FreshInstallTarget.model_validate(common)
+
+
 def test_target_selection_uses_only_explicit_eligibility() -> None:
     config = FreshInstallConfig(
         targets={
@@ -138,6 +182,334 @@ def test_complete_release_matrix_requires_every_blocking_platform() -> None:
 
     with pytest.raises(ValueError, match="amd.*nvidia"):
         config.assert_complete_release_matrix(selected)
+
+
+def test_physical_fleet_accepts_normal_networking_and_composes_platforms() -> None:
+    config = FreshInstallConfig(
+        required_platforms=["apple", "amd"],
+        targets={
+            "apple-1": _whole_fleet_target("apple"),
+            "apple-2": _whole_fleet_target("apple"),
+            "amd-1": _whole_fleet_target("amd"),
+        },
+        physical_fleets={
+            "release-fleet": FreshInstallPhysicalFleet(
+                hardware_class="mixed-three-node",
+                eligible=True,
+                member_targets=["apple-1", "apple-2", "amd-1"],
+                entrypoint_target="apple-1",
+                qualification_targets=["apple-1", "amd-1"],
+            )
+        },
+    )
+
+    selected_fleets = config.eligible_physical_fleets()
+    assert [name for name, _fleet in selected_fleets] == ["release-fleet"]
+    assert [
+        name
+        for name, _target in config.physical_fleet_targets(selected_fleets[0][1])
+    ] == ["apple-1", "apple-2", "amd-1"]
+    config.assert_complete_release_matrix([], selected_fleets)
+
+
+def test_physical_fleet_release_coverage_uses_only_qualification_targets() -> None:
+    config = FreshInstallConfig(
+        required_platforms=["apple", "amd"],
+        targets={
+            "apple-contract": _whole_fleet_target("apple"),
+            "amd-capacity-only": _whole_fleet_target("amd"),
+        },
+        physical_fleets={
+            "release-fleet": FreshInstallPhysicalFleet(
+                hardware_class="mixed-two-node",
+                eligible=True,
+                member_targets=["apple-contract", "amd-capacity-only"],
+                entrypoint_target="apple-contract",
+                qualification_targets=["apple-contract"],
+            )
+        },
+    )
+
+    with pytest.raises(ValueError, match="amd"):
+        config.assert_complete_release_matrix([], config.eligible_physical_fleets())
+
+
+def test_physical_fleet_rejects_nonmember_contract_and_isolated_member() -> None:
+    with pytest.raises(ValidationError, match="qualification_targets must be members"):
+        FreshInstallPhysicalFleet(
+            hardware_class="mixed",
+            eligible=True,
+            member_targets=["apple-1", "amd-1"],
+            entrypoint_target="apple-1",
+            qualification_targets=["not-a-member"],
+        )
+
+    isolated = _physical_target()
+    with pytest.raises(ValidationError, match="whole_fleet_member=true"):
+        FreshInstallConfig(
+            targets={
+                "apple-1": isolated,
+                "amd-1": _whole_fleet_target("amd"),
+            },
+            physical_fleets={
+                "release-fleet": FreshInstallPhysicalFleet(
+                    hardware_class="mixed",
+                    eligible=True,
+                    member_targets=["apple-1", "amd-1"],
+                    entrypoint_target="apple-1",
+                    qualification_targets=["apple-1", "amd-1"],
+                )
+            },
+        )
+
+
+def test_member_operations_do_not_swallow_recovery_interrupt() -> None:
+    target = _whole_fleet_target("apple")
+    member = _PhysicalFleetMemberRuntime(
+        ordinal=1,
+        target_name="apple-1",
+        target=target,
+        controller=SshTargetController(target),
+    )
+
+    def interrupted(_member: _PhysicalFleetMemberRuntime) -> None:
+        raise QualificationInterruptedError("stop now")
+
+    with pytest.raises(QualificationInterruptedError, match="stop now"):
+        _run_member_operations([member], interrupted)
+
+
+def test_member_operations_propagate_lease_failure_immediately() -> None:
+    target = _whole_fleet_target("apple")
+    members = [
+        _PhysicalFleetMemberRuntime(
+            ordinal=ordinal,
+            target_name=f"apple-{ordinal}",
+            target=target,
+            controller=SshTargetController(target),
+        )
+        for ordinal in (1, 2)
+    ]
+    attempted: list[int] = []
+
+    def heartbeat_failed(member: _PhysicalFleetMemberRuntime) -> None:
+        attempted.append(member.ordinal)
+        raise LeaseHeartbeatError("lease ownership lost")
+
+    with pytest.raises(LeaseHeartbeatError, match="lease ownership lost"):
+        _run_member_operations(members, heartbeat_failed)
+    assert attempted == [1]
+
+
+def test_declared_topology_rejects_substituted_member_view() -> None:
+    declared = frozenset({"node-a", "node-b", "node-c"})
+
+    assert (
+        _assert_declared_member_topologies(
+            expected_node_count=3,
+            local_node_ids=declared,
+            member_observed_node_ids=(declared, declared, declared),
+        )
+        == declared
+    )
+    with pytest.raises(RuntimeError, match=r"mismatched member views \[2\]"):
+        _assert_declared_member_topologies(
+            expected_node_count=3,
+            local_node_ids=declared,
+            member_observed_node_ids=(
+                declared,
+                frozenset({"node-a", "node-b", "incidental-node"}),
+                declared,
+            ),
+        )
+
+
+def test_restoration_rejects_asymmetric_member_topology(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = OriginalTargetState(
+        git_commit="commit-a",
+        git_status="clean",
+        config_sha256={},
+        process_arguments=["uv run skulk"],
+        service_status="running",
+        api_node_id="old-node",
+        cluster_node_count=2,
+    )
+
+    class FakeController:
+        def run(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def verify_restored_state(
+            self,
+            _original: OriginalTargetState,
+            *,
+            api_node_id: str | None,
+            cluster_node_count: int | None,
+        ) -> list[str]:
+            assert api_node_id is not None
+            assert cluster_node_count == 2
+            return []
+
+    members = [
+        _PhysicalFleetMemberRuntime(
+            ordinal=ordinal,
+            target_name=f"apple-{ordinal}",
+            target=_whole_fleet_target("apple"),
+            controller=cast(SshTargetController, FakeController()),
+            local_port=52000 + ordinal,
+            snapshot=RecoverySnapshot(
+                remote_path="/private/recovery.tar.gz",
+                remote_sha256="remote-digest",
+                controller_path=tmp_path / f"recovery-{ordinal}.tar.gz",
+                controller_sha256="controller-digest",
+                original=original,
+            ),
+            service_stopped=True,
+        )
+        for ordinal in (1, 2)
+    ]
+    local_ids = {
+        "http://127.0.0.1:52001": ("node-a", 2),
+        "http://127.0.0.1:52002": ("node-b", 2),
+    }
+    member_views = {
+        "http://127.0.0.1:52001": frozenset({"node-a", "node-b"}),
+        "http://127.0.0.1:52002": frozenset(
+            {"node-a", "incidental-node"}
+        ),
+    }
+    monkeypatch.setattr(
+        fresh_install_module,
+        "_wait_for_api_identity",
+        lambda api_base_url, **_kwargs: local_ids[api_base_url],
+    )
+    monkeypatch.setattr(
+        fresh_install_module,
+        "_wait_for_exact_cluster",
+        lambda api_base_url, **_kwargs: member_views[api_base_url],
+    )
+
+    class FakeJournal:
+        def stage(self, _name: str) -> object:
+            return nullcontext()
+
+        def persist(self) -> None:
+            pass
+
+    report = _report_with([]).model_copy(
+        update={
+            "members": [
+                FreshInstallMemberEvidence(
+                    ordinal=ordinal,
+                    platform="apple",
+                    hardware_class="apple-hardware",
+                )
+                for ordinal in (1, 2)
+            ]
+        }
+    )
+    qualifier = fresh_install_module.FreshInstallQualifier(
+        HarnessConfig(fresh_install=FreshInstallConfig())
+    )
+
+    with pytest.raises(RuntimeError, match=r"mismatched member views \[2\]"):
+        qualifier._restore_physical_fleet(  # pyright: ignore[reportPrivateUsage]
+            members=members,
+            report=report,
+            journal=cast(fresh_install_module._LifecycleJournal, FakeJournal()),  # pyright: ignore[reportPrivateUsage]
+        )
+    assert [member.restored for member in report.members] == [None, None]
+
+
+def test_fresh_runtime_evidence_rejects_asymmetric_member_topology(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    members = [
+        _PhysicalFleetMemberRuntime(
+            ordinal=ordinal,
+            target_name=f"apple-{ordinal}",
+            target=_whole_fleet_target("apple"),
+            controller=SshTargetController(_whole_fleet_target("apple")),
+            local_port=53000 + ordinal,
+        )
+        for ordinal in (1, 2)
+    ]
+    local_ids = {
+        "http://127.0.0.1:53001": ("node-a", 2),
+        "http://127.0.0.1:53002": ("node-b", 2),
+    }
+    member_views = {
+        "http://127.0.0.1:53001": frozenset({"node-a", "node-b"}),
+        "http://127.0.0.1:53002": frozenset(
+            {"node-a", "incidental-node"}
+        ),
+    }
+    monkeypatch.setattr(
+        fresh_install_module,
+        "_wait_for_api_identity",
+        lambda api_base_url, **_kwargs: local_ids[api_base_url],
+    )
+    monkeypatch.setattr(
+        fresh_install_module,
+        "_wait_for_exact_cluster",
+        lambda api_base_url, **_kwargs: member_views[api_base_url],
+    )
+
+    class FakeSkulkClient:
+        def __init__(self, api_base_url: str) -> None:
+            self.api_base_url = api_base_url
+
+        def __enter__(self) -> "FakeSkulkClient":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            pass
+
+        def get_state(self) -> dict[str, object]:
+            node_id = local_ids[self.api_base_url][0]
+            return {
+                "nodeResources": {
+                    node_id: {
+                        "backends": ["mlx"],
+                        "dataTransport": "zenoh",
+                    }
+                }
+            }
+
+    monkeypatch.setattr(fresh_install_module, "SkulkClient", FakeSkulkClient)
+    monkeypatch.setattr(
+        fresh_install_module.httpx,
+        "get",
+        lambda *_args, **_kwargs: httpx.Response(
+            200,
+            text='<html><div id="root"></div></html>',
+        ),
+    )
+    report = _report_with([]).model_copy(
+        update={
+            "members": [
+                FreshInstallMemberEvidence(
+                    ordinal=ordinal,
+                    platform="apple",
+                    hardware_class="apple-hardware",
+                )
+                for ordinal in (1, 2)
+            ]
+        }
+    )
+    qualifier = fresh_install_module.FreshInstallQualifier(
+        HarnessConfig(fresh_install=FreshInstallConfig())
+    )
+
+    with pytest.raises(RuntimeError, match=r"mismatched member views \[2\]"):
+        qualifier._record_member_runtime_evidence(  # pyright: ignore[reportPrivateUsage]
+            members=members,
+            expected_node_count=2,
+            report=report,
+        )
 
 
 def test_target_contract_rejects_adaptive_vision_skip() -> None:
@@ -1883,6 +2255,104 @@ def test_fresh_single_node_rejects_runtime_identity_replacement() -> None:
         assert_fresh_single_node(
             cast(SkulkClient, client),
             expected_node_id=expected_node_id,
+        )
+
+
+def test_fresh_cluster_requires_exact_stable_membership() -> None:
+    class FleetClient(_StubContractClient):
+        node_ids = ["node-a", "node-b", "node-c"]
+
+        def get_state(self) -> dict[str, object]:
+            return {
+                "nodeResources": {
+                    node_id: {
+                        "backends": ["mlx"],
+                        "dataTransport": "zenoh",
+                    }
+                    for node_id in self.node_ids
+                },
+                "nodeIdentities": {node_id: {} for node_id in self.node_ids},
+            }
+
+    client = FleetClient()
+    expected = assert_fresh_cluster(
+        cast(SkulkClient, client),
+        expected_node_count=3,
+    )
+    assert expected == frozenset({"node-a", "node-b", "node-c"})
+
+    client.node_ids = ["node-a", "node-b", "node-replacement"]
+    with pytest.raises(RuntimeError, match="identity changed"):
+        assert_fresh_cluster(
+            cast(SkulkClient, client),
+            expected_node_count=3,
+            expected_node_ids=expected,
+        )
+
+    client.node_ids.append("incidental-node")
+    with pytest.raises(UnexpectedFreshInstallPeerError, match="expected 3"):
+        assert_fresh_cluster(
+            cast(SkulkClient, client),
+            expected_node_count=3,
+            expected_node_ids=expected,
+        )
+
+
+def test_fresh_runtime_contract_requires_every_member_commit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pinned = "32fffb7a36f9872b361c20ef47888f452211a8b6"
+
+    class FleetContractClient(_StubContractClient):
+        commits = {"node-a": "32fffb7", "node-b": "32fffb7"}
+
+        def get_state(self) -> dict[str, object]:
+            return {
+                "nodeResources": {
+                    "node-a": {
+                        "backends": ["mlx"],
+                        "dataTransport": "zenoh",
+                    },
+                    "node-b": {
+                        "backends": ["llama_server"],
+                        "dataTransport": "zenoh",
+                    },
+                },
+                "nodeIdentities": {
+                    node_id: {"skulkCommit": commit}
+                    for node_id, commit in self.commits.items()
+                },
+            }
+
+        def get_diagnostics_node(self) -> dict[str, object]:
+            return {"runtime": {"skulkCommit": "32fffb7"}}
+
+    monkeypatch.setattr(
+        qualification_checks_module.httpx,
+        "get",
+        lambda *_args, **_kwargs: httpx.Response(
+            200,
+            text='<html><body><div id="root"></div></body></html>',
+        ),
+    )
+    client = FleetContractClient()
+    provenance = assert_fresh_runtime_contract(
+        cast(SkulkClient, client),
+        expected_backends=["mlx", "llama_server"],
+        expected_transport="zenoh",
+        expected_commit=pinned,
+        expected_node_count=2,
+    )
+    assert provenance.node_count == 2
+
+    client.commits["node-b"] = "deadbee"
+    with pytest.raises(RuntimeError, match="did not match the pinned candidate"):
+        assert_fresh_runtime_contract(
+            cast(SkulkClient, client),
+            expected_backends=["mlx", "llama_server"],
+            expected_transport="zenoh",
+            expected_commit=pinned,
+            expected_node_count=2,
         )
 
 

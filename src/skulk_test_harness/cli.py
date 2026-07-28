@@ -359,6 +359,16 @@ def fresh_install_qualify(
             help="Eligible inventory target to run; repeat or omit for the matrix.",
         ),
     ] = None,
+    physical_fleet: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--physical-fleet",
+            help=(
+                "Eligible physical topology to install and qualify together; "
+                "repeat or omit for every configured release fleet."
+            ),
+        ),
+    ] = None,
     config: ConfigPath = Path("skulk-harness.yaml"),
 ) -> None:
     """Run release-blocking qualification from an empty installation."""
@@ -374,18 +384,87 @@ def fresh_install_qualify(
         )
         raise typer.Exit(code=2)
     try:
-        selected = cfg.fresh_install.eligible_targets(target)
-        if target is None:
-            cfg.fresh_install.assert_complete_release_matrix(selected)
+        selected = (
+            []
+            if target is None and physical_fleet is not None
+            else cfg.fresh_install.eligible_targets(target)
+        )
+        selected_fleets = (
+            []
+            if physical_fleet is None and target is not None
+            else cfg.fresh_install.eligible_physical_fleets(physical_fleet)
+        )
+        fleet_member_names = {
+            target_name
+            for _fleet_name, fleet_config in selected_fleets
+            for target_name in fleet_config.member_targets
+        }
+        explicitly_selected_names = {name for name, _target in selected}
+        duplicate = fleet_member_names & explicitly_selected_names if target else set()
+        if duplicate:
+            raise ValueError(
+                "target(s) selected both individually and through a physical "
+                f"fleet: {sorted(duplicate)}"
+            )
+        selected = [
+            (name, target_config)
+            for name, target_config in selected
+            if name not in fleet_member_names
+        ]
+        if target is None and physical_fleet is None:
+            cfg.fresh_install.assert_complete_release_matrix(
+                selected,
+                selected_fleets,
+            )
     except ValueError as exception:
         console.print(f"[bold red]REFUSED[/]: {exception}")
         raise typer.Exit(code=2) from exception
-    if not selected:
-        console.print("[bold red]REFUSED[/]: no explicitly eligible targets selected")
+    if not selected and not selected_fleets:
+        console.print(
+            "[bold red]REFUSED[/]: no explicitly eligible targets or "
+            "physical fleets selected"
+        )
         raise typer.Exit(code=2)
 
     qualifier = FreshInstallQualifier(cfg)
     failed = False
+    critical_recovery = False
+    for fleet_name, fleet_config in selected_fleets:
+        console.print(
+            f"[bold]Fresh install[/] {profile}: "
+            f"mixed/{fleet_config.hardware_class}"
+        )
+        report = qualifier.qualify_physical_fleet(
+            fleet_name=fleet_name,
+            fleet=fleet_config,
+            profile=profile,
+            expected_commit=expected_commit,
+        )
+        status = "[green]PASS[/]" if report.passed else "[bold red]FAIL[/]"
+        console.print(
+            f"{status} {report.platform}/{report.hardware_class} "
+            f"report={qualifier.writer.run_dir(report.qualification_id)}"
+        )
+        failed = failed or not report.passed
+        if report.critical_recovery_required:
+            critical_recovery = True
+            console.print(
+                "[bold red]CRITICAL[/]: recovery is incomplete; the lease remains "
+                "held and no further target will be tested."
+            )
+            break
+        if not report.passed:
+            console.print(
+                "[bold red]STOPPED[/]: the physical fleet failed qualification; "
+                "later provider legs were not started."
+            )
+            break
+    if critical_recovery:
+        if failed:
+            raise typer.Exit(code=1)
+        return
+    if failed:
+        raise typer.Exit(code=1)
     for target_name, target_config in selected:
         console.print(
             f"[bold]Fresh install[/] {profile}: "

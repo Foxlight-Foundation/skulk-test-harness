@@ -50,6 +50,47 @@ def assert_fresh_single_node(
     )
 
 
+def assert_fresh_cluster(
+    client: SkulkClient,
+    *,
+    expected_node_count: int,
+    expected_node_ids: frozenset[str] | None = None,
+) -> frozenset[str]:
+    """Require an exact, stable fresh-install cluster membership."""
+
+    return _assert_fresh_cluster_state(
+        client.get_state(),
+        expected_node_count=expected_node_count,
+        expected_node_ids=expected_node_ids,
+    )
+
+
+def _assert_fresh_cluster_state(
+    state: dict[str, object],
+    *,
+    expected_node_count: int,
+    expected_node_ids: frozenset[str] | None = None,
+) -> frozenset[str]:
+    """Require exact membership in an already-fetched state snapshot."""
+
+    resources = _object(state.get("nodeResources"))
+    identities = _object(state.get("nodeIdentities"))
+    node_ids = frozenset(resources.keys() | identities.keys())
+    if len(node_ids) > expected_node_count:
+        raise UnexpectedFreshInstallPeerError(
+            "fresh install discovered an unexpected node; observed "
+            f"{len(node_ids)}, expected {expected_node_count}"
+        )
+    if len(node_ids) != expected_node_count:
+        raise RuntimeError(
+            f"fresh install must form exactly {expected_node_count} nodes; "
+            f"observed {len(node_ids)}"
+        )
+    if expected_node_ids is not None and node_ids != expected_node_ids:
+        raise RuntimeError("fresh install cluster identity changed during qualification")
+    return node_ids
+
+
 def _assert_fresh_single_node_state(
     state: dict[str, object],
     *,
@@ -57,17 +98,14 @@ def _assert_fresh_single_node_state(
 ) -> str:
     """Require one stable node in an already-fetched state snapshot."""
 
-    resources = _object(state.get("nodeResources"))
-    identities = _object(state.get("nodeIdentities"))
-    node_ids = resources.keys() | identities.keys()
-    if len(node_ids) > 1:
-        raise UnexpectedFreshInstallPeerError(
-            f"fresh install discovered another node; observed {len(node_ids)}"
-        )
-    if len(node_ids) != 1:
-        raise RuntimeError(
-            f"fresh install must form exactly one node; observed {len(node_ids)}"
-        )
+    expected_ids = (
+        frozenset({expected_node_id}) if expected_node_id is not None else None
+    )
+    node_ids = _assert_fresh_cluster_state(
+        state,
+        expected_node_count=1,
+        expected_node_ids=expected_ids,
+    )
     node_id = next(iter(node_ids))
     if expected_node_id is not None and node_id != expected_node_id:
         raise RuntimeError("fresh install runtime identity changed during qualification")
@@ -89,12 +127,19 @@ def assert_fresh_runtime_contract(
     expected_transport: DataTransport,
     expected_commit: str | None,
     dashboard_contract: DashboardContract = "required",
+    expected_node_count: int = 1,
+    expected_node_ids: frozenset[str] | None = None,
 ) -> InstallProvenance:
     """Validate topology, backend, transport, dashboard, and commit truth."""
 
     state = client.get_state()
     resources = _object(state.get("nodeResources"))
-    _assert_fresh_single_node_state(state)
+    identities = _object(state.get("nodeIdentities"))
+    _assert_fresh_cluster_state(
+        state,
+        expected_node_count=expected_node_count,
+        expected_node_ids=expected_node_ids,
+    )
     detected_backends: set[str] = set()
     transports: set[str] = set()
     for raw in resources.values():
@@ -121,11 +166,29 @@ def assert_fresh_runtime_contract(
     resolved_commit = runtime.get("skulkCommit", runtime.get("skulk_commit"))
     if not isinstance(resolved_commit, str):
         resolved_commit = None
-    if expected_commit and not _commit_matches(expected_commit, resolved_commit):
-        raise RuntimeError(
-            "fresh install runtime commit did not match the pinned candidate: "
-            f"pinned {expected_commit}, runtime reported {resolved_commit}"
+    reported_commits: list[str] = []
+    for raw_identity in identities.values():
+        identity = _object(raw_identity)
+        reported = identity.get("skulkCommit", identity.get("skulk_commit"))
+        if isinstance(reported, str):
+            reported_commits.append(reported)
+    # Older and single-node runtimes expose commit provenance only through the
+    # local diagnostics endpoint. Multi-node qualification requires one commit
+    # value per member from replicated identity state so a mixed build cannot
+    # hide behind the entrypoint's correct value.
+    if expected_node_count == 1 and not reported_commits and resolved_commit:
+        reported_commits.append(resolved_commit)
+    if expected_commit:
+        mismatched = sorted(
+            commit
+            for commit in reported_commits
+            if not _commit_matches(expected_commit, commit)
         )
+        if len(reported_commits) != expected_node_count or mismatched:
+            raise RuntimeError(
+                "fresh install runtime commit did not match the pinned "
+                f"candidate: observed {sorted(reported_commits)}"
+            )
     response = httpx.get(client.base_url, timeout=client.request_timeout_s)
     dashboard_present = (
         response.status_code == 200
@@ -151,7 +214,7 @@ def assert_fresh_runtime_contract(
         environment_override_names=[],
         detected_backends=sorted(detected_backends),
         data_transport=expected_transport,
-        node_count=1,
+        node_count=expected_node_count,
         dashboard_build_present=dashboard_present,
     )
 

@@ -125,11 +125,14 @@ uv run skulk-harness fresh-install qualify \
   --config skulk-harness.fresh-install.yaml
 ```
 
-The inventory is opt-in: a target is ignored unless its local configuration
-sets `eligible: true`. Physical targets are protected by the authoritative
-fleet lease, dual recovery snapshots, verified restoration, and a lease
-heartbeat. RunPod is created without a network volume and is deleted in
-`finally`, with provider deletion polled to completion. See the
+The inventory is opt-in: a physical fleet or target is ignored unless its local
+configuration sets `eligible: true`. The physical release gate stops every
+declared member, installs all of them into empty temporary homes with normal
+networking, and qualifies the topology they actually form—without a sandbox.
+Every member is protected by the authoritative fleet lease, dual recovery
+snapshots, verified all-node restoration, and a lease heartbeat. RunPod is
+created without a network volume and is deleted in `finally`, with provider
+deletion polled to completion. See the
 [fresh-install guide](https://foxlight-foundation.github.io/skulk-test-harness/guides/fresh-install-qualification).
 
 ## Where the results go
