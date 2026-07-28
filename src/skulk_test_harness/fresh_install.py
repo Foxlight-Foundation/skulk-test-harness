@@ -413,6 +413,7 @@ class FreshInstallQualifier:
                 journal=journal,
                 artifact_directory=artifact_directory,
                 heartbeat=heartbeat,
+                signal_guard=signal_guard,
             )
         except QualificationInterruptedError as exception:
             report.issues.append(
@@ -600,6 +601,7 @@ class FreshInstallQualifier:
                     journal=journal,
                     artifact_directory=artifact_directory,
                     heartbeat=None,
+                    signal_guard=signal_guard,
                 )
             finally:
                 _terminate_process(tunnel)
@@ -681,6 +683,7 @@ class FreshInstallQualifier:
         journal: _LifecycleJournal,
         artifact_directory: Path,
         heartbeat: AuthoritativeLeaseHeartbeat | None,
+        signal_guard: QualificationSignalGuard,
     ) -> None:
         temporary_root: str | None = None
         skulk_process: subprocess.Popen[bytes] | None = None
@@ -808,6 +811,10 @@ class FreshInstallQualifier:
                 heartbeat=heartbeat,
             )
         finally:
+            # Cleanup of the temporary process and HOME is already recovery:
+            # allowing a signal to raise here can skip the remote kill/removal
+            # and then restore the original service beside an orphan runtime.
+            signal_guard.begin_recovery()
             if skulk_process is not None:
                 _terminate_process(skulk_process)
             if skulk_log_handle is not None:

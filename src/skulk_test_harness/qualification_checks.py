@@ -44,7 +44,19 @@ def assert_fresh_single_node(
             changed.
     """
 
-    state = client.get_state()
+    return _assert_fresh_single_node_state(
+        client.get_state(),
+        expected_node_id=expected_node_id,
+    )
+
+
+def _assert_fresh_single_node_state(
+    state: dict[str, object],
+    *,
+    expected_node_id: str | None = None,
+) -> str:
+    """Require one stable node in an already-fetched state snapshot."""
+
     resources = _object(state.get("nodeResources"))
     identities = _object(state.get("nodeIdentities"))
     node_ids = resources.keys() | identities.keys()
@@ -82,7 +94,7 @@ def assert_fresh_runtime_contract(
 
     state = client.get_state()
     resources = _object(state.get("nodeResources"))
-    assert_fresh_single_node(client)
+    _assert_fresh_single_node_state(state)
     detected_backends: set[str] = set()
     transports: set[str] = set()
     for raw in resources.values():

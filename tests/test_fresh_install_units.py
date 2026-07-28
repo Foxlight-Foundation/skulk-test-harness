@@ -83,6 +83,7 @@ from skulk_test_harness.qualification_checks import (
     qualify_direct_vision,
 )
 from skulk_test_harness.reporting import (
+    ReportWriter,
     _fresh_install_markdown,  # pyright: ignore[reportPrivateUsage]
 )
 from skulk_test_harness.runpod import RunPodClient, RunPodSshEndpoint
@@ -834,6 +835,82 @@ def test_signal_guard_defers_interruptions_during_mandatory_recovery() -> None:
             ),
         )
     ]
+
+
+def test_temporary_install_cleanup_enters_signal_safe_recovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An interrupt during remote cleanup cannot skip removal of the temp HOME."""
+
+    guard = QualificationSignalGuard()
+    commands: list[str] = []
+
+    class CleanupController:
+        def run(
+            self,
+            command: str,
+            *,
+            timeout_s: float | None = None,
+            check: bool = True,
+        ) -> subprocess.CompletedProcess[str]:
+            del timeout_s, check
+            commands.append(command)
+            if command.startswith("umask 077"):
+                return subprocess.CompletedProcess(
+                    [],
+                    0,
+                    "/tmp/skulk-fresh.cleanup-test",
+                    "",
+                )
+            if command.startswith("pkill "):
+                guard._handle(  # pyright: ignore[reportPrivateUsage]
+                    signal.SIGINT,
+                    None,
+                )
+            return subprocess.CompletedProcess([], 0, "", "")
+
+    monkeypatch.setattr(
+        fresh_install_module,
+        "_installer_provenance",
+        lambda *_args, **_kwargs: ("https://example.invalid/install.sh", "digest"),
+    )
+    monkeypatch.setattr(
+        fresh_install_module,
+        "_run_remote_logged_command",
+        lambda **_kwargs: 1,
+    )
+    target = _physical_target()
+    config = HarnessConfig(
+        output_dir=tmp_path / "runs",
+        fresh_install=FreshInstallConfig(targets={"apple": target}),
+    )
+    qualifier = fresh_install_module.FreshInstallQualifier(config)
+    report = _report_with([])
+    journal = fresh_install_module._LifecycleJournal(  # pyright: ignore[reportPrivateUsage]
+        report,
+        ReportWriter(tmp_path / "runs"),
+    )
+    artifact_directory = tmp_path / "artifacts"
+    artifact_directory.mkdir()
+
+    with pytest.raises(RuntimeError, match="official installer exited 1"):
+        qualifier._execute_clean_install(  # pyright: ignore[reportPrivateUsage]
+            controller=cast(SshTargetController, CleanupController()),
+            api_base_url="http://127.0.0.1:52415",
+            target=target,
+            profile="candidate",
+            expected_commit="a" * 40,
+            report=report,
+            journal=journal,
+            artifact_directory=artifact_directory,
+            heartbeat=None,
+            signal_guard=guard,
+        )
+
+    assert guard.interrupted_signum == signal.SIGINT
+    assert any(command.startswith("pkill ") for command in commands)
+    assert commands[-1] == "rm -rf -- /tmp/skulk-fresh.cleanup-test"
 
 
 def test_recovery_snapshot_is_mode_600_and_contains_manifest_and_config(
@@ -1655,6 +1732,35 @@ class _StubContractClient:
         """Return runtime provenance carrying this stub's reported commit."""
 
         return {"runtime": {"skulkCommit": self.reported_commit}}
+
+
+def test_fresh_contract_checks_topology_and_backends_from_one_snapshot() -> None:
+    """A transient peer cannot disappear between topology and backend checks."""
+
+    class DepartingPeerClient(_StubContractClient):
+        state_reads = 0
+
+        def get_state(self) -> dict[str, object]:
+            self.state_reads += 1
+            state = super().get_state()
+            if self.state_reads == 1:
+                resources = cast(dict[str, object], state["nodeResources"])
+                identities = cast(dict[str, object], state["nodeIdentities"])
+                resources["departing-peer"] = {}
+                identities["departing-peer"] = {}
+            return state
+
+    client = DepartingPeerClient()
+
+    with pytest.raises(UnexpectedFreshInstallPeerError, match="observed 2"):
+        qualification_checks_module.assert_fresh_runtime_contract(
+            cast(SkulkClient, client),
+            expected_backends=["llama_server"],
+            expected_transport="zenoh",
+            expected_commit=None,
+        )
+
+    assert client.state_reads == 1
 
 
 def test_fresh_single_node_rejects_a_peer_joining_after_startup() -> None:
