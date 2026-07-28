@@ -260,6 +260,58 @@ def test_minimum_placement_enforces_requested_node_width() -> None:
     ]
 
 
+def test_exact_placement_does_not_fall_back_to_another_sharding_mode() -> None:
+    """Qualification must fail preview selection instead of relabeling Pipeline."""
+
+    class _PreviewClient:
+        def get_placement_previews(
+            self,
+            _model_id: str,
+            *,
+            excluded_node_ids: list[str],
+        ) -> list[dict[str, object]]:
+            assert excluded_node_ids == []
+            return [
+                {
+                    "sharding": "Pipeline",
+                    "instance_meta": "MlxRing",
+                    "instance": {
+                        "MlxRingInstance": {
+                            "shardAssignments": {
+                                "nodeToRunner": {
+                                    "node-a": "runner-a",
+                                    "node-b": "runner-b",
+                                },
+                                "runnerToShard": {
+                                    "runner-a": {"PipelineShardMetadata": {}},
+                                    "runner-b": {"PipelineShardMetadata": {}},
+                                },
+                            }
+                        }
+                    },
+                }
+            ]
+
+    runner = HarnessRunner(
+        config=HarnessConfig(preview_settle_attempts=1),
+        model_sets={},
+        test_sets={},
+    )
+
+    chosen = runner._choose_preview_once(
+        cast(SkulkClient, cast(object, _PreviewClient())),
+        "mlx-community/Foo",
+        PlacementPolicy(
+            strategy="exact",
+            sharding="Tensor",
+            instance_meta="MlxRing",
+            min_nodes=2,
+        ),
+    )
+
+    assert chosen is None
+
+
 def test_plan_does_not_reuse_instance_outside_eligible_inventory(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

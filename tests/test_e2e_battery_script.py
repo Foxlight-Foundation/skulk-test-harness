@@ -130,6 +130,16 @@ def test_mlx_concurrency_cells_stop_at_runtime_cap(script_name: str) -> None:
     assert model_sets["concurrency-mlx-reasoning"].models == [mlx_reasoning_model]
     assert gguf_reasoning_model not in model_sets["concurrency-gguf"].models
     assert model_sets["concurrency-120b"].models == [gguf_reasoning_model]
+    assert (
+        "mlx-community/Qwen3-30B-A3B-4bit" not in model_sets["concurrency-mlx"].models
+    )
+    assert (
+        "mlx-community/Moonlight-16B-A3B-Instruct-4-bit"
+        in model_sets["concurrency-mlx"].models
+    )
+    assert model_sets["concurrency-mlx-multinode"].models == [
+        "mlx-community/Qwen3.5-9B-4bit"
+    ]
 
 
 def test_vision_data_plane_cells_respect_family_placement_contracts() -> None:
