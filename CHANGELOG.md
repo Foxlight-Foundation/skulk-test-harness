@@ -15,6 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   journeys, and restores the complete original fleet before releasing its
   lease. Sandboxed single-node legs remain diagnostic-only.
 
+### Fixed
+
+- Fresh-install temporary homes now live on each target user's home filesystem
+  instead of `/tmp`, preventing Linux tmpfs capacity from producing false
+  low-storage warnings or model-download failures that a real new user would
+  not experience.
+
 ## [0.2.0] - 2026-07-19
 
 The first versioned cut of the harness since the initial 0.1.0 (which was
