@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import io
+import re
 import secrets
 from dataclasses import dataclass
 from pathlib import Path
@@ -72,7 +73,7 @@ class VisionFixture:
         """Check the code, color, and shape independently."""
 
         normalized = " ".join(response.upper().replace("-", " ").split())
-        code_matched = self.code in normalized
+        code_matched = _code_matches(self.code, response)
         color_matched = self.color.upper() in normalized
         shape_matched = self.shape.upper() in normalized
         return code_matched, color_matched, shape_matched
@@ -138,6 +139,22 @@ def data_url_sha256(data_url: str) -> str:
     except ValueError as exception:
         raise ValueError("invalid base64 image data URL") from exception
     return hashlib.sha256(decoded).hexdigest()
+
+
+def _code_matches(code: str, response: str) -> bool:
+    """Match every exact code character while tolerating visual grouping.
+
+    Small vision models sometimes insert spaces or hyphens between groups of
+    correctly read characters. Those separators are presentation rather than
+    OCR content. Boundaries and the full ordered character sequence remain
+    mandatory, so substitutions, omissions, additions, and repetitions still
+    fail qualification.
+    """
+
+    separator = r"[\s-]*"
+    exact_grouped_code = separator.join(re.escape(character) for character in code)
+    pattern = rf"(?<![A-Z0-9]){exact_grouped_code}(?![A-Z0-9])"
+    return re.search(pattern, response.upper()) is not None
 
 
 def _load_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:

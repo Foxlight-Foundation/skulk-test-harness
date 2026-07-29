@@ -908,6 +908,23 @@ def test_random_vision_fixture_has_exact_judge_free_contract(tmp_path: Path) -> 
     assert first.response_match_details(
         f"{first.code}\n{wrong_color} {first.shape}"
     ) == (True, False, True)
+    grouped_code = f"{first.code[:4]} {first.code[4:]}"
+    assert first.response_matches(
+        f"{first.color} {first.shape} | {grouped_code}"
+    ) == (True, True)
+    hyphenated_code = "-".join(first.code)
+    assert first.response_matches(
+        f"{first.color} {first.shape} | {hyphenated_code}"
+    ) == (True, True)
+    assert first.response_matches(
+        f"{first.color} {first.shape} | {first.code}A"
+    ) == (False, True)
+    assert first.response_matches(
+        f"{first.color} {first.shape} | {first.code[:-1]}"
+    ) == (False, True)
+    assert first.response_matches(
+        f"{first.color} {first.shape} | {first.code}{first.code[-1]}"
+    ) == (False, True)
     assert first.response_matches("a plausible blue bedroom") == (False, False)
     path = tmp_path / "fixture.png"
     first.write(path)
