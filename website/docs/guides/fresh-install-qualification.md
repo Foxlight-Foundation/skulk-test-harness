@@ -20,7 +20,7 @@ status for different code. It runs after promotion but before a release or tag
 is published.
 
 ```bash
-uv run playwright install chromium
+uv run playwright install chromium webkit
 
 uv run skulk-harness fresh-install qualify \
   --profile candidate \
@@ -57,12 +57,23 @@ harness:
 8. drives the dashboard and direct API through the declared entrypoint while
    ordinary placement selects compatible Apple or AMD members, continuously
    requiring the same complete node-identity set;
-9. inspects a served engine on whichever compatible member placement selected
+9. opens and saves the installer-generated Settings, checks that every node is
+   rendered in topology, reloads persisted text/image conversations, injects
+   one failed chat request and proves a retry succeeds, and repeats a text
+   smoke test with Playwright WebKit;
+10. on a target declaring `dashboard_audio`, finds, downloads, and launches its
+    TTS and STT models through the dashboard, requires real audio bytes from
+    **Speak draft** plus a non-silent PCM duration, retains those exact bytes,
+    then feeds the harness's known-speech WAV through Chromium's fake
+    microphone and requires the transcript in the chat composer. TTS and STT
+    use separate fixtures so a failure names the broken user journey instead
+    of making one model's output the other model's input;
+11. inspects a served engine on whichever compatible member placement selected
    and proves its shipped concurrency and unified-KV settings;
-10. stops every temporary runtime and proves every temporary `HOME` is gone;
-11. restores and verifies every original service, checkout, config hash,
+12. stops every temporary runtime and proves every temporary `HOME` is gone;
+13. restores and verifies every original service, checkout, config hash,
     process arguments, API identity, and the complete original topology; and
-12. releases the lease only after restoration succeeds and verifies the
+14. releases the lease only after restoration succeeds and verifies the
     intended release against an authoritative remote reread.
 
 Legacy single-target diagnostic legs can still declare paired isolation
@@ -92,9 +103,9 @@ not found.
 
 ## Acceptance matrix
 
-| Platform | Models | Vision |
+| Platform | Models | Vision and audio |
 | --- | --- | --- |
-| Apple Silicon | `mlx-community/Qwen3.5-2B-4bit`, `mlx-community/Qwen3-VL-4B-Instruct-4bit` | Both must identify exact generated fixtures through dashboard and API |
+| Apple Silicon | `mlx-community/Qwen3.5-2B-4bit`, `mlx-community/Qwen3-VL-4B-Instruct-4bit`, configured dashboard TTS/STT pair | Both chat models must identify exact generated fixtures through dashboard and API; dashboard TTS must return non-silent PCM audio and fake-microphone STT must recover the known fixture phrase |
 | AMD Linux | `unsloth/Llama-3.2-1B-Instruct-GGUF` | Text succeeds and the dashboard does not offer vision |
 | RunPod NVIDIA | `unsloth/Llama-3.2-1B-Instruct-GGUF` | Text succeeds, CUDA backend is detected, and the dashboard does not offer vision |
 
@@ -103,7 +114,8 @@ contains an unpredictable six-character code and randomized color/shape. No
 answer appears in the prompt and no judge model is used. Browser qualification
 also proves the thumbnail appears before submission, the sent user message
 retains its attachment, and the captured request data URL decodes to the exact
-fixture digest.
+fixture digest. Reloading the page must retain the active user/assistant turn
+and image attachment.
 
 ## Artifacts
 

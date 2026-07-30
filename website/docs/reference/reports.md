@@ -196,10 +196,14 @@ provenance contains no secret values, private paths, node names, or image
 bytes.
 
 `fresh-install-report.json` additionally keeps the private lifecycle journal,
-verified lease expiries, recovery archive checksums, browser/API outcomes, and
-restoration/teardown status. Its `artifact_directory` is intentionally local;
-fresh operational reports are not accepted by the public benchmark submission
-command.
+verified lease expiries, recovery archive checksums, browser/API outcomes,
+Settings/topology/persistence/failure-retry/WebKit evidence, dashboard TTS/STT
+evidence, and restoration/teardown status. Speech evidence records only model
+IDs, media type, byte count, digest, duration, RMS, the fixed STT fixture
+transcript, and semantic pass/fail; generated TTS audio stays in the private
+artifact directory. Its `artifact_directory` is
+intentionally local; fresh operational reports are not accepted by the public
+benchmark submission command.
 
 ## A Small Result Example
 

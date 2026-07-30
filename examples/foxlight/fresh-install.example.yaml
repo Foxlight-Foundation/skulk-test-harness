@@ -37,7 +37,7 @@ fresh_install:
       original_checkout: replace-with-existing-checkout
       original_config_paths:
         - replace-with-existing-skulk-yaml
-      expected_backends: [mlx, mlx-metal]
+      expected_backends: [mlx, mlx-metal, mlx_audio, mlx_audio-metal]
       expected_data_transport: zenoh
       vision_contract: positive
       text_models:
@@ -46,6 +46,9 @@ fresh_install:
       vision_models:
         - mlx-community/Qwen3.5-2B-4bit
         - mlx-community/Qwen3-VL-4B-Instruct-4bit
+      dashboard_audio:
+        speech_synthesis_model: mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-4bit
+        transcription_model: mlx-community/parakeet-tdt-0.6b-v3
 
     apple-2:
       <<: *apple-member

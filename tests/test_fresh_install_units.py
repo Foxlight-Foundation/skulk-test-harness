@@ -23,7 +23,7 @@ from typing import BinaryIO, Literal, cast
 import httpx
 import pytest
 from PIL import Image
-from playwright.sync_api import Page
+from playwright.sync_api import Browser, BrowserContext, Page
 from pydantic import ValidationError
 
 import skulk_test_harness.dashboard_qualification as dashboard_qualification_module
@@ -34,8 +34,12 @@ from skulk_test_harness import runpod as runpod_module
 from skulk_test_harness.client import SkulkClient
 from skulk_test_harness.dashboard_qualification import (
     DashboardQualifier,
+    _capture_and_close_browser,  # pyright: ignore[reportPrivateUsage]
     _captured_image_digest,  # pyright: ignore[reportPrivateUsage]
+    _fake_microphone_recording_ms,  # pyright: ignore[reportPrivateUsage]
     _JourneyProgress,  # pyright: ignore[reportPrivateUsage]
+    _pcm_wav_duration_and_rms,  # pyright: ignore[reportPrivateUsage]
+    _transcript_matches,  # pyright: ignore[reportPrivateUsage]
 )
 from skulk_test_harness.echo_phrase import echo_matched, echo_phrase, echo_prompt
 from skulk_test_harness.fleet_lock import FleetLease, LeaseOutcome
@@ -66,7 +70,10 @@ from skulk_test_harness.lease_heartbeat import (
     LeaseHeartbeatError,
 )
 from skulk_test_harness.models import (
+    DashboardAudioContract,
+    DashboardAudioEvidence,
     DashboardContract,
+    DashboardExperienceEvidence,
     FleetLock,
     FreshInstallConfig,
     FreshInstallLifecycleStage,
@@ -206,8 +213,7 @@ def test_physical_fleet_accepts_normal_networking_and_composes_platforms() -> No
     selected_fleets = config.eligible_physical_fleets()
     assert [name for name, _fleet in selected_fleets] == ["release-fleet"]
     assert [
-        name
-        for name, _target in config.physical_fleet_targets(selected_fleets[0][1])
+        name for name, _target in config.physical_fleet_targets(selected_fleets[0][1])
     ] == ["apple-1", "apple-2", "amd-1"]
     config.assert_complete_release_matrix([], selected_fleets)
 
@@ -431,9 +437,7 @@ def test_restoration_rejects_asymmetric_member_topology(
     }
     member_views = {
         "http://127.0.0.1:52001": frozenset({"node-a", "node-b"}),
-        "http://127.0.0.1:52002": frozenset(
-            {"node-a", "incidental-node"}
-        ),
+        "http://127.0.0.1:52002": frozenset({"node-a", "incidental-node"}),
     }
     monkeypatch.setattr(
         fresh_install_module,
@@ -497,9 +501,7 @@ def test_fresh_runtime_evidence_rejects_asymmetric_member_topology(
     }
     member_views = {
         "http://127.0.0.1:53001": frozenset({"node-a", "node-b"}),
-        "http://127.0.0.1:53002": frozenset(
-            {"node-a", "incidental-node"}
-        ),
+        "http://127.0.0.1:53002": frozenset({"node-a", "incidental-node"}),
     }
     monkeypatch.setattr(
         fresh_install_module,
@@ -606,6 +608,58 @@ def test_target_contract_rejects_adaptive_vision_skip() -> None:
         )
 
 
+def test_dashboard_audio_requires_a_real_dashboard_and_mlx_audio() -> None:
+    contract = DashboardAudioContract(
+        speech_synthesis_model="org/tts",
+        transcription_model="org/stt",
+    )
+    with pytest.raises(ValidationError, match="requires mlx_audio"):
+        FreshInstallTarget(
+            kind="runpod",
+            platform="nvidia",
+            hardware_class="cuda",
+            eligible=True,
+            expected_backends=["llama_server", "llama_server-cuda"],
+            vision_contract="unavailable",
+            text_models=["org/chat"],
+            dashboard_audio=contract,
+        )
+    with pytest.raises(ValidationError, match="dashboard_contract='required'"):
+        FreshInstallTarget(
+            kind="physical",
+            platform="apple",
+            hardware_class="apple",
+            eligible=True,
+            ssh_host="alias",
+            service_stop_command="stop",
+            service_start_command="start",
+            isolation_enter_command="isolate",
+            isolation_exit_command="restore",
+            expected_backends=["mlx", "mlx_audio"],
+            vision_contract="unavailable",
+            text_models=["org/chat"],
+            dashboard_contract="absent",
+            dashboard_audio=contract,
+        )
+
+    target = FreshInstallTarget(
+        kind="physical",
+        platform="apple",
+        hardware_class="apple",
+        eligible=True,
+        ssh_host="alias",
+        service_stop_command="stop",
+        service_start_command="start",
+        isolation_enter_command="isolate",
+        isolation_exit_command="restore",
+        expected_backends=["mlx", "mlx_audio"],
+        vision_contract="unavailable",
+        text_models=["org/chat"],
+        dashboard_audio=contract,
+    )
+    assert target.dashboard_audio == contract
+
+
 def test_served_engine_contract_must_name_an_expected_backend() -> None:
     with pytest.raises(
         ValidationError,
@@ -617,9 +671,7 @@ def test_served_engine_contract_must_name_an_expected_backend() -> None:
             hardware_class="cuda",
             eligible=True,
             expected_backends=["llama_server", "llama_server-cuda"],
-            served_engine_contract=ServedEngineContract(
-                backend="llama_server-vulkan"
-            ),
+            served_engine_contract=ServedEngineContract(backend="llama_server-vulkan"),
             vision_contract="unavailable",
             text_models=["unsloth/Llama-3.2-1B-Instruct-GGUF"],
         )
@@ -657,14 +709,8 @@ def test_served_engine_probe_detects_runner_replacement(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     listings = [
-        (
-            "4321 /tmp/skulk-fresh.abc/home/bin/llama-server "
-            "--parallel 16 --kv-unified"
-        ),
-        (
-            "9876 /tmp/skulk-fresh.abc/home/bin/llama-server "
-            "--parallel 16 --kv-unified"
-        ),
+        ("4321 /tmp/skulk-fresh.abc/home/bin/llama-server --parallel 16 --kv-unified"),
+        ("9876 /tmp/skulk-fresh.abc/home/bin/llama-server --parallel 16 --kv-unified"),
     ]
 
     class FakeController:
@@ -733,7 +779,9 @@ def test_served_engine_envelope_requires_matching_backend_and_model(
         },
         request=httpx.Request("GET", "http://example.invalid"),
     )
-    monkeypatch.setattr(fresh_install_module.httpx, "get", lambda *_args, **_kw: response)
+    monkeypatch.setattr(
+        fresh_install_module.httpx, "get", lambda *_args, **_kw: response
+    )
 
     assert _served_engine_envelope(
         api_base_url="http://example.invalid",
@@ -766,6 +814,41 @@ def test_fresh_summary_includes_publishable_served_engine_evidence() -> None:
     assert "parallel `16` (expected `16`)" in summary
     assert "maximum active `4`" in summary
     assert "survived `True`" in summary
+
+
+def test_fresh_summary_includes_dashboard_release_and_audio_evidence() -> None:
+    report = _report_with([]).model_copy(
+        update={
+            "dashboard_experience": DashboardExperienceEvidence(
+                model_id="org/chat",
+                settings_opened=True,
+                settings_saved=True,
+                topology_expected_nodes=5,
+                topology_visible_nodes=5,
+                request_failure_visible=True,
+                request_retry_passed=True,
+                webkit_loaded=True,
+                webkit_text_chat_passed=True,
+                passed=True,
+            ),
+            "dashboard_audio": DashboardAudioEvidence(
+                speech_synthesis_model="org/tts",
+                transcription_model="org/stt",
+                synthesis_audio_bytes=4096,
+                transcription_request_observed=True,
+                transcript_matched=True,
+                passed=True,
+            ),
+        }
+    )
+
+    summary = _fresh_install_markdown(report)
+
+    assert "Settings opened/saved `True/True`" in summary
+    assert "topology `5/5`" in summary
+    assert "WebKit load/chat `True/True`" in summary
+    assert "Audio `org/tts` -> `org/stt`" in summary
+    assert "TTS bytes `4096`" in summary
 
 
 def test_heartbeat_must_not_exceed_one_third_of_ttl() -> None:
@@ -893,9 +976,10 @@ def test_random_vision_fixture_has_exact_judge_free_contract(tmp_path: Path) -> 
     assert "COLOR from red, blue, green, or orange" in first.prompt
     assert "SHAPE from circle, diamond, or triangle" in first.prompt
     assert data_url_sha256(first.data_url) == first.sha256
-    assert first.response_matches(
-        f"{first.code}\n{first.color} {first.shape}"
-    ) == (True, True)
+    assert first.response_matches(f"{first.code}\n{first.color} {first.shape}") == (
+        True,
+        True,
+    )
     assert first.response_matches(
         f"{first.color.upper()} {first.shape.upper()} | {first.code}"
     ) == (True, True)
@@ -909,16 +993,18 @@ def test_random_vision_fixture_has_exact_judge_free_contract(tmp_path: Path) -> 
         f"{first.code}\n{wrong_color} {first.shape}"
     ) == (True, False, True)
     grouped_code = f"{first.code[:4]} {first.code[4:]}"
-    assert first.response_matches(
-        f"{first.color} {first.shape} | {grouped_code}"
-    ) == (True, True)
+    assert first.response_matches(f"{first.color} {first.shape} | {grouped_code}") == (
+        True,
+        True,
+    )
     hyphenated_code = "-".join(first.code)
     assert first.response_matches(
         f"{first.color} {first.shape} | {hyphenated_code}"
     ) == (True, True)
-    assert first.response_matches(
-        f"{first.color} {first.shape} | {first.code}A"
-    ) == (False, True)
+    assert first.response_matches(f"{first.color} {first.shape} | {first.code}A") == (
+        False,
+        True,
+    )
     assert first.response_matches(
         f"{first.color} {first.shape} | {first.code[:-1]}"
     ) == (False, True)
@@ -3040,6 +3126,166 @@ class _StubConversationPage:
             self.assistant.matches = 0
 
 
+class _StubSelectedComposer:
+    """Composer proving the sole ready model is already selected."""
+
+    def __init__(self, *, count: int, placeholder: str = "") -> None:
+        self.matches = count
+        self.placeholder = placeholder
+        self.selected: list[str] = []
+
+    def count(self) -> int:
+        return self.matches
+
+    def wait_for(self, *, state: str, timeout: float) -> None:
+        assert state == "visible"
+        assert timeout == 30_000
+
+    def select_option(self, value: str) -> None:
+        self.selected.append(value)
+
+    def get_attribute(self, name: str) -> str:
+        assert name == "placeholder"
+        return self.placeholder
+
+
+class _StubSelectedModelPage:
+    """Chat page with either the explicit select or the sole-model composer."""
+
+    def __init__(self, *, selector_count: int, placeholder: str) -> None:
+        self.selector = _StubSelectedComposer(count=selector_count)
+        self.message = _StubSelectedComposer(count=1, placeholder=placeholder)
+
+    def get_by_label(self, label: str, *, exact: bool) -> _StubSelectedComposer:
+        assert exact is True
+        if label == "Select chat model":
+            return self.selector
+        if label == "Chat message":
+            return self.message
+        raise AssertionError(f"unexpected label {label!r}")
+
+
+def test_chat_model_selection_accepts_the_sole_ready_model_composer() -> None:
+    qualifier = DashboardQualifier(
+        api_base_url="http://example.invalid",
+        artifact_directory=Path("unused"),
+        poll_interval_s=1,
+        model_ready_timeout_s=1,
+    )
+    custom_selector_page = _StubSelectedModelPage(
+        selector_count=0,
+        placeholder="Message Qwen3.5-2B-4bit...",
+    )
+    qualifier._select_chat_model(  # pyright: ignore[reportPrivateUsage]
+        cast(Page, custom_selector_page),
+        model_id="mlx-community/Qwen3.5-2B-4bit",
+    )
+
+    explicit_selector_page = _StubSelectedModelPage(
+        selector_count=1,
+        placeholder="",
+    )
+    qualifier._select_chat_model(  # pyright: ignore[reportPrivateUsage]
+        cast(Page, explicit_selector_page),
+        model_id="org/model",
+    )
+    assert explicit_selector_page.selector.selected == ["org/model"]
+
+
+class _StubPersistedMessage:
+    """One visible user or assistant message after a dashboard reload."""
+
+    def __init__(self, text: str, *, attachment_name: str | None = None) -> None:
+        self.text = text
+        self.attachment_name = attachment_name
+
+    def filter(self, *, visible: bool) -> "_StubPersistedMessage":
+        assert visible is True
+        return self
+
+    @property
+    def last(self) -> "_StubPersistedMessage":
+        return self
+
+    def wait_for(self, *, state: str, timeout: float) -> None:
+        assert state == "visible"
+        assert timeout == 30_000
+
+    def inner_text(self) -> str:
+        return self.text
+
+    def get_by_alt_text(self, name: str) -> "_StubPersistedAttachment":
+        return _StubPersistedAttachment(name == self.attachment_name)
+
+
+class _StubPersistedAttachment:
+    """Attachment locator whose visibility records persisted preview bytes."""
+
+    def __init__(self, visible: bool) -> None:
+        self.visible = visible
+
+    def count(self) -> int:
+        return int(self.visible)
+
+    def is_visible(self) -> bool:
+        return self.visible
+
+
+class _StubPersistencePage:
+    """Dashboard page exposing one persisted active conversation."""
+
+    def __init__(self, *, attachment_name: str | None) -> None:
+        self.user = _StubPersistedMessage(
+            "Read qualification.png and report a green circle.",
+            attachment_name=attachment_name,
+        )
+        self.assistant = _StubPersistedMessage("AB12CD green circle")
+        self.reloads = 0
+
+    def reload(self, *, wait_until: str) -> None:
+        assert wait_until == "networkidle"
+        self.reloads += 1
+
+    def get_by_label(self, label: str, *, exact: bool) -> _StubPersistedMessage:
+        assert exact is True
+        if label == "User message":
+            return self.user
+        if label == "Assistant message":
+            return self.assistant
+        raise AssertionError(f"unexpected label {label!r}")
+
+
+def test_dashboard_reload_requires_text_and_attachment_persistence() -> None:
+    qualifier = DashboardQualifier(
+        api_base_url="http://example.invalid",
+        artifact_directory=Path("unused"),
+        poll_interval_s=1,
+        model_ready_timeout_s=1,
+    )
+    page = _StubPersistencePage(attachment_name="qualification.png")
+
+    conversation, attachment = qualifier._verify_conversation_persistence(  # pyright: ignore[reportPrivateUsage]
+        cast(Page, page),
+        expected_user_text="green circle",
+        expected_assistant_text="AB12CD",
+        attachment_name="qualification.png",
+    )
+
+    assert page.reloads == 1
+    assert conversation is True
+    assert attachment is True
+
+    missing_attachment = _StubPersistencePage(attachment_name=None)
+    conversation, attachment = qualifier._verify_conversation_persistence(  # pyright: ignore[reportPrivateUsage]
+        cast(Page, missing_attachment),
+        expected_user_text="green circle",
+        expected_assistant_text="AB12CD",
+        attachment_name="qualification.png",
+    )
+    assert conversation is True
+    assert attachment is False
+
+
 class _StubStreamingAssistant:
     """Assistant locator whose text grows while generation is active."""
 
@@ -3085,9 +3331,7 @@ class _StubStreamingPage:
         assert (label, exact) == ("Assistant message", True)
         return self.assistant
 
-    def get_by_role(
-        self, role: str, *, name: str, exact: bool
-    ) -> _StubStreamingCancel:
+    def get_by_role(self, role: str, *, name: str, exact: bool) -> _StubStreamingCancel:
         assert (role, name, exact) == ("button", "Cancel generation", True)
         return self.cancel
 
@@ -3140,9 +3384,7 @@ class _StubHiddenHistoryPage:
         assert (label, exact) == ("Assistant message", True)
         return self.assistant
 
-    def get_by_role(
-        self, role: str, *, name: str, exact: bool
-    ) -> "_StubAbsentCancel":
+    def get_by_role(self, role: str, *, name: str, exact: bool) -> "_StubAbsentCancel":
         assert (role, name, exact) == ("button", "Cancel generation", True)
         return self.cancel
 
@@ -3403,6 +3645,72 @@ def test_echo_phrase_is_unpredictable() -> None:
     """A stale or replayed response must not be able to satisfy the check."""
 
     assert len({echo_phrase() for _ in range(200)}) > 150
+
+
+def test_dashboard_transcript_match_tolerates_punctuation_not_wrong_words() -> None:
+    assert _transcript_matches(
+        "Hello world from the Skulk dashboard.",
+        "hello, world from the skulk dashboard",
+    )
+    assert _transcript_matches(
+        "Hello world from the Skulk dashboard.",
+        "Hello world from Skulk dashboard.",
+    )
+    assert not _transcript_matches(
+        "Hello world from the Skulk dashboard.",
+        "The weather is warm at the hotel.",
+    )
+    assert not _transcript_matches(
+        "release audio bravo hotel seven cedar",
+        "release audio bravo hotel seven cedar release audio bravo hotel seven cedar",
+    )
+
+
+def test_dashboard_stt_fixture_is_non_silent_and_stops_before_looping() -> None:
+    fixture = (
+        Path(dashboard_qualification_module.__file__).parent
+        / "fixtures"
+        / "dashboard-stt-release.wav"
+    )
+
+    duration_s, rms = _pcm_wav_duration_and_rms(fixture.read_bytes())
+
+    assert duration_s == pytest.approx(2.793, abs=0.001)
+    assert rms > 100
+    assert 2_500 <= _fake_microphone_recording_ms(fixture) < 2_793
+
+
+def test_dashboard_cleanup_closes_browser_when_artifact_capture_fails(
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+
+    class FakePage:
+        def screenshot(self, **_kwargs: object) -> None:
+            calls.append("screenshot")
+            raise RuntimeError("page already closed")
+
+    class FakeTracing:
+        def stop(self, **_kwargs: object) -> None:
+            calls.append("trace")
+
+    class FakeContext:
+        tracing = FakeTracing()
+
+    class FakeBrowser:
+        def close(self) -> None:
+            calls.append("browser")
+
+    error = _capture_and_close_browser(
+        cast(Page, FakePage()),
+        cast(BrowserContext, FakeContext()),
+        cast(Browser, FakeBrowser()),
+        screenshot_path=tmp_path / "final.png",
+        trace_path=tmp_path / "trace.zip",
+    )
+
+    assert isinstance(error, RuntimeError)
+    assert calls == ["screenshot", "trace", "browser"]
 
 
 def test_echo_match_accepts_a_recapitalized_reply() -> None:

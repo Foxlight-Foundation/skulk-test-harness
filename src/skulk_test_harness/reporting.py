@@ -48,9 +48,7 @@ class ReportWriter:
         (run_dir / "summary.md").write_text(_stability_markdown(report))
         return run_dir
 
-    def write_fresh_install(
-        self, report: FreshInstallQualificationReport
-    ) -> Path:
+    def write_fresh_install(self, report: FreshInstallQualificationReport) -> Path:
         """Write a private fresh-install report and lifecycle summary."""
 
         run_dir = self.run_dir(report.qualification_id)
@@ -66,7 +64,13 @@ class ReportWriter:
 
 def _jsonl(report: RunReport) -> str:
     rows: list[dict[str, object]] = []
-    rows.append({"type": "run_started", "run_id": report.run_id, "at": report.started_at.isoformat()})
+    rows.append(
+        {
+            "type": "run_started",
+            "run_id": report.run_id,
+            "at": report.started_at.isoformat(),
+        }
+    )
     for issue in report.issues:
         rows.append({"type": "issue", **issue.model_dump(mode="json")})
     for placement in report.placements:
@@ -104,7 +108,9 @@ def _markdown(report: RunReport) -> str:
     ]
     if report.models:
         for model in report.models:
-            lines.append(f"- `{model.model_id}` ({model.source}) {model.detail}".rstrip())
+            lines.append(
+                f"- `{model.model_id}` ({model.source}) {model.detail}".rstrip()
+            )
     else:
         lines.append("- None")
 
@@ -179,7 +185,10 @@ def _markdown(report: RunReport) -> str:
                 f"{ttft} |"
             )
 
-    all_issues = [*report.issues, *(issue for r in report.results for issue in r.issues)]
+    all_issues = [
+        *report.issues,
+        *(issue for r in report.results for issue in r.issues),
+    ]
     lines.extend(["", "## Issues", ""])
     if all_issues:
         for issue in all_issues:
@@ -278,11 +287,38 @@ def _fresh_install_markdown(report: FreshInstallQualificationReport) -> str:
         lines.append("- Not applicable")
     lines.extend(
         [
-        "",
-        "## Served engines",
-        "",
+            "",
+            "## Dashboard release experience",
+            "",
         ]
     )
+    if report.dashboard_experience is not None:
+        evidence = report.dashboard_experience
+        lines.append(
+            f"- `{evidence.model_id}`: Settings opened/saved "
+            f"`{evidence.settings_opened}/{evidence.settings_saved}`, topology "
+            f"`{evidence.topology_visible_nodes}/{evidence.topology_expected_nodes}`, "
+            f"failure/retry `{evidence.request_failure_visible}/"
+            f"{evidence.request_retry_passed}`, WebKit load/chat "
+            f"`{evidence.webkit_loaded}/{evidence.webkit_text_chat_passed}`, "
+            f"passed `{evidence.passed}`"
+        )
+    else:
+        lines.append("- Not applicable")
+    if report.dashboard_audio is not None:
+        audio = report.dashboard_audio
+        lines.append(
+            f"- Audio `{audio.speech_synthesis_model}` -> "
+            f"`{audio.transcription_model}`: TTS bytes "
+            f"`{audio.synthesis_audio_bytes}`, duration/RMS "
+            f"`{audio.synthesis_duration_s}/{audio.synthesis_rms}`, "
+            f"transcription request "
+            f"`{audio.transcription_request_observed}`, transcript matched "
+            f"`{audio.transcript_matched}`, passed `{audio.passed}`"
+        )
+    else:
+        lines.append("- Audio: not applicable")
+    lines.extend(["", "## Served engines", ""])
     if report.served_engines:
         for evidence in report.served_engines:
             lines.append(
@@ -300,8 +336,8 @@ def _fresh_install_markdown(report: FreshInstallQualificationReport) -> str:
     lines.extend(
         [
             "",
-        "## Lifecycle",
-        "",
+            "## Lifecycle",
+            "",
         ]
     )
     for stage in report.lifecycle:
