@@ -382,16 +382,11 @@ class FreshInstallQualifier:
             if member.target_name == fleet.entrypoint_target
         )
         contract_members = [
-            next(
-                member
-                for member in members
-                if member.target_name == target_name
-            )
+            next(member for member in members if member.target_name == target_name)
             for target_name in fleet.qualification_targets
         ]
         qualification_id = (
-            f"fresh-{profile}-mixed-"
-            f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}"
+            f"fresh-{profile}-mixed-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}"
         )
         artifact_directory = self.writer.run_dir(qualification_id)
         artifact_directory.mkdir(parents=True, exist_ok=True)
@@ -556,7 +551,9 @@ class FreshInstallQualifier:
         except Exception as exception:  # noqa: BLE001 - lifecycle failure boundary
             heartbeat_failed = isinstance(exception, LeaseHeartbeatError)
             report.issues.append(
-                Issue(severity="error", message=f"fresh-install leg failed: {exception}")
+                Issue(
+                    severity="error", message=f"fresh-install leg failed: {exception}"
+                )
             )
         finally:
             signal_guard.begin_recovery()
@@ -603,7 +600,9 @@ class FreshInstallQualifier:
             except LeaseHeartbeatError as exception:
                 heartbeat_failed = True
                 report.issues.append(
-                    Issue(severity="error", message=f"lease heartbeat failed: {exception}")
+                    Issue(
+                        severity="error", message=f"lease heartbeat failed: {exception}"
+                    )
                 )
             heartbeat.stop()
             try:
@@ -639,9 +638,7 @@ class FreshInstallQualifier:
             ):
                 report.critical_recovery_required = True
                 try:
-                    heartbeat.emergency_extend(
-                        ttl_s=self.fresh.emergency_lease_ttl_s
-                    )
+                    heartbeat.emergency_extend(ttl_s=self.fresh.emergency_lease_ttl_s)
                 except LeaseHeartbeatError as exception:
                     report.issues.append(
                         Issue(
@@ -727,6 +724,7 @@ class FreshInstallQualifier:
                 heartbeat.start()
 
             with journal.stage("open API tunnels to every physical member"):
+
                 def open_member(
                     member: _PhysicalFleetMemberRuntime,
                 ) -> tuple[
@@ -787,14 +785,11 @@ class FreshInstallQualifier:
                         for node_id, _node_count, _diagnostics in original_api.values()
                     ),
                     member_observed_node_ids=(
-                        observed_member_node_ids[member.ordinal]
-                        for member in members
+                        observed_member_node_ids[member.ordinal] for member in members
                     ),
                 )
                 assert entrypoint.local_port is not None
-                with SkulkClient(
-                    f"http://127.0.0.1:{entrypoint.local_port}"
-                ) as client:
+                with SkulkClient(f"http://127.0.0.1:{entrypoint.local_port}") as client:
                     original_state = client.get_state()
                 instances = original_state.get("instances")
                 runners = original_state.get("runners")
@@ -835,16 +830,12 @@ class FreshInstallQualifier:
                     heartbeat.raise_if_failed()
                 report.snapshot_target_sha256 = _aggregate_digests(
                     snapshot.remote_sha256
-                    for snapshot in (
-                        member.snapshot for member in members
-                    )
+                    for snapshot in (member.snapshot for member in members)
                     if snapshot is not None
                 )
                 report.snapshot_controller_sha256 = _aggregate_digests(
                     snapshot.controller_sha256
-                    for snapshot in (
-                        member.snapshot for member in members
-                    )
+                    for snapshot in (member.snapshot for member in members)
                     if snapshot is not None
                 )
                 journal.persist()
@@ -860,6 +851,7 @@ class FreshInstallQualifier:
                     heartbeat.raise_if_failed()
 
             with journal.stage("create empty temporary HOME on every member"):
+
                 def create_member_home(
                     member: _PhysicalFleetMemberRuntime,
                 ) -> None:
@@ -923,6 +915,7 @@ class FreshInstallQualifier:
                 heartbeat.raise_if_failed()
 
             with journal.stage("start fresh Skulk on every member without isolation"):
+
                 def start_member(member: _PhysicalFleetMemberRuntime) -> None:
                     assert member.temporary_root is not None
                     assert member.local_port is not None
@@ -1067,7 +1060,9 @@ class FreshInstallQualifier:
             except LeaseHeartbeatError as exception:
                 heartbeat_failed = True
                 report.issues.append(
-                    Issue(severity="error", message=f"lease heartbeat failed: {exception}")
+                    Issue(
+                        severity="error", message=f"lease heartbeat failed: {exception}"
+                    )
                 )
             heartbeat.stop()
             try:
@@ -1103,9 +1098,7 @@ class FreshInstallQualifier:
             ):
                 report.critical_recovery_required = True
                 try:
-                    heartbeat.emergency_extend(
-                        ttl_s=self.fresh.emergency_lease_ttl_s
-                    )
+                    heartbeat.emergency_extend(ttl_s=self.fresh.emergency_lease_ttl_s)
                 except LeaseHeartbeatError as exception:
                     report.issues.append(
                         Issue(
@@ -1245,17 +1238,13 @@ class FreshInstallQualifier:
                 state = client.get_state()
             resources = state.get("nodeResources")
             raw_resource = (
-                resources.get(node_id)
-                if isinstance(resources, dict)
-                else None
+                resources.get(node_id) if isinstance(resources, dict) else None
             )
             resource = raw_resource if isinstance(raw_resource, dict) else {}
             raw_backends = resource.get("backends")
             detected_backends = sorted(
                 backend
-                for backend in (
-                    raw_backends if isinstance(raw_backends, list) else []
-                )
+                for backend in (raw_backends if isinstance(raw_backends, list) else [])
                 if isinstance(backend, str)
             )
             missing = sorted(
@@ -1331,18 +1320,35 @@ class FreshInstallQualifier:
                 model_contracts.append((model_id, contract_member))
         if not model_contracts:
             raise ValueError("fresh-install physical fleet has no qualification models")
-        with SkulkClient(
-            api_base_url,
-            request_timeout_s=self.config.request_timeout_s,
-            generation_timeout_s=self.config.generation_timeout_s,
-            stream_read_timeout_s=self.config.stream_read_timeout_s,
-        ) as client, _FreshRuntimeMonitor(
-            api_base_url=api_base_url,
-            expected_node_ids=expected_node_ids,
-            expected_node_count=len(members),
-            poll_interval_s=self.fresh.poll_interval_s,
-            request_timeout_s=self.config.request_timeout_s,
-        ) as runtime_monitor:
+        primary_chat_model = model_contracts[0][0]
+        audio_contracts = [
+            member.target.dashboard_audio
+            for member in contract_members
+            if member.target.dashboard_audio is not None
+        ]
+        if len(audio_contracts) > 1 and any(
+            contract != audio_contracts[0] for contract in audio_contracts[1:]
+        ):
+            raise ValueError(
+                "fresh-install physical fleet declares conflicting dashboard audio contracts"
+            )
+        audio_contract = audio_contracts[0] if audio_contracts else None
+        with (
+            SkulkClient(
+                api_base_url,
+                request_timeout_s=self.config.request_timeout_s,
+                generation_timeout_s=self.config.generation_timeout_s,
+                stream_read_timeout_s=self.config.stream_read_timeout_s,
+            ) as client,
+            _FreshRuntimeMonitor(
+                api_base_url=api_base_url,
+                expected_node_ids=expected_node_ids,
+                expected_node_count=len(members),
+                poll_interval_s=self.fresh.poll_interval_s,
+                request_timeout_s=self.config.request_timeout_s,
+            ) as runtime_monitor,
+        ):
+
             def check_fresh_runtime() -> None:
                 """Fail immediately if lease health or fleet membership changes."""
 
@@ -1377,9 +1383,7 @@ class FreshInstallQualifier:
                         card_image_input=card_image_input.get(model_id),
                     )
                     browser_fixture = (
-                        generate_vision_fixture()
-                        if expectation == "positive"
-                        else None
+                        generate_vision_fixture() if expectation == "positive" else None
                     )
                     outcome = dashboard.qualify(
                         model_id=model_id,
@@ -1396,9 +1400,7 @@ class FreshInstallQualifier:
                     check_fresh_runtime()
 
                 if target.served_engine_contract is not None:
-                    with journal.stage(
-                        f"served engine fleet contract: {model_id}"
-                    ):
+                    with journal.stage(f"served engine fleet contract: {model_id}"):
                         evidence = _qualify_served_engine_fleet(
                             members=[
                                 member
@@ -1460,6 +1462,60 @@ class FreshInstallQualifier:
                             )
                     check_fresh_runtime()
 
+                if model_id == primary_chat_model:
+                    continue
+                with journal.stage(f"stop temporary fleet placement: {model_id}"):
+                    check_fresh_runtime()
+                    for placement in client.find_placements_for_model(model_id):
+                        if placement.instance_id:
+                            client.delete_instance(placement.instance_id)
+                    _wait_for_no_placement(
+                        client,
+                        model_id=model_id,
+                        timeout_s=180,
+                        poll_interval_s=self.fresh.poll_interval_s,
+                        heartbeat=heartbeat,
+                        runtime_check=check_fresh_runtime,
+                    )
+                    check_fresh_runtime()
+
+            with journal.stage("dashboard release experience"):
+                experience = dashboard.qualify_experience(
+                    model_id=primary_chat_model,
+                    expected_node_count=len(members),
+                )
+                report.dashboard_experience = experience
+                journal.persist()
+                if not experience.passed:
+                    raise RuntimeError(
+                        experience.message or "dashboard release experience failed"
+                    )
+                check_fresh_runtime()
+
+            temporary_models = [primary_chat_model]
+            if audio_contract is not None:
+                with journal.stage("dashboard audio experience"):
+                    audio_evidence = dashboard.qualify_audio(
+                        chat_model_id=primary_chat_model,
+                        speech_synthesis_model=(audio_contract.speech_synthesis_model),
+                        transcription_model=audio_contract.transcription_model,
+                    )
+                    report.dashboard_audio = audio_evidence
+                    journal.persist()
+                    if not audio_evidence.passed:
+                        raise RuntimeError(
+                            audio_evidence.message
+                            or "dashboard audio experience failed"
+                        )
+                    check_fresh_runtime()
+                temporary_models.extend(
+                    [
+                        audio_contract.speech_synthesis_model,
+                        audio_contract.transcription_model,
+                    ]
+                )
+
+            for model_id in dict.fromkeys(temporary_models):
                 with journal.stage(f"stop temporary fleet placement: {model_id}"):
                     check_fresh_runtime()
                     for placement in client.find_placements_for_model(model_id):
@@ -1518,6 +1574,7 @@ class FreshInstallQualifier:
         """Restore and verify every original service and the complete topology."""
 
         with journal.stage("restore original service on every member"):
+
             def start_original(member: _PhysicalFleetMemberRuntime) -> None:
                 if not member.service_stopped:
                     return
@@ -1533,9 +1590,7 @@ class FreshInstallQualifier:
             restored_member_node_ids: list[frozenset[str]] = []
             for member in members:
                 if member.snapshot is None or member.local_port is None:
-                    failures.append(
-                        f"member {member.ordinal} lacks recovery metadata"
-                    )
+                    failures.append(f"member {member.ordinal} lacks recovery metadata")
                     continue
                 api_base_url = f"http://127.0.0.1:{member.local_port}"
                 node_id, node_count = _wait_for_api_identity(
@@ -1555,9 +1610,7 @@ class FreshInstallQualifier:
                     cluster_node_count=node_count,
                 )
                 if mismatches:
-                    failures.append(
-                        f"member {member.ordinal}: {'; '.join(mismatches)}"
-                    )
+                    failures.append(f"member {member.ordinal}: {'; '.join(mismatches)}")
                     continue
                 restored_local_node_ids.append(node_id)
                 restored_member_node_ids.append(observed_node_ids)
@@ -1651,7 +1704,10 @@ class FreshInstallQualifier:
             )
         except Exception as exception:  # noqa: BLE001 - provider lifecycle boundary
             report.issues.append(
-                Issue(severity="error", message=f"RunPod qualification failed: {exception}")
+                Issue(
+                    severity="error",
+                    message=f"RunPod qualification failed: {exception}",
+                )
             )
         finally:
             signal_guard.begin_recovery()
@@ -1761,7 +1817,9 @@ class FreshInstallQualifier:
                     timeout_s=30,
                 ).stdout.strip()
                 if expected_commit and resolved_commit != expected_commit:
-                    raise RuntimeError("installer resolved a different candidate commit")
+                    raise RuntimeError(
+                        "installer resolved a different candidate commit"
+                    )
                 config_path = temporary_root + "/home/skulk/skulk.yaml"
                 generated_config_digest = _remote_sha256(controller, config_path)
                 if generated_config_digest is None:
@@ -1878,17 +1936,21 @@ class FreshInstallQualifier:
         models = list(dict.fromkeys([*target.text_models, *target.vision_models]))
         if not models:
             raise ValueError("fresh-install target has no qualification models")
-        with SkulkClient(
-            api_base_url,
-            request_timeout_s=self.config.request_timeout_s,
-            generation_timeout_s=self.config.generation_timeout_s,
-            stream_read_timeout_s=self.config.stream_read_timeout_s,
-        ) as client, _FreshRuntimeMonitor(
-            api_base_url=api_base_url,
-            expected_node_id=assert_fresh_single_node(client),
-            poll_interval_s=self.fresh.poll_interval_s,
-            request_timeout_s=self.config.request_timeout_s,
-        ) as runtime_monitor:
+        primary_chat_model = models[0]
+        with (
+            SkulkClient(
+                api_base_url,
+                request_timeout_s=self.config.request_timeout_s,
+                generation_timeout_s=self.config.generation_timeout_s,
+                stream_read_timeout_s=self.config.stream_read_timeout_s,
+            ) as client,
+            _FreshRuntimeMonitor(
+                api_base_url=api_base_url,
+                expected_node_id=assert_fresh_single_node(client),
+                poll_interval_s=self.fresh.poll_interval_s,
+                request_timeout_s=self.config.request_timeout_s,
+            ) as runtime_monitor,
+        ):
             expected_node_id = runtime_monitor.expected_node_id
 
             def check_fresh_runtime() -> None:
@@ -1960,9 +2022,7 @@ class FreshInstallQualifier:
                         check_fresh_runtime()
 
                 if target.served_engine_contract is not None:
-                    with journal.stage(
-                        f"served engine runtime contract: {model_id}"
-                    ):
+                    with journal.stage(f"served engine runtime contract: {model_id}"):
                         evidence = _qualify_served_engine(
                             controller=controller,
                             installation_root=installation_root,
@@ -2021,6 +2081,11 @@ class FreshInstallQualifier:
                             )
                     check_fresh_runtime()
 
+                if (
+                    model_id == primary_chat_model
+                    and target.dashboard_contract == "required"
+                ):
+                    continue
                 with journal.stage(f"stop temporary model placement: {model_id}"):
                     check_fresh_runtime()
                     for placement in client.find_placements_for_model(model_id):
@@ -2035,6 +2100,63 @@ class FreshInstallQualifier:
                         runtime_check=check_fresh_runtime,
                     )
                     check_fresh_runtime()
+
+            if target.dashboard_contract == "required":
+                with journal.stage("dashboard release experience"):
+                    experience = dashboard.qualify_experience(
+                        model_id=primary_chat_model,
+                        expected_node_count=1,
+                    )
+                    report.dashboard_experience = experience
+                    journal.persist()
+                    if not experience.passed:
+                        raise RuntimeError(
+                            experience.message or "dashboard release experience failed"
+                        )
+                    check_fresh_runtime()
+
+                temporary_models = [primary_chat_model]
+                if target.dashboard_audio is not None:
+                    with journal.stage("dashboard audio experience"):
+                        audio_evidence = dashboard.qualify_audio(
+                            chat_model_id=primary_chat_model,
+                            speech_synthesis_model=(
+                                target.dashboard_audio.speech_synthesis_model
+                            ),
+                            transcription_model=(
+                                target.dashboard_audio.transcription_model
+                            ),
+                        )
+                        report.dashboard_audio = audio_evidence
+                        journal.persist()
+                        if not audio_evidence.passed:
+                            raise RuntimeError(
+                                audio_evidence.message
+                                or "dashboard audio experience failed"
+                            )
+                        check_fresh_runtime()
+                    temporary_models.extend(
+                        [
+                            target.dashboard_audio.speech_synthesis_model,
+                            target.dashboard_audio.transcription_model,
+                        ]
+                    )
+
+                for model_id in dict.fromkeys(temporary_models):
+                    with journal.stage(f"stop temporary model placement: {model_id}"):
+                        check_fresh_runtime()
+                        for placement in client.find_placements_for_model(model_id):
+                            if placement.instance_id:
+                                client.delete_instance(placement.instance_id)
+                        _wait_for_no_placement(
+                            client,
+                            model_id=model_id,
+                            timeout_s=180,
+                            poll_interval_s=self.fresh.poll_interval_s,
+                            heartbeat=heartbeat,
+                            runtime_check=check_fresh_runtime,
+                        )
+                        check_fresh_runtime()
 
     def _restore_physical(
         self,
@@ -2319,11 +2441,9 @@ def _qualify_served_engine(
     """Verify effective served-engine flags, overlap, and post-load survival."""
 
     before = controller.run("ps -axo pid=,command=", timeout_s=30).stdout
-    before_pid, observed_parallel, kv_unified_observed = (
-        _llama_server_process_contract(
+    before_pid, observed_parallel, kv_unified_observed = _llama_server_process_contract(
         before,
         installation_root=installation_root,
-        )
     )
     _run_served_engine_overlap_probe(
         api_base_url=api_base_url,
@@ -2383,8 +2503,7 @@ def _llama_server_process_contract(
     )
     if len(candidates) != 1:
         raise RuntimeError(
-            "expected exactly one fresh llama-server child, observed "
-            f"{len(candidates)}"
+            f"expected exactly one fresh llama-server child, observed {len(candidates)}"
         )
     return candidates[0]
 
@@ -2802,9 +2921,7 @@ def _wait_for_http(
     raise TimeoutError(f"HTTP endpoint did not become ready: {url}")
 
 
-_COMPLETED_DOWNLOAD_STATES = frozenset(
-    {"complete", "completed", "ready", "succeeded"}
-)
+_COMPLETED_DOWNLOAD_STATES = frozenset({"complete", "completed", "ready", "succeeded"})
 _FAILED_DOWNLOAD_STATES = frozenset({"failed", "error"})
 
 
@@ -2888,7 +3005,9 @@ def _provision_model_over_api(
     # path in this harness filters the same way.
     previews = [preview for preview in offered if preview.get("error") in (None, "")]
     if not previews:
-        raise RuntimeError(f"no viable placement preview was offered for {model_id}: {offered}")
+        raise RuntimeError(
+            f"no viable placement preview was offered for {model_id}: {offered}"
+        )
     preview = previews[0]
     placed = client.place_model(
         model_id=model_id,
@@ -3006,7 +3125,9 @@ def _require_commit_sha(value: str | None) -> None:
     try:
         int(value, 16)
     except ValueError as exception:
-        raise ValueError("candidate qualification requires a hexadecimal SHA") from exception
+        raise ValueError(
+            "candidate qualification requires a hexadecimal SHA"
+        ) from exception
 
 
 def _safe_model_name(model_id: str) -> str:

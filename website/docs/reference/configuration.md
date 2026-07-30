@@ -133,7 +133,7 @@ fresh_install:
       service_manager: launchd
       service_stop_command: replace-me
       service_start_command: replace-me
-      expected_backends: [mlx, mlx-metal]
+      expected_backends: [mlx, mlx-metal, mlx_audio, mlx_audio-metal]
       expected_data_transport: zenoh
       vision_contract: positive
       text_models:
@@ -142,6 +142,9 @@ fresh_install:
       vision_models:
         - mlx-community/Qwen3.5-2B-4bit
         - mlx-community/Qwen3-VL-4B-Instruct-4bit
+      dashboard_audio:
+        speech_synthesis_model: mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-4bit
+        transcription_model: mlx-community/parakeet-tdt-0.6b-v3
     apple-2:
       <<: *apple-member
       ssh_host: replace-apple-2
@@ -198,6 +201,11 @@ less safely. Physical targets also declare config paths and an existing
 checkout for hash/commit restoration checks. RunPod settings include its
 neutral image, SSH keys, GPU choices, maximum hourly price and runtime, and
 never include a network volume.
+
+`dashboard_audio` is optional and valid only on a dashboard-serving target that
+expects the `mlx_audio` backend. Both model IDs are release contracts: the
+harness discovers, downloads, launches, and exercises them through the shipped
+dashboard rather than treating missing speech capability as a skip.
 
 Targets referenced by `physical_fleets` set `whole_fleet_member: true` and
 provide no isolation commands or runtime wrapper. The harness stops every

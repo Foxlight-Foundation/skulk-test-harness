@@ -104,10 +104,10 @@ eligible_fleet_nodes:
 
 ## Fresh-install release qualification
 
-Install Chromium once on the controller:
+Install the release-gate browser engines once on the controller:
 
 ```bash
-uv run playwright install chromium
+uv run playwright install chromium webkit
 ```
 
 Then run either the exact proposed `dev` commit or the literal public `main`
@@ -134,6 +134,9 @@ snapshots, verified all-node restoration, and a lease heartbeat. RunPod is
 created without a network volume and is deleted in `finally`, with provider
 deletion polled to completion. See the
 [fresh-install guide](https://foxlight-foundation.github.io/skulk-test-harness/guides/fresh-install-qualification).
+The browser gate also covers Settings save, topology rendering, persisted
+conversations and attachments, a failed-request recovery, WebKit text chat,
+and any explicitly configured dashboard TTS/STT contract.
 
 ## Where the results go
 

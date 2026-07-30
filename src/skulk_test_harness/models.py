@@ -176,6 +176,25 @@ class ServedEngineContract(HarnessBaseModel):
     )
 
 
+class DashboardAudioContract(HarnessBaseModel):
+    """Audio models used to prove the fresh dashboard's real speech controls."""
+
+    speech_synthesis_model: str = Field(
+        min_length=1,
+        description=(
+            "TTS model found, downloaded, launched, and exercised through the "
+            "dashboard's Speak draft control."
+        ),
+    )
+    transcription_model: str = Field(
+        min_length=1,
+        description=(
+            "STT model found, downloaded, launched, and exercised through the "
+            "dashboard's browser-recording control."
+        ),
+    )
+
+
 class FreshInstallTarget(HarnessBaseModel):
     """One explicitly eligible target for destructive fresh-install qualification.
 
@@ -312,6 +331,13 @@ class FreshInstallTarget(HarnessBaseModel):
         default_factory=list,
         description="Models qualified with exact hidden-code image assertions.",
     )
+    dashboard_audio: DashboardAudioContract | None = Field(
+        default=None,
+        description=(
+            "Optional release-blocking TTS and STT dashboard journey. Omit on "
+            "platforms whose shipped backend contract does not include speech."
+        ),
+    )
 
     @model_validator(mode="after")
     def _validate_control_surface(self) -> "FreshInstallTarget":
@@ -327,18 +353,12 @@ class FreshInstallTarget(HarnessBaseModel):
                     "physical targets require service_stop_command and "
                     "service_start_command"
                 )
-            if bool(self.isolation_enter_command) != bool(
-                self.isolation_exit_command
-            ):
+            if bool(self.isolation_enter_command) != bool(self.isolation_exit_command):
                 raise ValueError(
                     "physical target isolation commands must be supplied as a pair"
                 )
-            if (
-                not self.whole_fleet_member
-                and (
-                    not self.isolation_enter_command
-                    or not self.isolation_exit_command
-                )
+            if not self.whole_fleet_member and (
+                not self.isolation_enter_command or not self.isolation_exit_command
             ):
                 raise ValueError(
                     "physical targets require reversible Skulk-network isolation "
@@ -356,6 +376,13 @@ class FreshInstallTarget(HarnessBaseModel):
             raise ValueError("positive vision targets require vision_models")
         if self.vision_contract == "unavailable" and self.vision_models:
             raise ValueError("vision-unavailable targets cannot list vision_models")
+        if (
+            self.dashboard_audio is not None
+            and "mlx_audio" not in self.expected_backends
+        ):
+            raise ValueError("dashboard_audio requires mlx_audio in expected_backends")
+        if self.dashboard_audio is not None and self.dashboard_contract != "required":
+            raise ValueError("dashboard_audio requires dashboard_contract='required'")
         if (
             self.served_engine_contract is not None
             and self.served_engine_contract.backend not in self.expected_backends
@@ -1917,6 +1944,49 @@ class DashboardJourneyOutcome(HarnessBaseModel):
     # operator browser does not, so recording it keeps the difference visible
     # in the report instead of only surfacing as an unexplained click failure.
     first_run_consent_prompted: bool = False
+    conversation_persisted_after_reload: bool = False
+    attachment_persisted_after_reload: bool | None = None
+    passed: bool = False
+    message: str | None = None
+
+
+class DashboardExperienceEvidence(HarnessBaseModel):
+    """Browser evidence for critical dashboard surfaces outside one model turn."""
+
+    model_id: str
+    settings_opened: bool = False
+    settings_saved: bool = False
+    topology_expected_nodes: int = Field(ge=1)
+    topology_visible_nodes: int = Field(default=0, ge=0)
+    request_failure_visible: bool = False
+    request_retry_passed: bool = False
+    webkit_loaded: bool = False
+    webkit_text_chat_passed: bool = False
+    passed: bool = False
+    message: str | None = None
+
+
+class DashboardAudioEvidence(HarnessBaseModel):
+    """Secret-free evidence for real dashboard TTS and browser-recording STT."""
+
+    speech_synthesis_model: str
+    transcription_model: str
+    synthesis_found: bool = False
+    synthesis_downloaded: bool = False
+    synthesis_launched: bool = False
+    transcription_found: bool = False
+    transcription_downloaded: bool = False
+    transcription_launched: bool = False
+    synthesis_request_observed: bool = False
+    synthesis_media_type: str | None = None
+    synthesis_audio_bytes: int = Field(default=0, ge=0)
+    synthesis_audio_sha256: str | None = None
+    synthesis_duration_s: float | None = Field(default=None, ge=0)
+    synthesis_rms: float | None = Field(default=None, ge=0)
+    transcription_request_observed: bool = False
+    transcription_response_text: str | None = None
+    transcription_composer_text: str | None = None
+    transcript_matched: bool = False
     passed: bool = False
     message: str | None = None
 
@@ -1958,7 +2028,7 @@ class FreshInstallMemberEvidence(HarnessBaseModel):
 class FreshInstallQualificationReport(HarnessBaseModel):
     """Complete private report for one clean-install target leg."""
 
-    schema_version: str = "1.2"
+    schema_version: str = "1.3"
     qualification_id: str
     profile: FreshInstallProfile
     platform: FreshInstallPlatform
@@ -1971,6 +2041,8 @@ class FreshInstallQualificationReport(HarnessBaseModel):
     lifecycle: list[FreshInstallLifecycleStage] = Field(default_factory=list)
     api_vision: list[VisionFixtureEvidence] = Field(default_factory=list)
     browser: list[DashboardJourneyOutcome] = Field(default_factory=list)
+    dashboard_experience: DashboardExperienceEvidence | None = None
+    dashboard_audio: DashboardAudioEvidence | None = None
     served_engines: list[ServedEngineEvidence] = Field(default_factory=list)
     members: list[FreshInstallMemberEvidence] = Field(default_factory=list)
     snapshot_target_sha256: str | None = None
