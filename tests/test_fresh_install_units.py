@@ -3647,6 +3647,71 @@ class _StubAbsentCancel:
         return 0
 
 
+class _StubAssistantResponseContent:
+    """Nested assistant response locator without dashboard chrome."""
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+    def filter(self, *, visible: bool) -> "_StubAssistantResponseContent":
+        assert visible is True
+        return self
+
+    def count(self) -> int:
+        return 1
+
+    @property
+    def last(self) -> "_StubAssistantResponseContent":
+        return self
+
+    def inner_text(self) -> str:
+        return self.text
+
+
+class _StubAssistantCardWithChrome:
+    """Visible assistant card whose outer text includes controls and metrics."""
+
+    def __init__(self) -> None:
+        self.response = _StubAssistantResponseContent("GEM86Z orange circle")
+
+    def filter(self, *, visible: bool) -> "_StubAssistantCardWithChrome":
+        assert visible is True
+        return self
+
+    def count(self) -> int:
+        return 1
+
+    def nth(self, index: int) -> "_StubAssistantCardWithChrome":
+        assert index == 0
+        return self
+
+    def locator(self, selector: str) -> _StubAssistantResponseContent:
+        assert "assistant-response-content" in selector
+        return self.response
+
+    def inner_text(self) -> str:
+        return "Skulk\nTTFT 2324ms\nGEM86Z orange circle\nCopy\nRegenerate\nDelete"
+
+
+class _StubAssistantChromePage:
+    """Dashboard page exposing the modern response-content test hook."""
+
+    def __init__(self) -> None:
+        self.assistant = _StubAssistantCardWithChrome()
+        self.cancel = _StubAbsentCancel()
+
+    def get_by_label(self, label: str, *, exact: bool) -> _StubAssistantCardWithChrome:
+        assert (label, exact) == ("Assistant message", True)
+        return self.assistant
+
+    def get_by_role(self, role: str, *, name: str, exact: bool) -> _StubAbsentCancel:
+        assert (role, name, exact) == ("button", "Cancel generation", True)
+        return self.cancel
+
+    def wait_for_timeout(self, milliseconds: float) -> None:
+        assert milliseconds == 500
+
+
 def test_assistant_wait_requires_stream_completion() -> None:
     """Seeing the hidden code must not capture a partial vision response."""
 
@@ -3684,6 +3749,25 @@ def test_assistant_wait_ignores_hidden_conversation_history() -> None:
     )
 
     assert response == "PVNA7M amber circle"
+
+
+def test_assistant_wait_reads_response_content_without_dashboard_chrome() -> None:
+    """Dashboard qualification should judge only model output text."""
+
+    qualifier = DashboardQualifier(
+        api_base_url="http://example.invalid",
+        artifact_directory=Path("unused"),
+        poll_interval_s=1,
+        model_ready_timeout_s=1,
+    )
+    page = _StubAssistantChromePage()
+
+    response = qualifier._wait_for_assistant(  # pyright: ignore[reportPrivateUsage]
+        cast(Page, page),
+        expected="GEM86Z",
+    )
+
+    assert response == "GEM86Z orange circle"
 
 
 def test_vision_turn_starts_its_own_conversation() -> None:

@@ -1002,7 +1002,7 @@ class DashboardQualifier:
         )
         assistant_persisted = (
             expected_assistant_text.casefold()
-            in assistant_message.inner_text().casefold()
+            in self._assistant_response_text(assistant_message).casefold()
         )
         if attachment_name is None:
             return user_persisted and assistant_persisted, None
@@ -1159,7 +1159,7 @@ class DashboardQualifier:
             self._check_abort()
             count = assistant.count()
             if count > after_count:
-                text = assistant.nth(count - 1).inner_text()
+                text = self._assistant_response_text(assistant.nth(count - 1))
                 cancel = page.get_by_role(
                     "button", name="Cancel generation", exact=True
                 )
@@ -1180,6 +1180,22 @@ class DashboardQualifier:
             "dashboard assistant response did not complete while waiting for "
             f"{expected!r}"
         )
+
+    @staticmethod
+    def _assistant_response_text(assistant_message: Locator) -> str:
+        """Return model response text without dashboard message chrome when possible."""
+
+        selector = (
+            '[data-testid="assistant-response-content"], '
+            '[data-testid="streaming-assistant-response-content"]'
+        )
+        try:
+            response = assistant_message.locator(selector).filter(visible=True)
+        except AttributeError:
+            return assistant_message.inner_text()
+        if response.count() > 0:
+            return response.last.inner_text()
+        return assistant_message.inner_text()
 
     def _check_abort(self) -> None:
         """Surface a lease or external lifecycle failure during browser waits."""
