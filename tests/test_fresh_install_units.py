@@ -1281,6 +1281,28 @@ def test_background_heartbeat_surfaces_unexpected_store_failure() -> None:
     heartbeat.stop()
 
 
+def test_emergency_extension_converts_unexpected_store_failure() -> None:
+    """Recovery finalizers must receive their typed heartbeat failure."""
+
+    class UnexpectedFailureStore(_LeaseStore):
+        def extend(self, *, ttl_s: float | None = None) -> LeaseOutcome:
+            del ttl_s
+            raise subprocess.TimeoutExpired("git fetch", 30)
+
+    heartbeat = AuthoritativeLeaseHeartbeat(
+        UnexpectedFailureStore(),
+        holder="codex",
+        ttl_s=120,
+        interval_s=40,
+    )
+
+    with pytest.raises(
+        LeaseHeartbeatError,
+        match="emergency fleet lease extension failed unexpectedly: TimeoutExpired",
+    ):
+        heartbeat.emergency_extend(ttl_s=600)
+
+
 def test_install_commands_pin_candidate_and_preserve_literal_shipping() -> None:
     sha = "a" * 40
     shipping = _installer_command(
