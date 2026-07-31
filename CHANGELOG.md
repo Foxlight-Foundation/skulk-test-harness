@@ -19,7 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Fresh-install restoration now suppresses the supervised service's automatic
   update only for the recovery start and reapplies archived configuration after
-  API readiness, preserving the exact pre-run commit and config bytes.
+  API readiness, preserving the exact pre-run commit and config bytes. Eligible
+  launchd/systemd targets must archive their `skulk.env` so this cannot silently
+  become a no-op.
 - Randomized vision qualification still rejects unbounded or immediately
   repeated output, but accepts a correct exact final answer after a bounded
   explanatory response.

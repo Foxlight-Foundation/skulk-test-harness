@@ -184,6 +184,33 @@ def test_target_selection_uses_only_explicit_eligibility() -> None:
         config.eligible_targets(["incidental-fabric-node"])
 
 
+@pytest.mark.parametrize("service_manager", ["launchd", "systemd"])
+def test_eligible_supervised_target_requires_archived_service_environment(
+    service_manager: Literal["launchd", "systemd"],
+) -> None:
+    target_payload = _whole_fleet_target("apple").model_dump()
+    target_payload.update(
+        {
+            "service_manager": service_manager,
+            "original_config_paths": ["/private/skulk.yaml"],
+        }
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="must include skulk.env in original_config_paths",
+    ):
+        FreshInstallTarget.model_validate(target_payload)
+
+    target_payload["original_config_paths"] = [
+        "/private/skulk.yaml",
+        "/private/skulk.env",
+    ]
+    validated = FreshInstallTarget.model_validate(target_payload)
+
+    assert validated.original_config_paths[-1] == "/private/skulk.env"
+
+
 def test_complete_release_matrix_requires_every_blocking_platform() -> None:
     config = FreshInstallConfig(targets={"apple": _physical_target()})
     selected = config.eligible_targets()

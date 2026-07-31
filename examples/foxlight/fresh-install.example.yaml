@@ -37,6 +37,7 @@ fresh_install:
       original_checkout: replace-with-existing-checkout
       original_config_paths:
         - replace-with-existing-skulk-yaml
+        - replace-with-existing-skulk-env
       expected_backends: [mlx, mlx-metal, mlx_audio, mlx_audio-metal]
       expected_data_transport: zenoh
       vision_contract: positive
@@ -73,6 +74,7 @@ fresh_install:
       original_checkout: replace-with-existing-checkout
       original_config_paths:
         - replace-with-existing-skulk-yaml
+        - replace-with-existing-skulk-env
       expected_backends: [llama_server, llama_server-vulkan]
       expected_data_transport: zenoh
       served_engine_contract:
