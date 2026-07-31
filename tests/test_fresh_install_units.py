@@ -1052,6 +1052,7 @@ def test_random_vision_fixture_has_exact_judge_free_contract(tmp_path: Path) -> 
     assert first.response_format_matches(
         f"{first.color} {first.shape} | {grouped_code}"
     )
+    assert first.response_format_matches(f"COLOR SHAPE | CODE {exact_response}")
     assert first.response_format_matches(
         "I checked the visible attributes.\n\n" + exact_response
     )
@@ -1060,6 +1061,7 @@ def test_random_vision_fixture_has_exact_judge_free_contract(tmp_path: Path) -> 
         "The visible attributes are consistent.\n" + exact_response
     )
     assert not first.response_format_matches(f"I see {exact_response}")
+    assert not first.response_format_matches(f"COLOR SHAPE | CODE {first.code}")
     assert not first.response_format_matches(f"{exact_response}\n{exact_response}")
     assert not first.response_format_matches(
         f"{exact_response} " + "repeated output " * 100
