@@ -58,7 +58,6 @@ from skulk_test_harness.qualification_checks import (
 from skulk_test_harness.reporting import ReportWriter
 from skulk_test_harness.runpod import RunPodClient, RunPodSshEndpoint
 from skulk_test_harness.target_control import (
-    OriginalTargetState,
     RecoverySnapshot,
     SshTargetController,
 )
@@ -577,7 +576,7 @@ class FreshInstallQualifier:
                     service_restored = self._restore_physical(
                         controller=controller,
                         target=target,
-                        original=snapshot.original,
+                        snapshot=snapshot,
                         api_base_url=f"http://127.0.0.1:{local_port}",
                         report=report,
                         journal=journal,
@@ -1604,6 +1603,7 @@ class FreshInstallQualifier:
                     timeout_s=self.fresh.readiness_timeout_s,
                     poll_interval_s=self.fresh.poll_interval_s,
                 )
+                member.controller.restore_original_config_files(member.snapshot)
                 mismatches = member.controller.verify_restored_state(
                     member.snapshot.original,
                     api_node_id=node_id,
@@ -2163,12 +2163,13 @@ class FreshInstallQualifier:
         *,
         controller: SshTargetController,
         target: FreshInstallTarget,
-        original: OriginalTargetState,
+        snapshot: RecoverySnapshot,
         api_base_url: str,
         report: FreshInstallQualificationReport,
         journal: _LifecycleJournal,
     ) -> bool:
         with journal.stage("restore original selected-target service") as stage:
+            original = snapshot.original
             assert target.service_start_command is not None
             controller.run(target.service_start_command, timeout_s=120)
             # Readiness is the target answering again, which is exactly what
@@ -2182,6 +2183,7 @@ class FreshInstallQualifier:
                 timeout_s=self.fresh.readiness_timeout_s,
                 poll_interval_s=self.fresh.poll_interval_s,
             )
+            controller.restore_original_config_files(snapshot)
             mismatches = controller.verify_restored_state(
                 original,
                 api_node_id=node_id,
