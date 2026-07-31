@@ -133,6 +133,10 @@ fresh_install:
       service_manager: launchd
       service_stop_command: replace-me
       service_start_command: replace-me
+      original_checkout: replace-with-existing-checkout
+      original_config_paths:
+        - replace-with-existing-skulk-yaml
+        - replace-with-existing-skulk-env
       expected_backends: [mlx, mlx-metal, mlx_audio, mlx_audio-metal]
       expected_data_transport: zenoh
       vision_contract: positive
@@ -159,6 +163,10 @@ fresh_install:
       service_manager: systemd
       service_stop_command: replace-me
       service_start_command: replace-me
+      original_checkout: replace-with-existing-checkout
+      original_config_paths:
+        - replace-with-existing-skulk-yaml
+        - replace-with-existing-skulk-env
       expected_backends: [llama_server, llama_server-vulkan]
       expected_data_transport: zenoh
       vision_contract: unavailable
@@ -173,6 +181,12 @@ fresh_install:
       entrypoint_target: apple-1
       qualification_targets: [apple-1, amd-1]
 ```
+
+Eligible `launchd` and `systemd` targets must include the service's
+`skulk.env` in `original_config_paths`. Recovery temporarily disables the
+startup wrapper's auto-update through that file, waits for the restored API,
+then reapplies every archived config byte before verifying the original
+checkout and service state.
 
 AMD and NVIDIA release targets also declare the effective served-engine
 contract. The qualification inspects the fresh child process, drives a bounded

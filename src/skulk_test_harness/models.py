@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -352,6 +352,19 @@ class FreshInstallTarget(HarnessBaseModel):
                 raise ValueError(
                     "physical targets require service_stop_command and "
                     "service_start_command"
+                )
+            if (
+                self.eligible
+                and self.service_manager in {"launchd", "systemd"}
+                and not any(
+                    PurePosixPath(config_path).name == "skulk.env"
+                    for config_path in self.original_config_paths
+                )
+            ):
+                raise ValueError(
+                    "eligible launchd/systemd targets must include skulk.env in "
+                    "original_config_paths so recovery can suppress auto-update "
+                    "and restore the archived bytes"
                 )
             if bool(self.isolation_enter_command) != bool(self.isolation_exit_command):
                 raise ValueError(
