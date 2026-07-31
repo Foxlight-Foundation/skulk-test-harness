@@ -1662,8 +1662,9 @@ def test_failed_recovery_readiness_still_reapplies_archived_config(
             command: str,
             *,
             timeout_s: float | None = None,
+            check: bool = True,
         ) -> subprocess.CompletedProcess[str]:
-            del timeout_s
+            del timeout_s, check
             commands.append(command)
             return subprocess.CompletedProcess([], 0, "", "")
 
@@ -1704,6 +1705,7 @@ def test_failed_recovery_readiness_still_reapplies_archived_config(
 
     assert "SKULK_AUTO_UPDATE=0" in commands[0]
     assert commands[1] == "start selected service"
+    assert commands[2] == "stop selected service"
     assert restored == [snapshot]
 
 

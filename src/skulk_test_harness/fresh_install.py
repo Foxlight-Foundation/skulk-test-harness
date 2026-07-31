@@ -1595,6 +1595,7 @@ class FreshInstallQualifier:
             restored_observations: list[
                 tuple[_PhysicalFleetMemberRuntime, str, int, frozenset[str]]
             ] = []
+            recovery_start_succeeded = False
             try:
                 _run_member_operations(members, start_original)
                 for member in members:
@@ -1618,16 +1619,33 @@ class FreshInstallQualifier:
                     restored_observations.append(
                         (member, node_id, node_count, observed_node_ids)
                     )
+                recovery_start_succeeded = not failures and len(
+                    restored_observations
+                ) == len(members)
             finally:
+
+                def stop_failed_start(member: _PhysicalFleetMemberRuntime) -> None:
+                    if not member.service_stopped:
+                        return
+                    assert member.target.service_stop_command is not None
+                    member.controller.run(
+                        member.target.service_stop_command,
+                        check=False,
+                        timeout_s=120,
+                    )
 
                 def restore_configs(member: _PhysicalFleetMemberRuntime) -> None:
                     assert member.snapshot is not None
                     member.controller.restore_original_config_files(member.snapshot)
 
-                _run_member_operations(
-                    [member for member in members if member.snapshot is not None],
-                    restore_configs,
-                )
+                try:
+                    if not recovery_start_succeeded:
+                        _run_member_operations(members, stop_failed_start)
+                finally:
+                    _run_member_operations(
+                        [member for member in members if member.snapshot is not None],
+                        restore_configs,
+                    )
             for member, node_id, node_count, observed_node_ids in restored_observations:
                 assert member.snapshot is not None
                 mismatches = member.controller.verify_restored_state(
@@ -2197,6 +2215,7 @@ class FreshInstallQualifier:
         with journal.stage("restore original selected-target service") as stage:
             original = snapshot.original
             assert target.service_start_command is not None
+            recovery_start_succeeded = False
             try:
                 _prepare_original_service_start(
                     controller=controller,
@@ -2214,8 +2233,18 @@ class FreshInstallQualifier:
                     timeout_s=self.fresh.readiness_timeout_s,
                     poll_interval_s=self.fresh.poll_interval_s,
                 )
+                recovery_start_succeeded = True
             finally:
-                controller.restore_original_config_files(snapshot)
+                try:
+                    if not recovery_start_succeeded:
+                        assert target.service_stop_command is not None
+                        controller.run(
+                            target.service_stop_command,
+                            check=False,
+                            timeout_s=120,
+                        )
+                finally:
+                    controller.restore_original_config_files(snapshot)
             mismatches = controller.verify_restored_state(
                 original,
                 api_node_id=node_id,
