@@ -95,8 +95,9 @@ class VisionFixture:
             return False
         separator = r"[\s-]*"
         grouped_code = separator.join(re.escape(character) for character in self.code)
+        prompt_label = r"(?:COLOR\s+SHAPE\s*\|\s*CODE\s+)?"
         pattern = (
-            rf"\s*[`*_\"']*\s*{re.escape(self.color)}\s+"
+            rf"\s*[`*_\"']*\s*{prompt_label}{re.escape(self.color)}\s+"
             rf"{re.escape(self.shape)}\s*\|\s*{grouped_code}"
             r"\s*[`*_\"'.!]*\s*"
         )
