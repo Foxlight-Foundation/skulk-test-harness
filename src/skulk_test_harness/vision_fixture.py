@@ -78,6 +78,24 @@ class VisionFixture:
         shape_matched = self.shape.upper() in normalized
         return code_matched, color_matched, shape_matched
 
+    def response_format_matches(self, response: str) -> bool:
+        """Require the concise final-answer contract requested by the prompt.
+
+        Merely mentioning the hidden attributes somewhere in thousands of
+        looping tokens is not a successful user response. Markdown emphasis,
+        harmless terminal punctuation, and visual grouping inside the code are
+        accepted, but explanatory prose or repeated answers are rejected.
+        """
+
+        separator = r"[\s-]*"
+        grouped_code = separator.join(re.escape(character) for character in self.code)
+        pattern = (
+            rf"\s*[`*_\"']*\s*{re.escape(self.color)}\s+"
+            rf"{re.escape(self.shape)}\s*\|\s*{grouped_code}"
+            r"\s*[`*_\"'.!]*\s*"
+        )
+        return re.fullmatch(pattern, response, flags=re.IGNORECASE) is not None
+
     def write(self, path: Path) -> None:
         """Persist the private fixture for later inspection."""
 

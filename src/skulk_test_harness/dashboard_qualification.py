@@ -925,8 +925,9 @@ class DashboardQualifier:
         code_matched, color_matched, shape_matched = fixture.response_match_details(
             response
         )
+        format_matched = fixture.response_format_matches(response)
         attribute_matched = color_matched and shape_matched
-        if not (code_matched and attribute_matched):
+        if not (code_matched and attribute_matched and format_matched):
             # Same reasoning as the text chat: without the response text a
             # vision failure cannot be told apart from a broken image path,
             # and the digest match already proves the bytes arrived.
@@ -943,12 +944,14 @@ class DashboardQualifier:
             response_matched_attribute=attribute_matched,
             response_matched_color=color_matched,
             response_matched_shape=shape_matched,
+            response_matched_format=format_matched,
             request_image_sha256=image_digest,
             thumbnail_visible_before_submit=thumbnail_visible,
             attachment_retained_after_submit=attachment_retained,
             passed=(
                 code_matched
                 and attribute_matched
+                and format_matched
                 and image_digest == fixture.sha256
                 and thumbnail_visible
                 and attachment_retained

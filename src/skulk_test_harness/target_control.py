@@ -263,6 +263,22 @@ class SshTargetController:
             cluster_node_count=cluster_node_count,
         )
 
+    def restore_original_config_files(self, snapshot: RecoverySnapshot) -> None:
+        """Restore archived configuration bytes after the service has restarted.
+
+        Skulk may normalize a valid YAML scalar while loading settings (for
+        example ``40`` becomes ``40.0``). The runtime meaning is unchanged, but
+        release qualification promises byte-for-byte restoration of the
+        operator's files. Reapply the private snapshot only after API readiness
+        so a startup write cannot race and overwrite the restored bytes.
+        """
+
+        command = _restore_config_files_command(
+            archive_path=snapshot.remote_path,
+            config_paths=self.target.original_config_paths,
+        )
+        self.run(command, timeout_s=120)
+
     def verify_restored_state(
         self,
         original: OriginalTargetState,
@@ -416,6 +432,34 @@ def _snapshot_command(
         f"CONFIG_PATHS={shlex.quote(config_paths)}"
     )
     return f"{environment} python3 -c {shlex.quote(script)}"
+
+
+def _restore_config_files_command(
+    *,
+    archive_path: str,
+    config_paths: list[str],
+) -> str:
+    """Build a portable command that atomically reapplies archived configs."""
+
+    commands = ["set -e", f"archive={shlex.quote(archive_path)}"]
+    for index, path in enumerate(config_paths):
+        target = shlex.quote(path)
+        member = shlex.quote(f"recovery/config-{index}")
+        commands.append(
+            "if tar -tzf \"$archive\" "
+            f"{member} >/dev/null 2>&1; then "
+            f"target={target}; "
+            "if mode=$(stat -f %Lp \"$target\" 2>/dev/null); then :; "
+            "else mode=$(stat -c %a \"$target\"); fi; "
+            "tmp=$(mktemp \"${target}.restore.XXXXXX\"); "
+            "trap 'rm -f \"$tmp\"' EXIT; "
+            f"tar -xOzf \"$archive\" {member} > \"$tmp\"; "
+            "chmod \"$mode\" \"$tmp\"; "
+            "mv \"$tmp\" \"$target\"; "
+            "trap - EXIT; "
+            "fi"
+        )
+    return "; ".join(commands)
 
 
 def _sha256_file(path: Path) -> str:

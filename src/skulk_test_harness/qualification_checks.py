@@ -277,6 +277,7 @@ def qualify_direct_vision(
     code_matched, color_matched, shape_matched = (
         fixture.response_match_details(execution.text)
     )
+    format_matched = fixture.response_format_matches(execution.text)
     attribute_matched = color_matched and shape_matched
     return VisionFixtureEvidence(
         channel="api",
@@ -288,11 +289,12 @@ def qualify_direct_vision(
         response_matched_attribute=attribute_matched,
         response_matched_color=color_matched,
         response_matched_shape=shape_matched,
+        response_matched_format=format_matched,
         response_excerpt=execution.text.replace(
             fixture.code, "<hidden-code>"
         ).strip()[:400],
         request_image_sha256=fixture.sha256,
-        passed=code_matched and attribute_matched,
+        passed=code_matched and attribute_matched and format_matched,
     )
 
 

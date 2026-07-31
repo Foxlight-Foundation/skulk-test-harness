@@ -106,6 +106,7 @@ from skulk_test_harness.target_control import (
     OriginalTargetState,
     RecoverySnapshot,
     SshTargetController,
+    _restore_config_files_command,  # pyright: ignore[reportPrivateUsage]
     _snapshot_command,  # pyright: ignore[reportPrivateUsage]
 )
 from skulk_test_harness.vision_fixture import (
@@ -400,6 +401,12 @@ def test_restoration_rejects_asymmetric_member_topology(
 
     class FakeController:
         def run(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def restore_original_config_files(
+            self,
+            _snapshot: RecoverySnapshot,
+        ) -> None:
             pass
 
         def verify_restored_state(
@@ -1012,6 +1019,17 @@ def test_random_vision_fixture_has_exact_judge_free_contract(tmp_path: Path) -> 
         f"{first.color} {first.shape} | {first.code}{first.code[-1]}"
     ) == (False, True)
     assert first.response_matches("a plausible blue bedroom") == (False, False)
+    exact_response = f"{first.color} {first.shape} | {first.code}"
+    assert first.response_format_matches(exact_response)
+    assert first.response_format_matches(f"**{exact_response}.**")
+    assert first.response_format_matches(
+        f"{first.color} {first.shape} | {grouped_code}"
+    )
+    assert not first.response_format_matches(f"I see {exact_response}")
+    assert not first.response_format_matches(f"{exact_response}\n{exact_response}")
+    assert not first.response_format_matches(
+        f"{exact_response} " + "repeated output " * 100
+    )
     path = tmp_path / "fixture.png"
     first.write(path)
     assert path.stat().st_mode & 0o777 == 0o600
@@ -1114,8 +1132,8 @@ def test_direct_text_check_matches_dashboard_thinking_default(
     ]
 
 
-def test_direct_vision_allows_complete_response_and_redacts_code() -> None:
-    """Verbose VLM output must complete without leaking the hidden code."""
+def test_direct_vision_requires_concise_response_and_redacts_code() -> None:
+    """A concise VLM answer passes without leaking the hidden code."""
 
     calls: list[dict[str, object]] = []
     fixture = generate_vision_fixture()
@@ -1124,10 +1142,7 @@ def test_direct_vision_allows_complete_response_and_redacts_code() -> None:
         def stream_chat(self, **kwargs: object) -> SimpleNamespace:
             calls.append(kwargs)
             return SimpleNamespace(
-                text=(
-                    f"Observed code {fixture.code}; the shape is a "
-                    f"{fixture.color} {fixture.shape}."
-                )
+                text=f"{fixture.color} {fixture.shape} | {fixture.code}"
             )
 
     evidence = qualify_direct_vision(
@@ -1138,6 +1153,7 @@ def test_direct_vision_allows_complete_response_and_redacts_code() -> None:
     )
 
     assert evidence.passed is True
+    assert evidence.response_matched_format is True
     assert calls[0]["max_tokens"] == 512
     assert evidence.response_excerpt is not None
     assert "<hidden-code>" in evidence.response_excerpt
@@ -1548,6 +1564,37 @@ def test_recovery_snapshot_is_mode_600_and_contains_manifest_and_config(
         ]
 
 
+def test_archived_config_bytes_are_atomically_restored_after_restart(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "skulk.yaml"
+    config_path.write_text("staging_keep_recent_gb: 40\n")
+    config_path.chmod(0o640)
+    recovery_root = tmp_path / "archive-root"
+    recovery = recovery_root / "recovery"
+    recovery.mkdir(parents=True)
+    (recovery / "config-0").write_bytes(config_path.read_bytes())
+    archive_path = tmp_path / "recovery.tar.gz"
+    with tarfile.open(archive_path, "w:gz") as archive:
+        archive.add(recovery, arcname="recovery")
+
+    config_path.write_text("staging_keep_recent_gb: 40.0\n")
+    result = subprocess.run(
+        _restore_config_files_command(
+            archive_path=str(archive_path),
+            config_paths=[str(config_path)],
+        ),
+        shell=True,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert config_path.read_bytes() == b"staging_keep_recent_gb: 40\n"
+    assert config_path.stat().st_mode & 0o777 == 0o640
+
+
 def test_restoration_verification_detects_every_changed_surface(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1795,6 +1842,12 @@ def _run_failed_physical_lifecycle(
             del timeout_s, check
             commands.append(command)
             return subprocess.CompletedProcess([], 0, "", "")
+
+        def restore_original_config_files(
+            self,
+            snapshot: RecoverySnapshot,
+        ) -> None:
+            assert snapshot.original == original
 
         def verify_restored_state(
             self,
