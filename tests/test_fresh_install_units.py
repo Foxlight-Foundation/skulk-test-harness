@@ -412,6 +412,53 @@ def test_temporary_home_rejects_an_unsafe_remote_root(unsafe_root: str) -> None:
         )
 
 
+def test_temporary_install_cleanup_retries_verification(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Slow remote process teardown should not become a false recovery failure."""
+
+    verification_attempts = 0
+
+    class FakeController:
+        def run(
+            self,
+            command: str,
+            *,
+            timeout_s: float | None = None,
+            check: bool = True,
+        ) -> subprocess.CompletedProcess[str]:
+            nonlocal verification_attempts
+            del timeout_s, check
+            if command.startswith("test ! -e "):
+                verification_attempts += 1
+                if verification_attempts == 1:
+                    raise subprocess.CalledProcessError(1, command)
+            return subprocess.CompletedProcess([], 0, "", "")
+
+    monkeypatch.setattr(fresh_install_module.time, "sleep", lambda _seconds: None)
+    qualifier = fresh_install_module.FreshInstallQualifier(
+        HarnessConfig(
+            output_dir=tmp_path / "runs",
+            fresh_install=FreshInstallConfig(
+                targets={"amd": _whole_fleet_target("amd")}
+            ),
+        )
+    )
+    member = _PhysicalFleetMemberRuntime(
+        ordinal=1,
+        target_name="amd",
+        target=_whole_fleet_target("amd"),
+        controller=cast(SshTargetController, FakeController()),
+        temporary_root="/home/operator/.skulk-fresh.cleanup-test",
+    )
+
+    qualifier._cleanup_physical_fleet_member(member)  # pyright: ignore[reportPrivateUsage]
+
+    assert verification_attempts == 2
+    assert member.temporary_root is None
+
+
 def test_restoration_rejects_asymmetric_member_topology(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3534,6 +3581,34 @@ def test_dashboard_reload_requires_text_and_attachment_persistence() -> None:
     )
     assert conversation is True
     assert attachment is False
+
+
+def test_dashboard_reload_can_use_text_journey_matcher() -> None:
+    """Reload persistence for text checks must share the live echo contract."""
+
+    qualifier = DashboardQualifier(
+        api_base_url="http://example.invalid",
+        artifact_directory=Path("unused"),
+        poll_interval_s=1,
+        model_ready_timeout_s=1,
+    )
+    phrase = "copper quartz 3543"
+    page = _StubPersistencePage(attachment_name=None)
+    page.user.text = echo_prompt(phrase)
+    page.assistant.text = (
+        "Welcome to Copper Quartz, where you're now staying in room 3543."
+    )
+
+    conversation, attachment = qualifier._verify_conversation_persistence(  # pyright: ignore[reportPrivateUsage]
+        cast(Page, page),
+        expected_user_text=echo_prompt(phrase),
+        expected_assistant_text=phrase,
+        attachment_name=None,
+        assistant_matcher=lambda text: echo_matched(phrase, text),
+    )
+
+    assert conversation is True
+    assert attachment is None
 
 
 class _StubStreamingAssistant:

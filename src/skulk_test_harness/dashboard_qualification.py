@@ -881,9 +881,10 @@ class DashboardQualifier:
                 progress.attachment_persisted_after_reload,
             ) = self._verify_conversation_persistence(
                 page,
-                expected_user_text=phrase,
+                expected_user_text=echo_prompt(phrase),
                 expected_assistant_text=phrase,
                 attachment_name=None,
+                assistant_matcher=lambda text: echo_matched(phrase, text),
             )
             return progress.outcome(
                 passed=(
@@ -984,6 +985,7 @@ class DashboardQualifier:
         expected_user_text: str,
         expected_assistant_text: str,
         attachment_name: str | None,
+        assistant_matcher: Callable[[str], bool] | None = None,
     ) -> tuple[bool, bool | None]:
         """Reload the shipped dashboard and require the active thread to survive."""
 
@@ -1000,9 +1002,11 @@ class DashboardQualifier:
         user_persisted = (
             expected_user_text.casefold() in user_message.inner_text().casefold()
         )
+        assistant_text = self._assistant_response_text(assistant_message)
         assistant_persisted = (
-            expected_assistant_text.casefold()
-            in self._assistant_response_text(assistant_message).casefold()
+            assistant_matcher(assistant_text)
+            if assistant_matcher is not None
+            else expected_assistant_text.casefold() in assistant_text.casefold()
         )
         if attachment_name is None:
             return user_persisted and assistant_persisted, None

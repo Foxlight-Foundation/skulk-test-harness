@@ -1556,11 +1556,22 @@ class FreshInstallQualifier:
             f"rm -rf -- {shlex.quote(member.temporary_root)}",
             timeout_s=300,
         )
-        member.controller.run(
+        cleanup_deadline = time.monotonic() + 60
+        cleanup_probe = (
             f"test ! -e {shlex.quote(member.temporary_root)} && "
-            f"! pgrep -f {shlex.quote(process_pattern)} >/dev/null",
-            timeout_s=30,
+            f"! pgrep -f {shlex.quote(process_pattern)} >/dev/null"
         )
+        last_error: Exception | None = None
+        while time.monotonic() < cleanup_deadline:
+            try:
+                member.controller.run(cleanup_probe, timeout_s=30)
+                break
+            except Exception as exception:  # noqa: BLE001 - cleanup boundary
+                last_error = exception
+                time.sleep(2)
+        else:
+            assert last_error is not None
+            raise last_error
         member.temporary_root = None
 
     def _restore_physical_fleet(
