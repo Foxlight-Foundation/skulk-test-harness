@@ -138,3 +138,14 @@ class AuthoritativeLeaseHeartbeat:
                 self._failure = exception
                 self._stop.set()
                 return
+            except Exception as exception:  # noqa: BLE001 - thread failure is fatal
+                # Lease stores cross network and subprocess boundaries. Preserve
+                # an unexpected transport failure as qualification state instead
+                # of letting the daemon thread die invisibly while destructive
+                # work continues under an expired lease.
+                self._failure = LeaseHeartbeatError(
+                    "fleet lease heartbeat failed unexpectedly: "
+                    f"{type(exception).__name__}: {exception}"
+                )
+                self._stop.set()
+                return

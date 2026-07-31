@@ -1253,6 +1253,34 @@ def test_lease_renewal_rejects_stale_authoritative_record() -> None:
         heartbeat.renew_once()
 
 
+def test_background_heartbeat_surfaces_unexpected_store_failure() -> None:
+    """A transport exception must abort work instead of killing only the thread."""
+
+    class UnexpectedFailureStore(_LeaseStore):
+        def extend(self, *, ttl_s: float | None = None) -> LeaseOutcome:
+            del ttl_s
+            raise RuntimeError("network unavailable")
+
+    heartbeat = AuthoritativeLeaseHeartbeat(
+        UnexpectedFailureStore(),
+        holder="codex",
+        ttl_s=120,
+        interval_s=0.001,
+    )
+    heartbeat.start()
+    deadline = time.monotonic() + 1
+    while time.monotonic() < deadline:
+        try:
+            heartbeat.raise_if_failed()
+        except LeaseHeartbeatError as exception:
+            assert "RuntimeError: network unavailable" in str(exception)
+            break
+        time.sleep(0.001)
+    else:
+        pytest.fail("unexpected heartbeat failure was not surfaced")
+    heartbeat.stop()
+
+
 def test_install_commands_pin_candidate_and_preserve_literal_shipping() -> None:
     sha = "a" * 40
     shipping = _installer_command(
@@ -2502,6 +2530,10 @@ def test_ssh_host_key_policy_is_strict_for_inventory_and_lenient_for_pods(
     assert "StrictHostKeyChecking=accept-new" in lenient_prefix
     assert "UserKnownHostsFile=/dev/null" in lenient_prefix
     assert "UserKnownHostsFile=/dev/null" in lenient_scp
+    for prefix in (strict_prefix, lenient_prefix, lenient_scp):
+        assert "ServerAliveInterval=10" in prefix
+        assert "ServerAliveCountMax=3" in prefix
+        assert "TCPKeepAlive=yes" in prefix
 
 
 class _StubContractClient:
