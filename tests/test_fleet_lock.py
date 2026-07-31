@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+import skulk_test_harness.fleet_lock as fleet_lock_module
 from skulk_test_harness.fleet_lock import FleetLease, FleetLockStore, LeaseOutcome
 from skulk_test_harness.models import FleetLock, HarnessConfig
 
@@ -243,6 +244,43 @@ def test_clobbered_no_op_write_fails_authoritative_verification(
 def test_disabled_when_unconfigured() -> None:
     cfg = HarnessConfig()
     assert cfg.fleet_lock is None
+
+
+def test_git_coordination_operations_have_a_hard_deadline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A black-holed coordination remote must not wedge the lease heartbeat."""
+
+    observed_timeouts: list[float] = []
+
+    def bounded_run(
+        command: list[str],
+        **kwargs: object,
+    ) -> subprocess.CompletedProcess[str]:
+        timeout = kwargs.get("timeout")
+        assert isinstance(timeout, (int, float))
+        observed_timeouts.append(float(timeout))
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(fleet_lock_module.subprocess, "run", bounded_run)
+    existing_cache = tmp_path / "existing"
+    configured = FleetLock(
+        remote="https://example.invalid/coordination.git",
+        holder="codex",
+        cache_dir=existing_cache,
+    )
+    store = FleetLockStore(configured)
+    existing_cache.mkdir(parents=True)
+    (existing_cache / ".git").mkdir()
+    store._git("status")  # pyright: ignore[reportPrivateUsage]
+
+    clone_store = FleetLockStore(
+        configured.model_copy(update={"cache_dir": tmp_path / "new-clone"})
+    )
+    clone_store._ensure_clone()  # pyright: ignore[reportPrivateUsage]
+
+    assert observed_timeouts == [30.0, 30.0]
 
 
 def test_require_fleet_or_refuse(remote: Path, tmp_path: Path) -> None:

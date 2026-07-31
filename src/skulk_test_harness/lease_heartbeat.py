@@ -121,12 +121,23 @@ class AuthoritativeLeaseHeartbeat:
     def emergency_extend(self, *, ttl_s: float) -> FleetLease:
         """Make one final verified extension before leaving a failed lease held."""
 
-        outcome = self._store.extend(ttl_s=ttl_s)
-        if not outcome.ok:
+        try:
+            outcome = self._store.extend(ttl_s=ttl_s)
+            if not outcome.ok:
+                raise LeaseHeartbeatError(
+                    f"emergency fleet lease extension failed: {outcome.message}"
+                )
+            return self.verify_current()
+        except LeaseHeartbeatError:
+            raise
+        except Exception as exception:
+            # Recovery finalizers handle this typed failure by retaining the
+            # lease and completing the critical report. A raw transport error
+            # would escape the finalizer before those artifacts are durable.
             raise LeaseHeartbeatError(
-                f"emergency fleet lease extension failed: {outcome.message}"
-            )
-        return self.verify_current()
+                "emergency fleet lease extension failed unexpectedly: "
+                f"{type(exception).__name__}: {exception}"
+            ) from exception
 
     def _run(self) -> None:
         """Renew until stopped, retaining the first failure for the main thread."""
@@ -136,5 +147,16 @@ class AuthoritativeLeaseHeartbeat:
                 self.renew_once()
             except LeaseHeartbeatError as exception:
                 self._failure = exception
+                self._stop.set()
+                return
+            except Exception as exception:  # noqa: BLE001 - thread failure is fatal
+                # Lease stores cross network and subprocess boundaries. Preserve
+                # an unexpected transport failure as qualification state instead
+                # of letting the daemon thread die invisibly while destructive
+                # work continues under an expired lease.
+                self._failure = LeaseHeartbeatError(
+                    "fleet lease heartbeat failed unexpectedly: "
+                    f"{type(exception).__name__}: {exception}"
+                )
                 self._stop.set()
                 return
