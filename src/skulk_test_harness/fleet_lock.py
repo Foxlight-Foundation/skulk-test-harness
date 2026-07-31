@@ -31,6 +31,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from skulk_test_harness.models import FleetLock
 
+_GIT_OPERATION_TIMEOUT_S = 30.0
+
 
 def _utcnow() -> datetime:
     """Current UTC time (wall clock; the harness runs on a real machine)."""
@@ -171,6 +173,7 @@ class FleetLockStore:
             check=check,
             capture_output=True,
             text=True,
+            timeout=_GIT_OPERATION_TIMEOUT_S,
         )
 
     def _ensure_clone(self) -> None:
@@ -198,6 +201,7 @@ class FleetLockStore:
             check=True,
             capture_output=True,
             text=True,
+            timeout=_GIT_OPERATION_TIMEOUT_S,
         )
 
     def _commit_and_push(self, lease: FleetLease, message: str) -> bool:
