@@ -79,14 +79,18 @@ class VisionFixture:
         return code_matched, color_matched, shape_matched
 
     def response_format_matches(self, response: str) -> bool:
-        """Require the concise final-answer contract requested by the prompt.
+        """Require one exact final answer within a bounded response.
 
         Merely mentioning the hidden attributes somewhere in thousands of
-        looping tokens is not a successful user response. Markdown emphasis,
-        harmless terminal punctuation, and visual grouping inside the code are
-        accepted, but explanatory prose or repeated answers are rejected.
+        looping tokens is not a successful user response. A small model may
+        include a bounded explanatory preamble despite the prompt, so accept
+        that only when the last non-empty line is the sole exact answer.
+        Markdown emphasis, harmless terminal punctuation, and visual grouping
+        inside the code remain accepted.
         """
 
+        if len(response) > 1600:
+            return False
         separator = r"[\s-]*"
         grouped_code = separator.join(re.escape(character) for character in self.code)
         pattern = (
@@ -94,7 +98,13 @@ class VisionFixture:
             rf"{re.escape(self.shape)}\s*\|\s*{grouped_code}"
             r"\s*[`*_\"'.!]*\s*"
         )
-        return re.fullmatch(pattern, response, flags=re.IGNORECASE) is not None
+        lines = [line for line in response.splitlines() if line.strip()]
+        exact_lines = [
+            line
+            for line in lines
+            if re.fullmatch(pattern, line, flags=re.IGNORECASE) is not None
+        ]
+        return bool(lines) and exact_lines == [lines[-1]]
 
     def write(self, path: Path) -> None:
         """Persist the private fixture for later inspection."""
