@@ -1577,33 +1577,59 @@ class FreshInstallQualifier:
             def start_original(member: _PhysicalFleetMemberRuntime) -> None:
                 if not member.service_stopped:
                     return
+                if member.snapshot is None:
+                    raise RuntimeError("recovery snapshot is missing")
                 assert member.target.service_start_command is not None
+                _prepare_original_service_start(
+                    controller=member.controller,
+                    target=member.target,
+                )
                 member.controller.run(
                     member.target.service_start_command,
                     timeout_s=120,
                 )
 
-            _run_member_operations(members, start_original)
             failures: list[str] = []
             restored_local_node_ids: list[str] = []
             restored_member_node_ids: list[frozenset[str]] = []
-            for member in members:
-                if member.snapshot is None or member.local_port is None:
-                    failures.append(f"member {member.ordinal} lacks recovery metadata")
-                    continue
-                api_base_url = f"http://127.0.0.1:{member.local_port}"
-                node_id, node_count = _wait_for_api_identity(
-                    api_base_url,
-                    timeout_s=self.fresh.readiness_timeout_s,
-                    poll_interval_s=self.fresh.poll_interval_s,
+            restored_observations: list[
+                tuple[_PhysicalFleetMemberRuntime, str, int, frozenset[str]]
+            ] = []
+            try:
+                _run_member_operations(members, start_original)
+                for member in members:
+                    if member.snapshot is None or member.local_port is None:
+                        failures.append(
+                            f"member {member.ordinal} lacks recovery metadata"
+                        )
+                        continue
+                    api_base_url = f"http://127.0.0.1:{member.local_port}"
+                    node_id, node_count = _wait_for_api_identity(
+                        api_base_url,
+                        timeout_s=self.fresh.readiness_timeout_s,
+                        poll_interval_s=self.fresh.poll_interval_s,
+                    )
+                    observed_node_ids = _wait_for_exact_cluster(
+                        api_base_url,
+                        expected_node_count=len(members),
+                        timeout_s=self.fresh.readiness_timeout_s,
+                        poll_interval_s=self.fresh.poll_interval_s,
+                    )
+                    restored_observations.append(
+                        (member, node_id, node_count, observed_node_ids)
+                    )
+            finally:
+
+                def restore_configs(member: _PhysicalFleetMemberRuntime) -> None:
+                    assert member.snapshot is not None
+                    member.controller.restore_original_config_files(member.snapshot)
+
+                _run_member_operations(
+                    [member for member in members if member.snapshot is not None],
+                    restore_configs,
                 )
-                observed_node_ids = _wait_for_exact_cluster(
-                    api_base_url,
-                    expected_node_count=len(members),
-                    timeout_s=self.fresh.readiness_timeout_s,
-                    poll_interval_s=self.fresh.poll_interval_s,
-                )
-                member.controller.restore_original_config_files(member.snapshot)
+            for member, node_id, node_count, observed_node_ids in restored_observations:
+                assert member.snapshot is not None
                 mismatches = member.controller.verify_restored_state(
                     member.snapshot.original,
                     api_node_id=node_id,
@@ -2171,19 +2197,25 @@ class FreshInstallQualifier:
         with journal.stage("restore original selected-target service") as stage:
             original = snapshot.original
             assert target.service_start_command is not None
-            controller.run(target.service_start_command, timeout_s=120)
-            # Readiness is the target answering again, which is exactly what
-            # restarting its service controls. It deliberately does not wait for
-            # the fleet to return to its pre-run size: that size counts nodes
-            # this leg never touched, so a peer that was rebooting, pruning, or
-            # deliberately quiet made the wait unsatisfiable and timed out on a
-            # machine that had already recovered.
-            node_id, node_count = _wait_for_api_identity(
-                api_base_url,
-                timeout_s=self.fresh.readiness_timeout_s,
-                poll_interval_s=self.fresh.poll_interval_s,
-            )
-            controller.restore_original_config_files(snapshot)
+            try:
+                _prepare_original_service_start(
+                    controller=controller,
+                    target=target,
+                )
+                controller.run(target.service_start_command, timeout_s=120)
+                # Readiness is the target answering again, which is exactly what
+                # restarting its service controls. It deliberately does not wait for
+                # the fleet to return to its pre-run size: that size counts nodes
+                # this leg never touched, so a peer that was rebooting, pruning, or
+                # deliberately quiet made the wait unsatisfiable and timed out on a
+                # machine that had already recovered.
+                node_id, node_count = _wait_for_api_identity(
+                    api_base_url,
+                    timeout_s=self.fresh.readiness_timeout_s,
+                    poll_interval_s=self.fresh.poll_interval_s,
+                )
+            finally:
+                controller.restore_original_config_files(snapshot)
             mismatches = controller.verify_restored_state(
                 original,
                 api_node_id=node_id,
@@ -2279,6 +2311,52 @@ def _run_member_operations(
     if failures:
         raise RuntimeError("; ".join(failures))
     return results
+
+
+def _prepare_original_service_start(
+    *,
+    controller: SshTargetController,
+    target: FreshInstallTarget,
+) -> None:
+    """Prevent a supervised recovery start from mutating the saved checkout.
+
+    The shipped service wrapper may auto-update before launching Skulk. That is
+    desirable on an ordinary boot but violates qualification's byte-for-byte
+    recovery contract. Suppress it only for the recovery start; the caller must
+    reapply the archived configuration after API readiness, which also repairs
+    any runtime config normalization or cluster sync.
+    """
+
+    for config_path in target.original_config_paths:
+        if PurePosixPath(config_path).name != "skulk.env":
+            continue
+        controller.run(
+            _suppress_auto_update_command(config_path),
+            timeout_s=30,
+        )
+
+
+def _suppress_auto_update_command(config_path: str) -> str:
+    """Build an atomic, portable command for one transient recovery override."""
+
+    quoted_path = shlex.quote(config_path)
+    awk_program = (
+        "BEGIN { found=0 } "
+        "/^[[:space:]]*(export[[:space:]]+)?SKULK_AUTO_UPDATE=/ { "
+        'if (!found) print "SKULK_AUTO_UPDATE=0"; found=1; next } '
+        '{ print } END { if (!found) print "SKULK_AUTO_UPDATE=0" }'
+    )
+    return (
+        f"target={quoted_path}; "
+        'if [ -f "$target" ]; then '
+        'if mode=$(stat -f %Lp "$target" 2>/dev/null); then :; '
+        'else mode=$(stat -c %a "$target"); fi; '
+        'tmp=$(mktemp "${target}.restore-start.XXXXXX"); '
+        "trap 'rm -f \"$tmp\"' EXIT; "
+        f'awk {shlex.quote(awk_program)} "$target" > "$tmp"; '
+        'chmod "$mode" "$tmp"; mv "$tmp" "$target"; trap - EXIT; '
+        "fi"
+    )
 
 
 def _assert_declared_member_topologies(

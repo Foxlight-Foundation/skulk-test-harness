@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fresh-install restoration now suppresses the supervised service's automatic
+  update only for the recovery start and reapplies archived configuration after
+  API readiness, preserving the exact pre-run commit and config bytes.
+- Randomized vision qualification still rejects unbounded or immediately
+  repeated output, but accepts a correct exact final answer after a bounded
+  explanatory response.
 - Fresh-install temporary homes now live on each target user's home filesystem
   instead of `/tmp`, preventing Linux tmpfs capacity from producing false
   low-storage warnings or model-download failures that a real new user would

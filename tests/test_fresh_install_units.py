@@ -1028,6 +1028,10 @@ def test_random_vision_fixture_has_exact_judge_free_contract(tmp_path: Path) -> 
     assert first.response_format_matches(
         "I checked the visible attributes.\n\n" + exact_response
     )
+    assert first.response_format_matches(
+        f"I considered {exact_response} while checking the card.\n"
+        "The visible attributes are consistent.\n" + exact_response
+    )
     assert not first.response_format_matches(f"I see {exact_response}")
     assert not first.response_format_matches(f"{exact_response}\n{exact_response}")
     assert not first.response_format_matches(
@@ -1596,6 +1600,111 @@ def test_archived_config_bytes_are_atomically_restored_after_restart(
     assert result.returncode == 0, result.stderr
     assert config_path.read_bytes() == b"staging_keep_recent_gb: 40\n"
     assert config_path.stat().st_mode & 0o777 == 0o640
+
+
+def test_recovery_start_suppresses_auto_update_atomically(tmp_path: Path) -> None:
+    """A service restart must not advance the checkout before verification."""
+
+    environment_path = tmp_path / "skulk.env"
+    environment_path.write_text(
+        "SKULK_AUTO_UPDATE=1\nSKULK_LOG_LEVEL=INFO\n",
+    )
+    environment_path.chmod(0o640)
+
+    result = subprocess.run(
+        fresh_install_module._suppress_auto_update_command(  # pyright: ignore[reportPrivateUsage]
+            str(environment_path)
+        ),
+        shell=True,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert environment_path.read_text() == (
+        "SKULK_AUTO_UPDATE=0\nSKULK_LOG_LEVEL=INFO\n"
+    )
+    assert environment_path.stat().st_mode & 0o777 == 0o640
+
+
+def test_failed_recovery_readiness_still_reapplies_archived_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed service start must not strand the transient override on disk."""
+
+    target = _physical_target().model_copy(
+        update={"original_config_paths": ["/private/skulk.env"]}
+    )
+    original = OriginalTargetState(
+        git_commit="commit-a",
+        git_status="clean",
+        config_sha256={"/private/skulk.env": "digest"},
+        process_arguments=["uv run skulk"],
+        service_status="exit=0\nrunning",
+        api_node_id="node-a",
+        cluster_node_count=1,
+    )
+    snapshot = RecoverySnapshot(
+        remote_path="/private/recovery.tar.gz",
+        remote_sha256="remote-digest",
+        controller_path=tmp_path / "recovery.tar.gz",
+        controller_sha256="controller-digest",
+        original=original,
+    )
+    commands: list[str] = []
+    restored: list[RecoverySnapshot] = []
+
+    class FakeController:
+        def run(
+            self,
+            command: str,
+            *,
+            timeout_s: float | None = None,
+        ) -> subprocess.CompletedProcess[str]:
+            del timeout_s
+            commands.append(command)
+            return subprocess.CompletedProcess([], 0, "", "")
+
+        def restore_original_config_files(
+            self,
+            recovery_snapshot: RecoverySnapshot,
+        ) -> None:
+            restored.append(recovery_snapshot)
+
+    monkeypatch.setattr(
+        fresh_install_module,
+        "_wait_for_api_identity",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("API never became ready")
+        ),
+    )
+    report = _report_with([])
+    qualifier = fresh_install_module.FreshInstallQualifier(
+        HarnessConfig(
+            output_dir=tmp_path / "runs",
+            fresh_install=FreshInstallConfig(),
+        )
+    )
+    journal = fresh_install_module._LifecycleJournal(  # pyright: ignore[reportPrivateUsage]
+        report,
+        ReportWriter(tmp_path / "runs"),
+    )
+
+    with pytest.raises(RuntimeError, match="API never became ready"):
+        qualifier._restore_physical(  # pyright: ignore[reportPrivateUsage]
+            controller=cast(SshTargetController, FakeController()),
+            target=target,
+            snapshot=snapshot,
+            api_base_url="http://127.0.0.1:52415",
+            report=report,
+            journal=journal,
+        )
+
+    assert "SKULK_AUTO_UPDATE=0" in commands[0]
+    assert commands[1] == "start selected service"
+    assert restored == [snapshot]
 
 
 def test_restoration_verification_detects_every_changed_surface(
