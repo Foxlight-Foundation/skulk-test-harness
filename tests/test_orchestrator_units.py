@@ -2443,6 +2443,114 @@ def test_speech_pressure_proves_local_remote_paths_and_diagnostics(
     assert payload["owners"][0]["delta"]["remote_frames_published"] == 8
 
 
+def test_model_owner_selection_settles_through_partial_topology_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _SettlingOwnerClient(_FakeClient):
+        def __init__(self) -> None:
+            super().__init__(
+                live_placements=[
+                    PlacementResult(
+                        model_id="org/TTS",
+                        instance_id="tts-instance",
+                        node_ids=["node-a"],
+                        ready=True,
+                    )
+                ]
+            )
+            self.owner_reads = 0
+
+        def get_cluster_api_owners(self) -> list[ClusterApiOwner]:
+            self.owner_reads += 1
+            if self.owner_reads == 1:
+                return [
+                    ClusterApiOwner(
+                        node_id="node-b", base_url="http://owner-b"
+                    )
+                ]
+            return [
+                ClusterApiOwner(node_id="node-a", base_url="http://owner-a"),
+                ClusterApiOwner(node_id="node-b", base_url="http://owner-b"),
+                ClusterApiOwner(node_id="node-c", base_url="http://owner-c"),
+            ]
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(
+        "skulk_test_harness.orchestrator.time.sleep", sleeps.append
+    )
+    client = _SettlingOwnerClient()
+    issues: list[Issue] = []
+
+    owners, serving_node_id = _runner()._select_model_owners(
+        client,  # type: ignore[arg-type]
+        model_id="org/TTS",
+        test_name="tts-local-remote",
+        owner_count=3,
+        owner_topology="local_remote",
+        workload_name="speech test",
+        issues=issues,
+    )
+
+    assert [owner.node_id for owner in owners] == ["node-a", "node-b", "node-c"]
+    assert serving_node_id == "node-a"
+    assert client.owner_reads == 2
+    assert sleeps == [2.0]
+    assert issues == []
+
+
+def test_model_owner_selection_fails_after_bounded_topology_settle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _PersistentlyPartialOwnerClient(_FakeClient):
+        def __init__(self) -> None:
+            super().__init__(
+                live_placements=[
+                    PlacementResult(
+                        model_id="org/TTS",
+                        instance_id="tts-instance",
+                        node_ids=["node-a"],
+                        ready=True,
+                    )
+                ]
+            )
+            self.owner_reads = 0
+
+        def get_cluster_api_owners(self) -> list[ClusterApiOwner]:
+            self.owner_reads += 1
+            return [
+                ClusterApiOwner(node_id="node-b", base_url="http://owner-b"),
+                ClusterApiOwner(node_id="node-c", base_url="http://owner-c"),
+            ]
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(
+        "skulk_test_harness.orchestrator.time.sleep", sleeps.append
+    )
+    client = _PersistentlyPartialOwnerClient()
+    issues: list[Issue] = []
+
+    owners, serving_node_id = _runner()._select_model_owners(
+        client,  # type: ignore[arg-type]
+        model_id="org/TTS",
+        test_name="tts-local-remote",
+        owner_count=3,
+        owner_topology="local_remote",
+        workload_name="speech test",
+        issues=issues,
+    )
+
+    assert owners == []
+    assert serving_node_id is None
+    assert client.owner_reads == 6
+    assert sleeps == [2.0] * 5
+    assert len(issues) == 1
+    assert issues[0].evidence == {
+        "serving_owner_count": 0,
+        "remote_owner_count": 2,
+        "required_owner_count": 3,
+    }
+
+
 def test_speech_pressure_rejects_non_idle_baseline_as_inconclusive(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
