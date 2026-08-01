@@ -1144,16 +1144,24 @@ def test_foxlight_realtime_suite_requires_local_remote_provider_evidence() -> No
         "mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit"
     ]
     test = test_sets["realtime-transcription"].tests[0]
-    assert test.speech_synthesis_model_id == ("mlx-community/fish-audio-s2-pro-8bit")
+    expected_fixture = Path(
+        "src/skulk_test_harness/fixtures/dashboard-stt-release.wav"
+    )
+    assert test.input_audio_path == expected_fixture
+    assert test.speech_synthesis_model_id is None
     assert test.speech_owner_count == 2
     assert test.speech_owner_topology == "local_remote"
     assert test.realtime_assert_provider_diagnostics is True
-    assert test.success.required_substrings == ["battery"]
+    expected_semantic_anchors = ["bravo", "hotel"]
+    assert test.success.required_substrings == expected_semantic_anchors
 
+    conversation_test = test_sets["conversational-realtime"].tests[0]
+    streaming_test = test_sets["streaming-transcription"].tests[0]
     fabric_test = test_sets["fabric-speech-chain"].tests[0]
-    assert fabric_test.speech_synthesis_model_id == (
-        "mlx-community/fish-audio-s2-pro-8bit"
-    )
+    for deterministic_test in (conversation_test, streaming_test, fabric_test):
+        assert deterministic_test.input_audio_path == expected_fixture
+        assert deterministic_test.speech_synthesis_model_id is None
+        assert deterministic_test.success.required_substrings == expected_semantic_anchors
     assert fabric_test.realtime_response_tts_model_id == (
         "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-4bit"
     )
@@ -2960,12 +2968,15 @@ def test_fabric_speech_chain_mounts_participants_and_persists_response_audio(
     owner_client = _FakeClient()
     runner = _runner()
     monkeypatch.setattr(runner, "_client_for_url", lambda _url: owner_client)
+    fixture_path = tmp_path / "deterministic.wav"
+    fixture_audio = _wav_bytes()
+    fixture_path.write_bytes(fixture_audio)
 
     test = PromptTest(
         name="fabric-speech-chain",
         kind="fabric_speech_chain",
         prompt="Hello world from the Skulk realtime speech battery.",
-        speech_synthesis_model_id="org/TTS",
+        input_audio_path=fixture_path,
         realtime_response_model_id="org/Chat",
         realtime_response_tts_model_id="org/TTS",
         max_tokens=96,
@@ -3000,12 +3011,26 @@ def test_fabric_speech_chain_mounts_participants_and_persists_response_audio(
     assert request["response_tts_model_id"] == "org/TTS"
     assert request["response_max_output_tokens"] == 96
     assert request["response_enable_thinking"] is False
-    assert client.speech_requests[0]["max_tokens"] is None
+    assert client.speech_requests == []
     assert list(tmp_path.glob("*.mp3"))
     assert {placement.model_id for placement in report.placements} == {
         "org/TTS",
         "org/Chat",
     }
+    assert result.artifact_path is not None
+    metadata = json.loads(
+        result.artifact_path.with_suffix(
+            f"{result.artifact_path.suffix}.realtime.json"
+        ).read_text()
+    )
+    assert metadata["speech_synthesis_model_id"] is None
+    assert metadata["input_audio_source"] == "configured_fixture"
+    assert metadata["input_audio_sha256"] == hashlib.sha256(
+        _wav_from_pcm16(
+            _pcm16_from_wav(fixture_audio, target_sample_rate=24_000)[0],
+            sample_rate=24_000,
+        )
+    ).hexdigest()
 
 
 def test_realtime_conversation_persists_vad_and_barge_in_evidence(

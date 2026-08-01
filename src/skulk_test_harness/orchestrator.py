@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import concurrent.futures
+import hashlib
 import io
 import json
 import mimetypes
@@ -3554,76 +3555,83 @@ class HarnessRunner:
                 issues=issues,
             )
 
-        tts_model_id = test.speech_synthesis_model_id or _first_tts_model_id(
-            client.list_models(), exclude_model_id=model_id
+        fixture_input_path = (
+            _resolve_audio_input_path(test.input_audio_path)
+            if test.input_audio_path is not None
+            else None
         )
-        if tts_model_id is None:
-            issues.append(
-                Issue(
-                    severity="error",
-                    model_id=model_id,
-                    test_name=test.name,
-                    message="No TTS model found for realtime transcription fixture",
+        tts_model_id: str | None = None
+        if fixture_input_path is None:
+            tts_model_id = test.speech_synthesis_model_id or _first_tts_model_id(
+                client.list_models(), exclude_model_id=model_id
+            )
+            if tts_model_id is None:
+                issues.append(
+                    Issue(
+                        severity="error",
+                        model_id=model_id,
+                        test_name=test.name,
+                        message="No TTS model found for realtime transcription fixture",
+                    )
                 )
-            )
-            return _realtime_transcription_result(
-                model_id=model_id,
-                test=test,
-                repetition=repetition,
-                issues=issues,
-            )
+                return _realtime_transcription_result(
+                    model_id=model_id,
+                    test=test,
+                    repetition=repetition,
+                    issues=issues,
+                )
 
-        try:
-            tts_placement = self._ensure_model_placed(
-                client,
-                tts_model_id,
-                spec,
-                report,
-            )
-        except (
-            OSError,
-            SkulkApiError,
-            httpx.HTTPError,
-            TypeError,
-            ValueError,
-        ) as exc:
-            issues.append(
-                Issue(
-                    severity="error",
-                    model_id=model_id,
-                    test_name=test.name,
-                    message="Realtime transcription roundtrip failed",
-                    evidence={
-                        "error": str(exc),
-                        "speech_synthesis_model_id": tts_model_id,
-                    },
+            try:
+                tts_placement = self._ensure_model_placed(
+                    client,
+                    tts_model_id,
+                    spec,
+                    report,
                 )
-            )
-            return _realtime_transcription_result(
-                model_id=model_id,
-                test=test,
-                repetition=repetition,
-                issues=issues,
-            )
-        if tts_placement is not None:
-            secondary_placements.append((tts_model_id, tts_placement))
-        if tts_placement is None or not tts_placement.ready:
-            issues.append(
-                Issue(
-                    severity="error",
-                    model_id=model_id,
-                    test_name=test.name,
-                    message="TTS model could not be made ready for realtime fixture",
-                    evidence={"speech_synthesis_model_id": tts_model_id},
+            except (
+                OSError,
+                SkulkApiError,
+                httpx.HTTPError,
+                TypeError,
+                ValueError,
+            ) as exc:
+                issues.append(
+                    Issue(
+                        severity="error",
+                        model_id=model_id,
+                        test_name=test.name,
+                        message="Realtime transcription roundtrip failed",
+                        evidence={
+                            "error": str(exc),
+                            "speech_synthesis_model_id": tts_model_id,
+                        },
+                    )
                 )
-            )
-            return _realtime_transcription_result(
-                model_id=model_id,
-                test=test,
-                repetition=repetition,
-                issues=issues,
-            )
-        _append_unique_placement(report, tts_placement)
+                return _realtime_transcription_result(
+                    model_id=model_id,
+                    test=test,
+                    repetition=repetition,
+                    issues=issues,
+                )
+            if tts_placement is not None:
+                secondary_placements.append((tts_model_id, tts_placement))
+            if tts_placement is None or not tts_placement.ready:
+                issues.append(
+                    Issue(
+                        severity="error",
+                        model_id=model_id,
+                        test_name=test.name,
+                        message="TTS model could not be made ready for realtime fixture",
+                        evidence={"speech_synthesis_model_id": tts_model_id},
+                    )
+                )
+                return _realtime_transcription_result(
+                    model_id=model_id,
+                    test=test,
+                    repetition=repetition,
+                    issues=issues,
+                )
+            _append_unique_placement(report, tts_placement)
 
         response_model_id: str | None = None
         response_tts_model_id: str | None = None
@@ -3632,7 +3640,11 @@ class HarnessRunner:
             response_tts_model_id = test.realtime_response_tts_model_id or tts_model_id
             response_model_id = test.realtime_response_model_id or _first_chat_model_id(
                 catalog,
-                exclude_model_ids={model_id, tts_model_id, response_tts_model_id},
+                exclude_model_ids={
+                    candidate
+                    for candidate in (model_id, tts_model_id, response_tts_model_id)
+                    if candidate is not None
+                },
             )
             if response_model_id is None or response_tts_model_id is None:
                 issues.append(
@@ -3719,26 +3731,35 @@ class HarnessRunner:
         diagnostics_before: dict[str, ProviderCapabilityDiagnosticsSnapshot] = {}
         diagnostics_after: dict[str, ProviderCapabilityDiagnosticsSnapshot] = {}
         try:
-            speech = client.audio_speech(
-                model_id=tts_model_id,
-                input_text=_expanded_prompt(test),
-                response_format="wav",
-                voice=test.speech_voice,
-                speed=test.speech_speed,
-                **_speech_generation_kwargs(test),
-            )
+            if fixture_input_path is not None:
+                source_audio = fixture_input_path.read_bytes()
+                fixture_media_type = test.input_audio_mime_type or _guess_audio_media_type(
+                    fixture_input_path
+                )
+            else:
+                assert tts_model_id is not None
+                speech = client.audio_speech(
+                    model_id=tts_model_id,
+                    input_text=_expanded_prompt(test),
+                    response_format="wav",
+                    voice=test.speech_voice,
+                    speed=test.speech_speed,
+                    **_speech_generation_kwargs(test),
+                )
+                source_audio = speech.audio
+                fixture_media_type = speech.media_type
             issues.extend(
                 _score_audio_output(
-                    tts_model_id,
+                    tts_model_id or model_id,
                     test.name,
-                    speech.audio,
+                    source_audio,
                     test.success,
                     response_format="wav",
-                    media_type=speech.media_type,
+                    media_type=fixture_media_type,
                 )
             )
             pcm16, sample_rate = _pcm16_from_wav(
-                speech.audio,
+                source_audio,
                 target_sample_rate=24_000,
             )
             realtime_fixture = _wav_from_pcm16(pcm16, sample_rate=sample_rate)
@@ -3917,6 +3938,12 @@ class HarnessRunner:
                 metadata_path = _realtime_metadata_artifact_path(
                     artifact_path,
                     speech_synthesis_model_id=tts_model_id,
+                    input_audio_sha256=hashlib.sha256(realtime_fixture).hexdigest(),
+                    input_audio_source=(
+                        "configured_fixture"
+                        if fixture_input_path is not None
+                        else "generated_tts"
+                    ),
                     response_model_id=response_model_id,
                     response_tts_model_id=response_tts_model_id,
                     sample_rate=sample_rate,
@@ -3944,6 +3971,11 @@ class HarnessRunner:
                     evidence={
                         "error": error_detail,
                         "speech_synthesis_model_id": tts_model_id,
+                        "input_audio_source": (
+                            "configured_fixture"
+                            if fixture_input_path is not None
+                            else "generated_tts"
+                        ),
                     },
                 )
             )
@@ -6134,7 +6166,9 @@ def _sanitized_realtime_execution(
 def _realtime_metadata_artifact_path(
     audio_path: Path,
     *,
-    speech_synthesis_model_id: str,
+    speech_synthesis_model_id: str | None,
+    input_audio_sha256: str,
+    input_audio_source: str,
     response_model_id: str | None,
     response_tts_model_id: str | None,
     sample_rate: int,
@@ -6151,6 +6185,8 @@ def _realtime_metadata_artifact_path(
         json.dumps(
             {
                 "speech_synthesis_model_id": speech_synthesis_model_id,
+                "input_audio_sha256": input_audio_sha256,
+                "input_audio_source": input_audio_source,
                 "response_model_id": response_model_id,
                 "response_tts_model_id": response_tts_model_id,
                 "sample_rate": sample_rate,

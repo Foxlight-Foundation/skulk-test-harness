@@ -284,10 +284,14 @@ test_sets:
           min_stream_span_s: 0.5
 ```
 
-When realtime or uploaded-audio streaming transcription generates its fixture
-through `speech_synthesis_model_id`, the harness preserves the exact submitted
-artifact after normalizing it to mono 24 kHz PCM16. This mirrors the dashboard
-realtime capture contract even when the TTS model emits another sample rate.
+Realtime, conversational realtime, Fabric speech-chain, and uploaded-audio
+streaming tests may provide `input_audio_path` for a deterministic fixture.
+Realtime paths preserve the exact submitted artifact after normalizing it to
+mono 24 kHz PCM16, and their metadata records its digest and source category
+without publishing the controller's local path. When no file is configured,
+`speech_synthesis_model_id` retains the generated-fixture behavior. Prefer a
+checked semantic fixture for transport and composition gates; qualify TTS
+quality separately so stochastic synthesis cannot create a false release red.
 
 Pressure tests distribute independent streaming clients across API owners
 discovered from `/v1/diagnostics/cluster`. Every request is scored and saved as

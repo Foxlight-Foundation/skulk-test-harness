@@ -1267,8 +1267,9 @@ class PromptTest(HarnessBaseModel):
     input_audio_path: Path | None = Field(
         default=None,
         description=(
-            "For `kind: audio_transcription`, path to an audio fixture. Relative "
-            "paths resolve from the current harness working directory."
+            "For transcription, realtime, and Fabric speech-chain tests, path "
+            "to a deterministic audio fixture. Relative paths resolve from the "
+            "current harness working directory."
         ),
     )
     input_audio_mime_type: str | None = Field(
@@ -1290,9 +1291,9 @@ class PromptTest(HarnessBaseModel):
     speech_synthesis_model_id: str | None = Field(
         default=None,
         description=(
-            "For `kind: realtime_transcription`, optional TTS model used to "
-            "generate the semantic PCM16 fixture. When unset, the harness "
-            "selects the first live catalog model advertising TTS support."
+            "For realtime tests without `input_audio_path`, optional TTS model "
+            "used to generate the semantic PCM16 fixture. When unset, the "
+            "harness selects the first live catalog model advertising TTS support."
         ),
     )
     realtime_response_model_id: str | None = Field(

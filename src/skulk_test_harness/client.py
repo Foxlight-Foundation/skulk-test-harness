@@ -2326,14 +2326,15 @@ class SkulkClient:
                                 speech_started_events=speech_started_events,
                                 speech_stopped_events=speech_stopped_events,
                                 provider_sessions=len(transcripts),
-                                # One append may already be in flight when each
-                                # server-VAD stop event reaches the client. The
-                                # provider can legitimately commit without
-                                # accounting for that boundary frame.
+                                # The append containing the VAD boundary may
+                                # retain an unforwarded tail, and one subsequent
+                                # append may already be in flight before the
+                                # stop event reaches the client. Neither belongs
+                                # to the committed provider turn.
                                 provider_input_bytes_min=max(
                                     0,
                                     sent_input_bytes
-                                    - (bytes_per_frame * len(transcripts)),
+                                    - (2 * bytes_per_frame * len(transcripts)),
                                 ),
                                 barge_in_sent=barge_in_sent,
                                 events=event_timeline,
