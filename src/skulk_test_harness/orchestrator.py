@@ -69,6 +69,13 @@ from skulk_test_harness.utils import (
 # None, started-at monotonic seconds, ended-at monotonic seconds).
 _ConcurrentRecord = tuple[ChatExecution | None, str | None, float, float]
 
+# Multi-owner pressure tests run immediately after a load-producing request and
+# depend on a cluster-diagnostics fan-out plus controller reachability probes.
+# A single partial snapshot must not fail the suite while healthy peer routes
+# are settling, but a persistent topology gap still needs to fail loudly.
+_OWNER_TOPOLOGY_SETTLE_ATTEMPTS = 6
+_OWNER_TOPOLOGY_SETTLE_DELAY_S = 2.0
+
 
 class _SpeechGenerationKwargs(TypedDict):
     """Explicit model-generation controls forwarded to speech synthesis."""
@@ -2989,74 +2996,88 @@ class HarnessRunner:
     ) -> tuple[list[ClusterApiOwner], str | None]:
         """Choose reachable API owners relative to a mounted model placement."""
 
-        owners = client.get_cluster_api_owners()
-        serving_node_ids = {
-            node_id
-            for placement in client.find_placements_for_model(model_id)
-            if placement.ready
-            for node_id in placement.node_ids
-        }
-        if owner_topology == "any":
-            selected = owners[:owner_count]
-            serving_node_id = next(iter(sorted(serving_node_ids)), None)
-        else:
-            if owner_count < 2:
-                issues.append(
-                    Issue(
-                        severity="error",
-                        model_id=model_id,
-                        test_name=test_name,
-                        message=(
-                            f"{workload_name} local_remote topology requires at "
-                            "least two owners"
-                        ),
-                    )
-                )
-                return [], None
-            local = sorted(
-                (owner for owner in owners if owner.node_id in serving_node_ids),
-                key=lambda owner: owner.node_id,
-            )
-            remote = sorted(
-                (owner for owner in owners if owner.node_id not in serving_node_ids),
-                key=lambda owner: owner.node_id,
-            )
-            if not local or len(remote) < owner_count - 1:
-                issues.append(
-                    Issue(
-                        severity="error",
-                        model_id=model_id,
-                        test_name=test_name,
-                        message=(
-                            "Could not resolve the requested deterministic local/remote "
-                            "API owner topology"
-                        ),
-                        evidence={
-                            "serving_owner_count": len(local),
-                            "remote_owner_count": len(remote),
-                            "required_owner_count": owner_count,
-                        },
-                    )
-                )
-                return [], None
-            selected = [local[0], *remote[: owner_count - 1]]
-            serving_node_id = local[0].node_id
-
-        if len(selected) < owner_count:
+        if owner_topology == "local_remote" and owner_count < 2:
             issues.append(
                 Issue(
                     severity="error",
                     model_id=model_id,
                     test_name=test_name,
-                    message=f"Not enough reachable API owners for {workload_name}",
+                    message=(
+                        f"{workload_name} local_remote topology requires at "
+                        "least two owners"
+                    ),
+                )
+            )
+            return [], None
+
+        owners: list[ClusterApiOwner] = []
+        serving_node_ids: set[str] = set()
+        local: list[ClusterApiOwner] = []
+        remote: list[ClusterApiOwner] = []
+        serving_node_id: str | None = None
+        for attempt in range(_OWNER_TOPOLOGY_SETTLE_ATTEMPTS):
+            owners = client.get_cluster_api_owners()
+            serving_node_ids = {
+                node_id
+                for placement in client.find_placements_for_model(model_id)
+                if placement.ready
+                for node_id in placement.node_ids
+            }
+            if owner_topology == "any":
+                selected = owners[:owner_count]
+                serving_node_id = next(iter(sorted(serving_node_ids)), None)
+                if len(selected) >= owner_count:
+                    return selected, serving_node_id
+            else:
+                local = sorted(
+                    (owner for owner in owners if owner.node_id in serving_node_ids),
+                    key=lambda owner: owner.node_id,
+                )
+                remote = sorted(
+                    (
+                        owner
+                        for owner in owners
+                        if owner.node_id not in serving_node_ids
+                    ),
+                    key=lambda owner: owner.node_id,
+                )
+                if local and len(remote) >= owner_count - 1:
+                    return [local[0], *remote[: owner_count - 1]], local[0].node_id
+            if attempt < _OWNER_TOPOLOGY_SETTLE_ATTEMPTS - 1:
+                time.sleep(_OWNER_TOPOLOGY_SETTLE_DELAY_S)
+
+        if owner_topology == "local_remote":
+            issues.append(
+                Issue(
+                    severity="error",
+                    model_id=model_id,
+                    test_name=test_name,
+                    message=(
+                        "Could not resolve the requested deterministic local/remote "
+                        "API owner topology"
+                    ),
                     evidence={
+                        "serving_owner_count": len(local),
+                        "remote_owner_count": len(remote),
                         "required_owner_count": owner_count,
-                        "reachable_owner_count": len(owners),
                     },
                 )
             )
-            return [], serving_node_id
-        return selected, serving_node_id
+            return [], None
+
+        issues.append(
+            Issue(
+                severity="error",
+                model_id=model_id,
+                test_name=test_name,
+                message=f"Not enough reachable API owners for {workload_name}",
+                evidence={
+                    "required_owner_count": owner_count,
+                    "reachable_owner_count": len(owners),
+                },
+            )
+        )
+        return [], serving_node_id
 
     def _capture_vision_media_diagnostics(
         self, owners: list[ClusterApiOwner]
