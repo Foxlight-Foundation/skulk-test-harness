@@ -912,6 +912,13 @@ def test_realtime_conversation_uses_vad_multi_turn_and_barge_in(
             {"type": "input_audio_buffer.speech_stopped"},
             {"type": "input_audio_buffer.committed"},
             {
+                "type": "error",
+                "error": {
+                    "code": "turn_in_progress",
+                    "message": "audio cannot be appended until the committed turn completes",
+                },
+            },
+            {
                 "type": "conversation.item.input_audio_transcription.completed",
                 "transcript": "first turn",
             },
@@ -975,6 +982,7 @@ def test_realtime_conversation_uses_vad_multi_turn_and_barge_in(
     assert execution.speech_stopped_events == 2
     assert execution.provider_sessions == 2
     assert execution.barge_in_sent is True
+    assert execution.event_types.count("error") == 1
     audio_events = [
         event for event in execution.events if event["type"] == "response.audio.delta"
     ]
@@ -1016,6 +1024,46 @@ def test_realtime_transcription_disconnect_probe_closes_without_commit(
         json.loads(message)["type"] != "input_audio_buffer.commit"
         for message in socket.sent
     )
+
+
+def test_realtime_conversation_surfaces_turn_error_before_vad_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A turn error before speech stops is not a recoverable late frame."""
+
+    socket = _FakeWebSocket(
+        [
+            {"type": "session.created"},
+            {"type": "session.updated"},
+            {"type": "input_audio_buffer.speech_started"},
+            {
+                "type": "error",
+                "error": {
+                    "code": "turn_in_progress",
+                    "message": "unexpected overlapping turn",
+                },
+            },
+        ]
+    )
+    monkeypatch.setattr(
+        client_module.websocket_client,
+        "connect",
+        lambda *_args, **_kwargs: socket,
+    )
+    client = SkulkClient("http://skulk.test")
+    try:
+        with pytest.raises(SkulkApiError, match="unexpected overlapping turn"):
+            client.realtime_transcription(
+                model_id="org/STT",
+                pcm16=b"\x01\x00" * 160,
+                sample_rate=24_000,
+                frame_duration_ms=20,
+                pace_audio=False,
+                response_model_id="org/chat",
+                server_vad=True,
+            )
+    finally:
+        client.close()
 
 
 def test_realtime_transcription_surfaces_server_error(

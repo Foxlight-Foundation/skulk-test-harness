@@ -68,6 +68,22 @@ def _realtime_url(base_url: str, model_id: str, *, fabric_chain: bool = False) -
     )
 
 
+def _is_recoverable_vad_late_frame(
+    event: Mapping[str, object],
+    *,
+    waiting_for_vad_transcript: bool,
+) -> bool:
+    """Return whether Skulk rejected audio already queued past a VAD boundary."""
+
+    error = event.get("error")
+    return (
+        waiting_for_vad_transcript
+        and event.get("type") == "error"
+        and isinstance(error, Mapping)
+        and error.get("code") == "turn_in_progress"
+    )
+
+
 class SkulkApiError(RuntimeError):
     """Raised when Skulk returns an unsuccessful response."""
 
@@ -1973,6 +1989,7 @@ class SkulkClient:
         response_statuses: list[str] = []
         speech_started_events = 0
         speech_stopped_events = 0
+        waiting_for_vad_transcript = False
         turns_sent = 0
         sent_input_bytes = 0
         sent_input_frames = 0
@@ -2186,6 +2203,8 @@ class SkulkClient:
                             )
                         )
                 while True:
+                    # The receive loop alone owns this flag, so sender-thread timing
+                    # cannot make a pre-boundary protocol error look recoverable.
                     event = _receive_realtime_event(
                         connection,
                         timeout_s=self.stream_read_timeout_s,
@@ -2199,6 +2218,7 @@ class SkulkClient:
                         continue
                     if event_type == "input_audio_buffer.speech_stopped":
                         speech_stopped_events += 1
+                        waiting_for_vad_transcript = True
                         stop_active_sender()
                         continue
                     if (
@@ -2221,6 +2241,7 @@ class SkulkClient:
                             raise TypeError("Realtime final transcript was not text")
                         transcript = final_transcript
                         transcripts.append(final_transcript)
+                        waiting_for_vad_transcript = False
                         if first_transcript_s is None:
                             first_transcript_s = time.monotonic() - started_at
                         if response_model_id is None:
@@ -2326,6 +2347,11 @@ class SkulkClient:
                         "error",
                         "conversation.item.input_audio_transcription.failed",
                     }:
+                        if _is_recoverable_vad_late_frame(
+                            event,
+                            waiting_for_vad_transcript=waiting_for_vad_transcript,
+                        ):
+                            continue
                         raise SkulkApiError(
                             "WS", path, 0, _realtime_error_message(event)
                         )
