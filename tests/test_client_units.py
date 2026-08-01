@@ -951,11 +951,12 @@ def test_realtime_conversation_uses_vad_multi_turn_and_barge_in(
         "connect",
         lambda *_args, **_kwargs: socket,
     )
+    fixture_pcm16 = b"\x01\x00" * 160
     client = SkulkClient("http://skulk.test")
     try:
         execution = client.realtime_transcription(
             model_id="org/STT",
-            pcm16=b"\x01\x00" * 160,
+            pcm16=fixture_pcm16,
             sample_rate=24_000,
             frame_duration_ms=20,
             pace_audio=False,
@@ -983,9 +984,8 @@ def test_realtime_conversation_uses_vad_multi_turn_and_barge_in(
     assert execution.provider_sessions == 2
     assert execution.barge_in_sent is True
     assert execution.event_types.count("error") == 1
-    assert execution.provider_input_bytes_min == max(
-        0,
-        execution.input_bytes - (2 * 960 * len(execution.transcripts)),
+    assert execution.provider_input_bytes_min == (
+        len(fixture_pcm16) * len(execution.transcripts)
     )
     audio_events = [
         event for event in execution.events if event["type"] == "response.audio.delta"
