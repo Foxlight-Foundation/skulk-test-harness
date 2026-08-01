@@ -49,10 +49,15 @@ def test_cluster_api_urls_include_local_and_reachable_peers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = SkulkClient("http://local.test/")
-    monkeypatch.setattr(
-        client,
-        "_request_json",
-        lambda *_args, **_kwargs: {
+
+    def request_json(_method: str, path: str, **_kwargs: object) -> dict[str, object]:
+        if path == "/state":
+            return {
+                "nodeIdentities": {"local": {}, "peer-a": {}, "peer-b": {}},
+                "nodeNetwork": {},
+            }
+        assert path == "/v1/diagnostics/cluster"
+        return {
             "localNodeId": "local",
             "nodes": [
                 {
@@ -64,7 +69,12 @@ def test_cluster_api_urls_include_local_and_reachable_peers(
                 {"nodeId": "peer-a", "url": "http://peer-a.test/", "ok": True},
                 {"nodeId": "peer-b", "url": "http://peer-b.test", "ok": False},
             ],
-        },
+        }
+
+    monkeypatch.setattr(
+        client,
+        "_request_json",
+        request_json,
     )
     monkeypatch.setattr(client, "_api_url_reachable", lambda _url: True)
     try:
@@ -80,10 +90,15 @@ def test_cluster_api_urls_prefers_controller_reachable_node_identity(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = SkulkClient("http://controller.test:52415")
-    monkeypatch.setattr(
-        client,
-        "_request_json",
-        lambda *_args, **_kwargs: {
+
+    def request_json(_method: str, path: str, **_kwargs: object) -> dict[str, object]:
+        if path == "/state":
+            return {
+                "nodeIdentities": {"controller": {}, "peer-a": {}},
+                "nodeNetwork": {},
+            }
+        assert path == "/v1/diagnostics/cluster"
+        return {
             "localNodeId": "controller",
             "nodes": [
                 {
@@ -99,7 +114,12 @@ def test_cluster_api_urls_prefers_controller_reachable_node_identity(
                     },
                 }
             ],
-        },
+        }
+
+    monkeypatch.setattr(
+        client,
+        "_request_json",
+        request_json,
     )
     attempted: list[str] = []
 
@@ -123,10 +143,15 @@ def test_cluster_api_owners_preserve_node_identity(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = SkulkClient("http://controller.test:52415")
-    monkeypatch.setattr(
-        client,
-        "_request_json",
-        lambda *_args, **_kwargs: {
+
+    def request_json(_method: str, path: str, **_kwargs: object) -> dict[str, object]:
+        if path == "/state":
+            return {
+                "nodeIdentities": {"node-local": {}, "node-remote": {}},
+                "nodeNetwork": {},
+            }
+        assert path == "/v1/diagnostics/cluster"
+        return {
             "localNodeId": "node-local",
             "nodes": [
                 {"nodeId": "node-local", "ok": True},
@@ -136,13 +161,149 @@ def test_cluster_api_owners_preserve_node_identity(
                     "ok": True,
                 },
             ],
-        },
+        }
+
+    monkeypatch.setattr(
+        client,
+        "_request_json",
+        request_json,
     )
     monkeypatch.setattr(client, "_api_url_reachable", lambda _url: True)
     try:
         assert client.get_cluster_api_owners() == [
             ClusterApiOwner("node-local", "http://controller.test:52415"),
             ClusterApiOwner("node-remote", "http://remote.test:52415"),
+        ]
+    finally:
+        client.close()
+
+
+def test_cluster_api_owners_fill_partial_diagnostics_from_replicated_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = SkulkClient("http://controller.test:52415")
+
+    def request_json(_method: str, path: str, **_kwargs: object) -> dict[str, object]:
+        if path == "/v1/diagnostics/cluster":
+            return {
+                "localNodeId": "node-local",
+                "nodes": [
+                    {
+                        "nodeId": "node-seen",
+                        "url": "http://seen.test:52415",
+                        "ok": True,
+                    }
+                ],
+            }
+        assert path == "/state"
+        return {
+            "nodeIdentities": {
+                "node-local": {},
+                "node-seen": {},
+                "node-missing": {"friendlyName": "missing.test"},
+            },
+            "nodeNetwork": {
+                "node-missing": {
+                    "interfaces": [
+                        {"ipAddress": "192.168.1.20"},
+                        {"ipAddress": "100.100.0.20"},
+                    ]
+                }
+            },
+        }
+
+    monkeypatch.setattr(client, "_request_json", request_json)
+    monkeypatch.setattr(client, "_api_url_reachable", lambda _url: True)
+    attempted: list[str] = []
+
+    def api_url_node_id(url: str) -> str | None:
+        attempted.append(url)
+        return "node-missing" if url == "http://100.100.0.20:52415" else None
+
+    monkeypatch.setattr(client, "_api_url_node_id", api_url_node_id)
+    try:
+        assert client.get_cluster_api_owners() == [
+            ClusterApiOwner("node-local", "http://controller.test:52415"),
+            ClusterApiOwner("node-seen", "http://seen.test:52415"),
+            ClusterApiOwner("node-missing", "http://100.100.0.20:52415"),
+        ]
+    finally:
+        client.close()
+
+    assert attempted == ["http://100.100.0.20:52415"]
+
+
+def test_cluster_api_owners_reject_wrong_state_route_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = SkulkClient("http://controller.test:52415")
+
+    def request_json(_method: str, path: str, **_kwargs: object) -> dict[str, object]:
+        if path == "/v1/diagnostics/cluster":
+            return {"localNodeId": "node-local", "nodes": []}
+        assert path == "/state"
+        return {
+            "nodeIdentities": {"node-local": {}, "node-remote": {}},
+            "nodeNetwork": {
+                "node-remote": {
+                    "interfaces": [
+                        {"ipAddress": "100.100.0.21"},
+                        {"ipAddress": "192.168.1.21"},
+                    ]
+                }
+            },
+        }
+
+    monkeypatch.setattr(client, "_request_json", request_json)
+    attempted: list[str] = []
+
+    def api_url_node_id(url: str) -> str | None:
+        attempted.append(url)
+        if url == "http://100.100.0.21:52415":
+            return "wrong-node"
+        if url == "http://192.168.1.21:52415":
+            return "node-remote"
+        return None
+
+    monkeypatch.setattr(client, "_api_url_node_id", api_url_node_id)
+    try:
+        assert client.get_cluster_api_owners() == [
+            ClusterApiOwner("node-local", "http://controller.test:52415"),
+            ClusterApiOwner("node-remote", "http://192.168.1.21:52415"),
+        ]
+    finally:
+        client.close()
+
+    assert attempted == [
+        "http://100.100.0.21:52415",
+        "http://192.168.1.21:52415",
+    ]
+
+
+def test_state_node_api_candidates_prioritize_routable_ipv4() -> None:
+    client = SkulkClient("http://controller.test:52415")
+    state: dict[str, object] = {
+        "nodeIdentities": {"node-remote": {"friendlyName": "remote.test"}},
+        "nodeNetwork": {
+            "node-remote": {
+                "interfaces": [
+                    {"ipAddress": "127.0.0.1"},
+                    {"ipAddress": "169.254.2.3"},
+                    {"ipAddress": "192.168.1.22"},
+                    {"ipAddress": "100.100.0.22"},
+                    {"ipAddress": "fe80::1%en0"},
+                    {"ipAddress": "203.0.113.22"},
+                ]
+            }
+        },
+    }
+    try:
+        assert client._state_node_api_candidates(state, "node-remote") == [
+            "http://100.100.0.22:52415",
+            "http://192.168.1.22:52415",
+            "http://169.254.2.3:52415",
+            "http://203.0.113.22:52415",
+            "http://remote.test:52415",
         ]
     finally:
         client.close()

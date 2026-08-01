@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import ipaddress
 import json
 import time
 from collections.abc import Mapping
@@ -26,6 +27,12 @@ from skulk_test_harness.utils import unwrap_tagged
 
 QueryParams = dict[str, str | int | float | bool | list[str]]
 _REALTIME_MAX_MESSAGE_BYTES = 2 * 1024 * 1024
+_TAILSCALE_IPV4_NETWORK = ipaddress.ip_network("100.64.0.0/10")
+_PRIVATE_LAN_IPV4_NETWORKS = (
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+)
 
 
 def _required_int(payload: Mapping[str, object], key: str) -> int:
@@ -968,7 +975,9 @@ class SkulkClient:
         Peer URLs in cluster diagnostics are selected from the serving node's
         routes and may not be reachable from the harness controller. Prefer a
         node's advertised overlay DNS or friendly hostname when available, and
-        probe each candidate before assigning pressure traffic to it.
+        probe each candidate before assigning pressure traffic to it. Cluster
+        diagnostics is a live fan-out and can be partial under load, so fill
+        missing owners from replicated state using identity-verified routes.
         """
 
         payload = self._request_json("GET", "/v1/diagnostics/cluster")
@@ -978,22 +987,41 @@ class SkulkClient:
         if not isinstance(local_node_id, str) or not local_node_id:
             local_node_id = self.get_node_id()
         owners = [ClusterApiOwner(node_id=local_node_id, base_url=self.base_url)]
-        if not isinstance(payload, dict):
-            return owners
-        nodes = payload.get("nodes")
-        if not isinstance(nodes, list):
-            return owners
         seen_node_ids = {local_node_id}
-        for node in nodes:
-            if not isinstance(node, dict) or node.get("ok") is not True:
-                continue
-            node_id = node.get("nodeId")
+        if isinstance(payload, dict):
+            nodes = payload.get("nodes")
+            if isinstance(nodes, list):
+                for node in nodes:
+                    if not isinstance(node, dict) or node.get("ok") is not True:
+                        continue
+                    node_id = node.get("nodeId")
+                    if (
+                        not isinstance(node_id, str)
+                        or not node_id
+                        or node_id in seen_node_ids
+                    ):
+                        continue
+                    for candidate in self._cluster_node_api_candidates(node):
+                        if any(owner.base_url == candidate for owner in owners):
+                            continue
+                        if self._api_url_reachable(candidate):
+                            owners.append(
+                                ClusterApiOwner(node_id=node_id, base_url=candidate)
+                            )
+                            seen_node_ids.add(node_id)
+                            break
+
+        state = self.get_state()
+        identities = state.get("nodeIdentities")
+        if not isinstance(identities, dict):
+            return owners
+        for node_id in identities:
             if not isinstance(node_id, str) or not node_id or node_id in seen_node_ids:
                 continue
-            for candidate in self._cluster_node_api_candidates(node):
+            for candidate in self._state_node_api_candidates(state, node_id):
                 if any(owner.base_url == candidate for owner in owners):
-                    break
-                if self._api_url_reachable(candidate):
+                    continue
+                if self._api_url_node_id(candidate) == node_id:
                     owners.append(ClusterApiOwner(node_id=node_id, base_url=candidate))
                     seen_node_ids.add(node_id)
                     break
@@ -1036,6 +1064,89 @@ class SkulkClient:
             if normalized_reported_url not in candidates:
                 candidates.append(normalized_reported_url)
         return candidates
+
+    def _state_node_api_candidates(
+        self,
+        state: dict[str, object],
+        node_id: str,
+    ) -> list[str]:
+        """Build controller routes for one node from replicated network state.
+
+        Only IPv4 routes are used because scoped link-local IPv6 addresses are
+        meaningful on the reporting node, not necessarily on the controller.
+        Overlay routes are the most controller-neutral choice, followed by LAN,
+        link-local, and finally other advertised addresses.
+        """
+
+        node_network = state.get("nodeNetwork")
+        if not isinstance(node_network, dict):
+            return []
+        network = node_network.get(node_id)
+        if not isinstance(network, dict):
+            return []
+        interfaces = network.get("interfaces")
+        if not isinstance(interfaces, list):
+            return []
+
+        ranked_addresses: list[tuple[int, int, str]] = []
+        for index, interface in enumerate(interfaces):
+            if not isinstance(interface, dict):
+                continue
+            raw_address = interface.get("ipAddress")
+            if not isinstance(raw_address, str) or not raw_address:
+                continue
+            address_text = raw_address.split("%", maxsplit=1)[0]
+            try:
+                address = ipaddress.ip_address(address_text)
+            except ValueError:
+                continue
+            if (
+                address.version != 4
+                or address.is_loopback
+                or address.is_unspecified
+                or address.is_multicast
+            ):
+                continue
+            if address in _TAILSCALE_IPV4_NETWORK:
+                priority = 0
+            elif address.is_link_local:
+                priority = 2
+            elif any(address in network for network in _PRIVATE_LAN_IPV4_NETWORKS):
+                priority = 1
+            else:
+                priority = 3
+            ranked_addresses.append((priority, index, address_text))
+
+        candidates: list[str] = []
+        for _priority, _index, address in sorted(ranked_addresses):
+            candidate = _replace_url_host(self.base_url, address)
+            if candidate not in candidates:
+                candidates.append(candidate)
+
+        identities = state.get("nodeIdentities")
+        identity = identities.get(node_id) if isinstance(identities, dict) else None
+        friendly_name = identity.get("friendlyName") if isinstance(identity, dict) else None
+        if isinstance(friendly_name, str) and friendly_name:
+            candidate = _replace_url_host(self.base_url, friendly_name)
+            if candidate not in candidates:
+                candidates.append(candidate)
+        return candidates
+
+    def _api_url_node_id(self, base_url: str) -> str | None:
+        """Return a candidate API route's node ID, or ``None`` if unreachable."""
+
+        timeout_seconds = min(5.0, self.request_timeout_s)
+        try:
+            response = httpx.get(
+                f"{base_url}/node_id",
+                timeout=httpx.Timeout(timeout_seconds),
+            )
+        except httpx.HTTPError:
+            return None
+        if response.status_code >= 400:
+            return None
+        payload = response.json()
+        return payload if isinstance(payload, str) and payload else None
 
     def _api_url_reachable(self, base_url: str) -> bool:
         """Return whether the controller can reach a candidate Skulk API."""
