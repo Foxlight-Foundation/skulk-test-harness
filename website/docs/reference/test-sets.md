@@ -100,10 +100,10 @@ Each map key must match the test set's `name`.
 | `speech_chat_prompt` | Prompt sent by mixed-pressure chat workers |
 | `speech_slow_workers` | Leading pressure workers that intentionally delay stream reads |
 | `speech_slow_reader_delay_s` | Delay after each received chunk for slow pressure workers |
-| `input_audio_path` | Optional local fixture path for batch or streaming audio transcription; streaming tests can generate a TTS fixture instead |
+| `input_audio_path` | Optional deterministic local fixture path for batch, streaming, realtime, conversational realtime, or Fabric speech-chain tests; realtime WAV input is normalized to mono 24 kHz PCM16 |
 | `input_audio_mime_type` | Optional MIME type for transcription fixture upload; inferred from the fixture extension when omitted |
 | `transcription_model_id` | Optional STT model used by `kind: speech_roundtrip` |
-| `speech_synthesis_model_id` | Optional TTS fixture model used by realtime or uploaded-audio streaming transcription; generated WAV fixtures are normalized to mono 24 kHz PCM16 |
+| `speech_synthesis_model_id` | Optional TTS fixture model used when realtime or uploaded-audio streaming transcription does not provide `input_audio_path`; generated WAV fixtures are normalized to mono 24 kHz PCM16 |
 | `realtime_response_model_id` | Mounted chat participant required by conversational realtime and Fabric-chain tests |
 | `realtime_response_tts_model_id` | Mounted response TTS participant required by conversational realtime and Fabric-chain tests |
 | `transcription_response_format` | STT response format, such as `json` or `text` |
