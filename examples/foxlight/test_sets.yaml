@@ -955,13 +955,44 @@ test_sets:
         kind: chat
         model_ids:
           - mlx-community/Qwen3-VL-4B-Instruct-4bit
-          - mlx-community/Qwen3.5-2B-4bit
         system: Report only evidence visible in the supplied image.
         prompt: >-
           Read the large six-character code. Then name the colored shape.
           Choose the color from orange, cyan, magenta, or lime, and the shape
           from circle, diamond, or triangle. Answer exactly: CODE; COLOR SHAPE.
         max_tokens: 320
+        temperature: 0
+        enable_thinking: false
+        repetitions: 2
+        images:
+          - input_path: fixtures/vision/semantic-qualification-card.png
+            media_type: image/png
+        success:
+          min_chars: 16
+          required_regexes:
+            - "(?i)\\bFUE4ZG\\b"
+            - "(?i)\\b(?:cyan|teal)\\b"
+            - "(?i)\\bdiamond\\b"
+          forbidden_substrings:
+            - bedroom
+            - furniture
+            - potted plant
+            - "<|im_start|>"
+            - "<|im_end|>"
+            - "<|image|>"
+            - "<start_of_turn>"
+
+      - name: qwen35-semantic-card-reading
+        kind: chat
+        model_ids:
+          - mlx-community/Qwen3.5-2B-4bit
+        prompt: >-
+          Inspect the image and give only three facts on one line: first,
+          transcribe the exact six-character code at the top; second, state
+          which color the shape is among orange, cyan, magenta, or lime; and
+          third, state whether the shape is a circle, diamond, or triangle.
+          Do not echo instruction labels.
+        max_tokens: 192
         temperature: 0
         enable_thinking: false
         repetitions: 2

@@ -1349,9 +1349,17 @@ def test_vision_suite_uses_original_card_and_strict_semantic_checks(
     foxlight_vision_tests = foxlight_sets["vision"].tests
     assert {test.name for test in foxlight_vision_tests} == {
         "qwen-semantic-card-reading",
+        "qwen35-semantic-card-reading",
         "gemma3n-semantic-card-reading",
         "gemma4-semantic-card-reading",
     }
+    qwen35_vision = next(
+        test
+        for test in foxlight_vision_tests
+        if test.name == "qwen35-semantic-card-reading"
+    )
+    assert qwen35_vision.model_ids == ["mlx-community/Qwen3.5-2B-4bit"]
+    assert "CODE; COLOR SHAPE" not in qwen35_vision.prompt
     for vision in foxlight_vision_tests:
         assert vision.repetitions == 2
         assert "orange, cyan, magenta, or lime" in vision.prompt
