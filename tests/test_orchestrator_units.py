@@ -1477,12 +1477,14 @@ def test_vision_suite_uses_original_card_and_strict_semantic_checks(
         for test in foxlight_data_plane_tests
     } == {
         "qwen-image-local-remote-routing": (
-            [
-                "mlx-community/Qwen3-VL-4B-Instruct-4bit",
-                "mlx-community/Qwen3.5-2B-4bit",
-            ],
+            ["mlx-community/Qwen3-VL-4B-Instruct-4bit"],
             320,
             "Report only evidence visible in the supplied image.",
+        ),
+        "qwen35-image-local-remote-routing": (
+            ["mlx-community/Qwen3.5-2B-4bit"],
+            192,
+            None,
         ),
         "gemma3n-image-local-remote-routing": (
             ["mlx-community/gemma-3n-E2B-it-4bit"],
@@ -1509,6 +1511,12 @@ def test_vision_suite_uses_original_card_and_strict_semantic_checks(
             "fixtures/vision/semantic-qualification-card.png"
         )
         assert len(data_plane.success.required_regexes) == 3
+    qwen35_data_plane = next(
+        test
+        for test in foxlight_data_plane_tests
+        if test.name == "qwen35-image-local-remote-routing"
+    )
+    assert "CODE; COLOR SHAPE" not in qwen35_data_plane.prompt
 
 
 def test_foxlight_vision_model_set_spans_three_families() -> None:
