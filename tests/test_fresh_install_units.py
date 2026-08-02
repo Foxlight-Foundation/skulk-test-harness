@@ -1953,6 +1953,9 @@ def test_random_vision_fixture_has_exact_judge_free_contract(tmp_path: Path) -> 
     assert first.response_format_matches(
         f"{first.color} {first.shape} | {grouped_code}"
     )
+    assert first.response_format_matches(
+        f"{first.color} | {first.shape} | {grouped_code}"
+    )
     assert first.response_format_matches(f"COLOR SHAPE | CODE {exact_response}")
     assert first.response_format_matches(
         "I checked the visible attributes.\n\n" + exact_response
@@ -2095,6 +2098,32 @@ def test_direct_vision_requires_concise_response_and_redacts_code() -> None:
     assert evidence.response_excerpt is not None
     assert "<hidden-code>" in evidence.response_excerpt
     assert fixture.code not in evidence.response_excerpt
+
+
+def test_direct_vision_accepts_compact_pipe_separated_attributes() -> None:
+    """A concise alternate delimiter does not hide correct image understanding."""
+
+    fixture = generate_vision_fixture()
+
+    class FakeClient:
+        def stream_chat(self, **kwargs: object) -> SimpleNamespace:
+            del kwargs
+            return SimpleNamespace(
+                text=f"{fixture.color} | {fixture.shape} | {fixture.code}"
+            )
+
+    evidence = qualify_direct_vision(
+        cast(SkulkClient, FakeClient()),
+        model_id="org/vision-model",
+        fixture=fixture,
+        enable_thinking=False,
+    )
+
+    assert evidence.passed is True
+    assert evidence.response_matched_code is True
+    assert evidence.response_matched_color is True
+    assert evidence.response_matched_shape is True
+    assert evidence.response_matched_format is True
 
 
 class _LeaseStore:
