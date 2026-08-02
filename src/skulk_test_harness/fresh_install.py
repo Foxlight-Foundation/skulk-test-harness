@@ -3080,13 +3080,13 @@ def _wait_for_restored_declared_topology(
     deadline = time.monotonic() + timeout_s
     last_error: Exception | None = None
     while time.monotonic() < deadline:
-        _check_heartbeat(heartbeat)
+        _observe_heartbeat_during_recovery(heartbeat)
         observations: list[
             tuple[_PhysicalFleetMemberRuntime, str, int, frozenset[str]]
         ] = []
         try:
             for member in members:
-                _check_heartbeat(heartbeat)
+                _observe_heartbeat_during_recovery(heartbeat)
                 if member.local_port is None:
                     raise RuntimeError(
                         f"member {member.ordinal} lacks a recovery API tunnel"
@@ -3115,8 +3115,6 @@ def _wait_for_restored_declared_topology(
                 ),
             )
             return observations
-        except LeaseHeartbeatError:
-            raise
         except Exception as exception:  # noqa: BLE001 - restored peers converge
             last_error = exception
         time.sleep(poll_interval_s)
@@ -3914,6 +3912,20 @@ def _check_heartbeat(
     """Abort at the next lifecycle boundary after a renewal failure."""
 
     if heartbeat is not None:
+        heartbeat.raise_if_failed()
+
+
+def _observe_heartbeat_during_recovery(
+    heartbeat: AuthoritativeLeaseHeartbeat,
+) -> None:
+    """Poll lease health without allowing failure to interrupt restoration.
+
+    The heartbeat retains its first failure, so the lifecycle reports it and
+    performs the emergency extension immediately after recovery. Original
+    services must still finish restoring even when lease renewal has failed.
+    """
+
+    with suppress(LeaseHeartbeatError):
         heartbeat.raise_if_failed()
 
 

@@ -1282,6 +1282,8 @@ def test_restored_topology_wait_retries_until_every_member_view_agrees(
 
         def raise_if_failed(self) -> None:
             self.calls += 1
+            if self.calls >= 2:
+                raise LeaseHeartbeatError("renewal failed during recovery")
 
     heartbeat = Heartbeat()
     monkeypatch.setattr(fresh_install_module, "SkulkClient", FakeSkulkClient)
