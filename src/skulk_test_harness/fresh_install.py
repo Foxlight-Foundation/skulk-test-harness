@@ -666,6 +666,12 @@ class FreshInstallQualifier:
             for member in members
             if member.target_name == fleet.entrypoint_target
         )
+        e2e_entrypoint = next(
+            member
+            for member in members
+            if member.target_name
+            == (fleet.e2e_entrypoint_target or fleet.entrypoint_target)
+        )
         contract_members = [
             next(member for member in members if member.target_name == target_name)
             for target_name in fleet.qualification_targets
@@ -712,6 +718,7 @@ class FreshInstallQualifier:
                 fleet=fleet,
                 members=members,
                 entrypoint=entrypoint,
+                e2e_entrypoint=e2e_entrypoint,
                 contract_members=contract_members,
                 profile=profile,
                 expected_commit=expected_commit,
@@ -971,6 +978,7 @@ class FreshInstallQualifier:
         fleet: FreshInstallPhysicalFleet,
         members: list[_PhysicalFleetMemberRuntime],
         entrypoint: _PhysicalFleetMemberRuntime,
+        e2e_entrypoint: _PhysicalFleetMemberRuntime,
         contract_members: list[_PhysicalFleetMemberRuntime],
         profile: FreshInstallProfile,
         expected_commit: str | None,
@@ -1305,8 +1313,9 @@ class FreshInstallQualifier:
                 heartbeat=heartbeat,
             )
             with journal.stage("run complete E2E battery on fresh physical fleet"):
+                assert e2e_entrypoint.local_port is not None
                 report.e2e_battery = self._run_complete_e2e_battery(
-                    api_base_url=api_base_url,
+                    api_base_url=f"http://127.0.0.1:{e2e_entrypoint.local_port}",
                     fleet=fleet,
                     expected_node_ids=fresh_node_ids,
                     expected_commit=expected_commit,

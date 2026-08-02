@@ -431,7 +431,14 @@ class FreshInstallPhysicalFleet(HarnessBaseModel):
     )
     entrypoint_target: str = Field(
         min_length=1,
-        description="Member whose dashboard and API drive qualification.",
+        description="Member whose dashboard and API drive user-journey qualification.",
+    )
+    e2e_entrypoint_target: str | None = Field(
+        default=None,
+        description=(
+            "Optional member whose fresh API and model store drive the complete "
+            "E2E battery; defaults to entrypoint_target."
+        ),
     )
     qualification_targets: list[str] = Field(
         min_length=1,
@@ -463,6 +470,11 @@ class FreshInstallPhysicalFleet(HarnessBaseModel):
             raise ValueError("physical fleet member_targets must be unique")
         if self.entrypoint_target not in self.member_targets:
             raise ValueError("physical fleet entrypoint_target must be a member")
+        if (
+            self.e2e_entrypoint_target is not None
+            and self.e2e_entrypoint_target not in self.member_targets
+        ):
+            raise ValueError("physical fleet e2e_entrypoint_target must be a member")
         if not set(self.qualification_targets).issubset(self.member_targets):
             raise ValueError("physical fleet qualification_targets must be members")
         if len(set(self.qualification_targets)) != len(self.qualification_targets):

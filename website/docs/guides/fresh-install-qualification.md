@@ -99,6 +99,14 @@ authoritative reread. A renewal or restoration failure stops further testing,
 makes one emergency extension, leaves the lease held, and writes a critical
 recovery report.
 
+Large batteries may set `physical_fleets.<name>.e2e_entrypoint_target` to a
+different member of the same freshly installed topology. Dashboard, vision,
+and audio user journeys continue through `entrypoint_target`; only the complete
+direct-API E2E battery and its model-store downloads use the alternate fresh
+member. This is useful when the release matrix is larger than the dashboard
+member's local disk. The alternate target must be a declared fleet member and
+does not relax commit, topology, backend, transport, or provenance checks.
+
 The SSH tunnels belong to the recovery control plane and run in separate
 process sessions. An operator interrupt stops product work immediately, then
 the harness defers any further termination signal until all temporary homes are
