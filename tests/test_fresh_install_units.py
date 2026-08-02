@@ -928,6 +928,51 @@ def test_physical_fleet_accepts_normal_networking_and_composes_platforms() -> No
     config.assert_complete_release_matrix([], selected_fleets)
 
 
+def test_physical_fleet_can_route_complete_e2e_through_another_fresh_member(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fleet = FreshInstallPhysicalFleet(
+        hardware_class="mixed-two-node",
+        eligible=True,
+        member_targets=["apple-1", "amd-1"],
+        entrypoint_target="apple-1",
+        e2e_entrypoint_target="amd-1",
+        qualification_targets=["apple-1", "amd-1"],
+    )
+    config = HarnessConfig(
+        output_dir=tmp_path / "runs",
+        fresh_install=FreshInstallConfig(
+            required_platforms=["apple", "amd"],
+            targets={
+                "apple-1": _whole_fleet_target("apple"),
+                "amd-1": _whole_fleet_target("amd"),
+            },
+            physical_fleets={"release": fleet},
+        ),
+    )
+    qualifier = fresh_install_module.FreshInstallQualifier(config)
+
+    def capture_entrypoints(**kwargs: object) -> FreshInstallQualificationReport:
+        entrypoint = cast(_PhysicalFleetMemberRuntime, kwargs["entrypoint"])
+        e2e_entrypoint = cast(
+            _PhysicalFleetMemberRuntime,
+            kwargs["e2e_entrypoint"],
+        )
+        assert entrypoint.target_name == "apple-1"
+        assert e2e_entrypoint.target_name == "amd-1"
+        return cast(FreshInstallQualificationReport, kwargs["report"])
+
+    monkeypatch.setattr(qualifier, "_qualify_physical_fleet", capture_entrypoints)
+
+    qualifier.qualify_physical_fleet(
+        fleet_name="release",
+        fleet=fleet,
+        profile="candidate",
+        expected_commit="a" * 40,
+    )
+
+
 def test_physical_fleet_release_coverage_uses_only_qualification_targets() -> None:
     config = FreshInstallConfig(
         required_platforms=["apple", "amd"],
@@ -958,6 +1003,16 @@ def test_physical_fleet_rejects_nonmember_contract_and_isolated_member() -> None
             member_targets=["apple-1", "amd-1"],
             entrypoint_target="apple-1",
             qualification_targets=["not-a-member"],
+        )
+
+    with pytest.raises(ValidationError, match="e2e_entrypoint_target must be a member"):
+        FreshInstallPhysicalFleet(
+            hardware_class="mixed",
+            eligible=True,
+            member_targets=["apple-1", "amd-1"],
+            entrypoint_target="apple-1",
+            e2e_entrypoint_target="not-a-member",
+            qualification_targets=["apple-1", "amd-1"],
         )
 
     isolated = _physical_target()

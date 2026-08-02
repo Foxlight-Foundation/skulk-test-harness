@@ -114,6 +114,9 @@ fresh_install:
       exclusion_reason: replace every member placeholder before enabling
       member_targets: [apple-1, apple-2, apple-3, amd-1, amd-2]
       entrypoint_target: apple-1
+      # Optional: keep dashboard qualification on Apple while routing a very
+      # large direct-API battery through a fresh member with sufficient disk.
+      e2e_entrypoint_target: amd-1
       qualification_targets: [apple-1, amd-1]
       e2e_battery_script: examples/foxlight/run_e2e_battery.sh
       e2e_battery_timeout_s: 86400
