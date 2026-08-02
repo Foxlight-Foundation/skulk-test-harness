@@ -1291,6 +1291,7 @@ class FreshInstallQualifier:
                 report.e2e_battery = self._run_complete_e2e_battery(
                     api_base_url=api_base_url,
                     fleet=fleet,
+                    expected_node_ids=fresh_node_ids,
                     expected_commit=expected_commit,
                     report=report,
                     journal=journal,
@@ -1439,6 +1440,7 @@ class FreshInstallQualifier:
         *,
         api_base_url: str,
         fleet: FreshInstallPhysicalFleet,
+        expected_node_ids: frozenset[str],
         expected_commit: str | None,
         report: FreshInstallQualificationReport,
         journal: _LifecycleJournal,
@@ -1495,7 +1497,16 @@ class FreshInstallQualifier:
             }
         )
         heartbeat.raise_if_failed()
-        with controller_log.open("wb") as log_handle:
+        with (
+            controller_log.open("wb") as log_handle,
+            _FreshRuntimeMonitor(
+                api_base_url=api_base_url,
+                expected_node_ids=expected_node_ids,
+                expected_node_count=len(expected_node_ids),
+                poll_interval_s=self.fresh.poll_interval_s,
+                request_timeout_s=self.config.request_timeout_s,
+            ) as runtime_monitor,
+        ):
             process = subprocess.Popen(
                 ["bash", str(script_path)],
                 cwd=repository_root,
@@ -1508,6 +1519,7 @@ class FreshInstallQualifier:
             try:
                 while process.poll() is None:
                     heartbeat.raise_if_failed()
+                    runtime_monitor.raise_if_failed()
                     if time.monotonic() >= deadline:
                         raise TimeoutError(
                             "complete fresh-fleet E2E battery exceeded its timeout"
@@ -1523,6 +1535,7 @@ class FreshInstallQualifier:
             battery_log=battery_log,
             report_root=e2e_root / "runs",
             expected_commit=expected_commit,
+            expected_node_ids=expected_node_ids,
             process_returncode=process.returncode,
         )
         if not evidence.passed:
@@ -2927,6 +2940,7 @@ def _summarize_fresh_e2e_battery(
     battery_log: Path,
     report_root: Path,
     expected_commit: str,
+    expected_node_ids: frozenset[str],
     process_returncode: int,
 ) -> FreshInstallE2EBatteryEvidence:
     """Build a strict composite verdict from every full-battery report."""
@@ -2960,6 +2974,14 @@ def _summarize_fresh_e2e_battery(
         if report.fingerprint is not None
         and report.fingerprint.runtime.skulk_commit == expected_commit
     ]
+    exact_topology_reports = [
+        report
+        for report in reports
+        if report.fingerprint is not None
+        and report.fingerprint.cluster.node_count == len(expected_node_ids)
+        and {node.node_id for node in report.fingerprint.cluster.nodes}
+        == expected_node_ids
+    ]
     passed_results = [result for result in results if result.passed]
     failed_results = [result for result in results if not result.passed]
     passed = (
@@ -2974,6 +2996,7 @@ def _summarize_fresh_e2e_battery(
         and len(fresh_reports) == len(reports)
         and len(expected_commit_reports) == len(reports)
         and len(live_commit_reports) == len(reports)
+        and len(exact_topology_reports) == len(reports)
     )
     return FreshInstallE2EBatteryEvidence(
         script_sha256=hashlib.sha256(script_path.read_bytes()).hexdigest(),
@@ -2987,6 +3010,7 @@ def _summarize_fresh_e2e_battery(
         fresh_provenance_report_count=len(fresh_reports),
         expected_commit_report_count=len(expected_commit_reports),
         live_commit_report_count=len(live_commit_reports),
+        exact_topology_report_count=len(exact_topology_reports),
         passed=passed,
     )
 

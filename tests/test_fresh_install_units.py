@@ -71,6 +71,8 @@ from skulk_test_harness.lease_heartbeat import (
     LeaseHeartbeatError,
 )
 from skulk_test_harness.models import (
+    ClusterFingerprint,
+    ClusterNodeFingerprint,
     DashboardAudioContract,
     DashboardAudioEvidence,
     DashboardContract,
@@ -261,6 +263,10 @@ def test_complete_e2e_summary_requires_every_report_to_prove_fresh_commit(
     )
     run_report.fingerprint = ReportFingerprint(
         runtime=RuntimeFingerprint(skulk_commit=expected_commit),
+        cluster=ClusterFingerprint(
+            node_count=1,
+            nodes=[ClusterNodeFingerprint(node_id="node-a")],
+        ),
         install=InstallProvenance(
             mode="fresh_install",
             environment="fresh_install",
@@ -277,6 +283,7 @@ def test_complete_e2e_summary_requires_every_report_to_prove_fresh_commit(
         battery_log=battery_log,
         report_root=tmp_path / "runs",
         expected_commit=expected_commit,
+        expected_node_ids=frozenset({"node-a"}),
         process_returncode=0,
     )
 
@@ -299,12 +306,39 @@ def test_complete_e2e_summary_requires_every_report_to_prove_fresh_commit(
         battery_log=battery_log,
         report_root=tmp_path / "runs",
         expected_commit=expected_commit,
+        expected_node_ids=frozenset({"node-a"}),
         process_returncode=0,
     )
 
     assert not stale_runtime.passed
     assert stale_runtime.expected_commit_report_count == 1
     assert stale_runtime.live_commit_report_count == 0
+
+    assert run_report.fingerprint is not None
+    run_report.fingerprint = run_report.fingerprint.model_copy(
+        update={
+            "runtime": run_report.fingerprint.runtime.model_copy(
+                update={"skulk_commit": expected_commit}
+            ),
+            "cluster": ClusterFingerprint(
+                node_count=1,
+                nodes=[ClusterNodeFingerprint(node_id="different-node")],
+            ),
+        }
+    )
+    (report_root / "report.json").write_text(run_report.finish().model_dump_json())
+    wrong_topology = _summarize_fresh_e2e_battery(
+        script_path=script_path,
+        battery_log=battery_log,
+        report_root=tmp_path / "runs",
+        expected_commit=expected_commit,
+        expected_node_ids=frozenset({"node-a"}),
+        process_returncode=0,
+    )
+
+    assert not wrong_topology.passed
+    assert wrong_topology.live_commit_report_count == 1
+    assert wrong_topology.exact_topology_report_count == 0
 
     run_report.fingerprint = ReportFingerprint()
     (report_root / "report.json").write_text(run_report.finish().model_dump_json())
@@ -313,6 +347,7 @@ def test_complete_e2e_summary_requires_every_report_to_prove_fresh_commit(
         battery_log=battery_log,
         report_root=tmp_path / "runs",
         expected_commit=expected_commit,
+        expected_node_ids=frozenset({"node-a"}),
         process_returncode=0,
     )
 
@@ -375,6 +410,22 @@ def test_complete_e2e_uses_private_fresh_config_and_strips_product_overrides(
 
     monkeypatch.setenv("SKULK_PRODUCT_OVERRIDE", "must-not-leak")
     monkeypatch.setattr(fresh_install_module.subprocess, "Popen", fake_popen)
+
+    class StableRuntimeMonitor:
+        def __enter__(self) -> "StableRuntimeMonitor":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            pass
+
+        def raise_if_failed(self) -> None:
+            pass
+
+    monkeypatch.setattr(
+        fresh_install_module,
+        "_FreshRuntimeMonitor",
+        lambda **_kwargs: StableRuntimeMonitor(),
+    )
     config = HarnessConfig(
         output_dir=tmp_path / "runs",
         fresh_install=FreshInstallConfig(),
@@ -393,6 +444,7 @@ def test_complete_e2e_uses_private_fresh_config_and_strips_product_overrides(
         qualifier._run_complete_e2e_battery(  # pyright: ignore[reportPrivateUsage]
             api_base_url="http://127.0.0.1:42000",
             fleet=fleet,
+            expected_node_ids=frozenset({"node-a", "node-b"}),
             expected_commit=expected_commit,
             report=report,
             journal=cast(fresh_install_module._LifecycleJournal, Journal()),  # pyright: ignore[reportPrivateUsage]
@@ -444,11 +496,38 @@ def test_complete_e2e_uses_private_fresh_config_and_strips_product_overrides(
         qualifier._run_complete_e2e_battery(  # pyright: ignore[reportPrivateUsage]
             api_base_url="http://127.0.0.1:42000",
             fleet=fleet,
+            expected_node_ids=frozenset({"node-a", "node-b"}),
             expected_commit=expected_commit,
             report=report,
             journal=cast(fresh_install_module._LifecycleJournal, Journal()),  # pyright: ignore[reportPrivateUsage]
             artifact_directory=artifact_directory,
             heartbeat=cast(AuthoritativeLeaseHeartbeat, FailedHeartbeat()),
+        )
+
+    assert terminated == [running]
+
+    terminated.clear()
+
+    class FailedRuntimeMonitor(StableRuntimeMonitor):
+        def raise_if_failed(self) -> None:
+            raise RuntimeError("exact fresh topology changed")
+
+    monkeypatch.setattr(
+        fresh_install_module,
+        "_FreshRuntimeMonitor",
+        lambda **_kwargs: FailedRuntimeMonitor(),
+    )
+
+    with pytest.raises(RuntimeError, match="topology changed"):
+        qualifier._run_complete_e2e_battery(  # pyright: ignore[reportPrivateUsage]
+            api_base_url="http://127.0.0.1:42000",
+            fleet=fleet,
+            expected_node_ids=frozenset({"node-a", "node-b"}),
+            expected_commit=expected_commit,
+            report=report,
+            journal=cast(fresh_install_module._LifecycleJournal, Journal()),  # pyright: ignore[reportPrivateUsage]
+            artifact_directory=artifact_directory,
+            heartbeat=cast(AuthoritativeLeaseHeartbeat, Heartbeat()),
         )
 
     assert terminated == [running]
@@ -576,6 +655,7 @@ def test_release_matrix_holds_one_lease_across_physical_e2e_and_runpod(
             fresh_provenance_report_count=33,
             expected_commit_report_count=33,
             live_commit_report_count=33,
+            exact_topology_report_count=33,
             passed=True,
         ),
     ).finish(passed=True)

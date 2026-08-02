@@ -2073,6 +2073,7 @@ class FreshInstallE2EBatteryEvidence(HarnessBaseModel):
     fresh_provenance_report_count: int = Field(ge=0)
     expected_commit_report_count: int = Field(ge=0)
     live_commit_report_count: int = Field(ge=0)
+    exact_topology_report_count: int = Field(ge=0)
     passed: bool
 
 

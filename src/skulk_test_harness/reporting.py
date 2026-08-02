@@ -345,6 +345,8 @@ def _fresh_install_markdown(report: FreshInstallQualificationReport) -> str:
             f"`{battery.expected_commit_report_count}/{battery.report_count}`, "
             f"live commit `{battery.live_commit_report_count}/"
             f"{battery.report_count}`, "
+            f"exact topology `{battery.exact_topology_report_count}/"
+            f"{battery.report_count}`, "
             f"issues `{battery.issue_count}`, passed `{battery.passed}`"
         )
     else:
