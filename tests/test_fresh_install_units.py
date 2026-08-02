@@ -1960,6 +1960,15 @@ def test_random_vision_fixture_has_exact_judge_free_contract(tmp_path: Path) -> 
     assert first.response_format_matches(
         f"{grouped_code}; {first.color}; {first.shape}."
     )
+    assert first.response_format_matches(
+        f"1. {grouped_code}; 2. {first.color}; 3. {first.shape}"
+    )
+    assert first.response_format_matches(
+        f"1) {grouped_code}, 2) {first.color}, 3) {first.shape}."
+    )
+    assert not first.response_format_matches(
+        f"1. {grouped_code}; 2. {first.color}"
+    )
     assert not first.response_format_matches(f"{grouped_code}; {first.color}")
     assert not first.response_format_matches(f"{grouped_code}; {first.shape}")
     assert first.response_format_matches(f"COLOR SHAPE | CODE {exact_response}")

@@ -109,8 +109,9 @@ class VisionFixture:
             rf"{re.escape(self.shape)}\s*\|\s*{grouped_code}"
         )
         code_first_answer = (
-            rf"{grouped_code}{fact_separator}{re.escape(self.color)}"
-            rf"{fact_separator}{re.escape(self.shape)}"
+            rf"(?:1[.)]\s*)?{grouped_code}{fact_separator}"
+            rf"(?:2[.)]\s*)?{re.escape(self.color)}{fact_separator}"
+            rf"(?:3[.)]\s*)?{re.escape(self.shape)}"
         )
         pattern = (
             rf"\s*[`*_\"']*\s*(?:{code_first_answer}|{legacy_answer})"

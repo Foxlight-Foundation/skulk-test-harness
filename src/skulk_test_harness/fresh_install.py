@@ -1915,7 +1915,12 @@ class FreshInstallQualifier:
                         if not vision_outcome.passed:
                             raise RuntimeError(
                                 f"direct vision API parity failed for {model_id}; "
-                                "the model replied: "
+                                "matches: "
+                                f"code={vision_outcome.response_matched_code}, "
+                                f"color={vision_outcome.response_matched_color}, "
+                                f"shape={vision_outcome.response_matched_shape}, "
+                                f"format={vision_outcome.response_matched_format}; "
+                                "redacted reply: "
                                 f"{vision_outcome.response_excerpt!r}"
                             )
                     check_fresh_runtime()
@@ -2578,7 +2583,12 @@ class FreshInstallQualifier:
                         if not evidence.passed:
                             raise RuntimeError(
                                 f"direct vision API parity failed for {model_id}; "
-                                f"the model replied: {evidence.response_excerpt!r}"
+                                "matches: "
+                                f"code={evidence.response_matched_code}, "
+                                f"color={evidence.response_matched_color}, "
+                                f"shape={evidence.response_matched_shape}, "
+                                f"format={evidence.response_matched_format}; "
+                                f"redacted reply: {evidence.response_excerpt!r}"
                             )
                     check_fresh_runtime()
 
