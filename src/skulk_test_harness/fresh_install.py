@@ -14,7 +14,7 @@ import subprocess
 import threading
 import time
 from collections.abc import Callable, Iterable, Sequence
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -432,9 +432,12 @@ class FreshInstallQualifier:
 
             heartbeat.raise_if_failed()
             try:
-                _assert_restored_fleet_clean(
-                    self.config.api_base_url,
+                _assert_restored_fleet_clean_through_target(
+                    self.fresh.targets[physical_fleets[0][1].entrypoint_target],
                     expected_node_count=len(physical_fleets[0][1].member_targets),
+                    remote_port=self.fresh.remote_port,
+                    timeout_s=self.fresh.readiness_timeout_s,
+                    poll_interval_s=self.fresh.poll_interval_s,
                 )
             except Exception as exception:
                 # The child lifecycle has already attempted restoration. A
@@ -1493,22 +1496,34 @@ class FreshInstallQualifier:
         )
         heartbeat.raise_if_failed()
         with controller_log.open("wb") as log_handle:
-            completed = subprocess.run(
+            process = subprocess.Popen(
                 ["bash", str(script_path)],
                 cwd=repository_root,
                 env=environment,
                 stdout=log_handle,
                 stderr=subprocess.STDOUT,
-                timeout=fleet.e2e_battery_timeout_s,
-                check=False,
+                start_new_session=True,
             )
+            deadline = time.monotonic() + fleet.e2e_battery_timeout_s
+            try:
+                while process.poll() is None:
+                    heartbeat.raise_if_failed()
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError(
+                            "complete fresh-fleet E2E battery exceeded its timeout"
+                        )
+                    time.sleep(self.fresh.poll_interval_s)
+            finally:
+                if process.poll() is None:
+                    _terminate_process_group(process)
         heartbeat.raise_if_failed()
+        assert process.returncode is not None
         evidence = _summarize_fresh_e2e_battery(
             script_path=script_path,
             battery_log=battery_log,
             report_root=e2e_root / "runs",
             expected_commit=expected_commit,
-            process_returncode=completed.returncode,
+            process_returncode=process.returncode,
         )
         if not evidence.passed:
             raise RuntimeError(
@@ -2879,6 +2894,33 @@ def _assert_restored_fleet_clean(
             )
 
 
+def _assert_restored_fleet_clean_through_target(
+    target: FreshInstallTarget,
+    *,
+    expected_node_count: int,
+    remote_port: int,
+    timeout_s: float,
+    poll_interval_s: float,
+) -> None:
+    """Reopen the physical entrypoint tunnel and audit the restored fleet."""
+
+    controller = SshTargetController(target)
+    local_port, tunnel = controller.open_tunnel(remote_port=remote_port)
+    try:
+        api_base_url = f"http://127.0.0.1:{local_port}"
+        _wait_for_api_identity(
+            api_base_url,
+            timeout_s=timeout_s,
+            poll_interval_s=poll_interval_s,
+        )
+        _assert_restored_fleet_clean(
+            api_base_url,
+            expected_node_count=expected_node_count,
+        )
+    finally:
+        _terminate_process(tunnel)
+
+
 def _summarize_fresh_e2e_battery(
     *,
     script_path: Path,
@@ -2912,6 +2954,12 @@ def _summarize_fresh_e2e_battery(
         and report.fingerprint.install.expected_commit == expected_commit
         and report.fingerprint.install.resolved_commit == expected_commit
     ]
+    live_commit_reports = [
+        report
+        for report in reports
+        if report.fingerprint is not None
+        and report.fingerprint.runtime.skulk_commit == expected_commit
+    ]
     passed_results = [result for result in results if result.passed]
     failed_results = [result for result in results if not result.passed]
     passed = (
@@ -2925,6 +2973,7 @@ def _summarize_fresh_e2e_battery(
         and not issues
         and len(fresh_reports) == len(reports)
         and len(expected_commit_reports) == len(reports)
+        and len(live_commit_reports) == len(reports)
     )
     return FreshInstallE2EBatteryEvidence(
         script_sha256=hashlib.sha256(script_path.read_bytes()).hexdigest(),
@@ -2937,6 +2986,7 @@ def _summarize_fresh_e2e_battery(
         issue_count=len(issues),
         fresh_provenance_report_count=len(fresh_reports),
         expected_commit_report_count=len(expected_commit_reports),
+        live_commit_report_count=len(live_commit_reports),
         passed=passed,
     )
 
@@ -3702,6 +3752,24 @@ def _terminate_process(process: subprocess.Popen[bytes]) -> None:
         process.wait(timeout=15)
     except subprocess.TimeoutExpired:
         process.kill()
+        process.wait(timeout=5)
+
+
+def _terminate_process_group(process: subprocess.Popen[bytes]) -> None:
+    """Terminate a locally created process session, including its children."""
+
+    if process.poll() is not None:
+        return
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        process.wait(timeout=5)
+        return
+    try:
+        process.wait(timeout=15)
+    except subprocess.TimeoutExpired:
+        with suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGKILL)
         process.wait(timeout=5)
 
 

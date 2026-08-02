@@ -92,6 +92,7 @@ from skulk_test_harness.models import (
     RunPodFreshInstallConfig,
     RunReport,
     RunSpec,
+    RuntimeFingerprint,
     ServedEngineContract,
     ServedEngineEvidence,
 )
@@ -259,6 +260,7 @@ def test_complete_e2e_summary_requires_every_report_to_prove_fresh_commit(
         )
     )
     run_report.fingerprint = ReportFingerprint(
+        runtime=RuntimeFingerprint(skulk_commit=expected_commit),
         install=InstallProvenance(
             mode="fresh_install",
             environment="fresh_install",
@@ -266,7 +268,7 @@ def test_complete_e2e_summary_requires_every_report_to_prove_fresh_commit(
             platform="mixed",
             expected_commit=expected_commit,
             resolved_commit=expected_commit,
-        )
+        ),
     )
     (report_root / "report.json").write_text(run_report.finish().model_dump_json())
 
@@ -281,6 +283,28 @@ def test_complete_e2e_summary_requires_every_report_to_prove_fresh_commit(
     assert evidence.passed
     assert evidence.cell_count == 1
     assert evidence.fresh_provenance_report_count == 1
+    assert evidence.live_commit_report_count == 1
+
+    assert run_report.fingerprint is not None
+    run_report.fingerprint = run_report.fingerprint.model_copy(
+        update={
+            "runtime": run_report.fingerprint.runtime.model_copy(
+                update={"skulk_commit": "b" * 40}
+            )
+        }
+    )
+    (report_root / "report.json").write_text(run_report.finish().model_dump_json())
+    stale_runtime = _summarize_fresh_e2e_battery(
+        script_path=script_path,
+        battery_log=battery_log,
+        report_root=tmp_path / "runs",
+        expected_commit=expected_commit,
+        process_returncode=0,
+    )
+
+    assert not stale_runtime.passed
+    assert stale_runtime.expected_commit_report_count == 1
+    assert stale_runtime.live_commit_report_count == 0
 
     run_report.fingerprint = ReportFingerprint()
     (report_root / "report.json").write_text(run_report.finish().model_dump_json())
@@ -331,9 +355,14 @@ def test_complete_e2e_uses_private_fresh_config_and_strips_product_overrides(
 
     observed: dict[str, object] = {}
 
-    def fake_run(
-        *_args: object, **kwargs: object
-    ) -> subprocess.CompletedProcess[bytes]:
+    class FakeProcess:
+        pid = 12345
+        returncode = 7
+
+        def poll(self) -> int:
+            return self.returncode
+
+    def fake_popen(*_args: object, **kwargs: object) -> FakeProcess:
         environment = cast(dict[str, str], kwargs["env"])
         generated = load_config(Path(environment["SKULK_HARNESS_CONFIG"]))
         observed.update(
@@ -342,10 +371,10 @@ def test_complete_e2e_uses_private_fresh_config_and_strips_product_overrides(
                 "generated": generated,
             }
         )
-        return subprocess.CompletedProcess([], 7, b"", b"")
+        return FakeProcess()
 
     monkeypatch.setenv("SKULK_PRODUCT_OVERRIDE", "must-not-leak")
-    monkeypatch.setattr(fresh_install_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(fresh_install_module.subprocess, "Popen", fake_popen)
     config = HarnessConfig(
         output_dir=tmp_path / "runs",
         fresh_install=FreshInstallConfig(),
@@ -381,6 +410,48 @@ def test_complete_e2e_uses_private_fresh_config_and_strips_product_overrides(
         artifact_directory / "fresh-install-report.json"
     )
     assert generated.output_dir == artifact_directory / "complete-e2e" / "runs"
+
+    class RunningProcess:
+        pid = 12345
+        returncode: int | None = None
+
+        def poll(self) -> None:
+            return None
+
+    class FailedHeartbeat:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def raise_if_failed(self) -> None:
+            self.calls += 1
+            if self.calls >= 2:
+                raise LeaseHeartbeatError("authoritative renewal failed")
+
+    running = RunningProcess()
+    terminated: list[object] = []
+    monkeypatch.setattr(
+        fresh_install_module.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: running,
+    )
+    monkeypatch.setattr(
+        fresh_install_module,
+        "_terminate_process_group",
+        terminated.append,
+    )
+
+    with pytest.raises(LeaseHeartbeatError, match="renewal failed"):
+        qualifier._run_complete_e2e_battery(  # pyright: ignore[reportPrivateUsage]
+            api_base_url="http://127.0.0.1:42000",
+            fleet=fleet,
+            expected_commit=expected_commit,
+            report=report,
+            journal=cast(fresh_install_module._LifecycleJournal, Journal()),  # pyright: ignore[reportPrivateUsage]
+            artifact_directory=artifact_directory,
+            heartbeat=cast(AuthoritativeLeaseHeartbeat, FailedHeartbeat()),
+        )
+
+    assert terminated == [running]
 
 
 def test_release_matrix_holds_one_lease_across_physical_e2e_and_runpod(
@@ -465,7 +536,7 @@ def test_release_matrix_holds_one_lease_across_physical_e2e_and_runpod(
     )
     monkeypatch.setattr(
         fresh_install_module,
-        "_assert_restored_fleet_clean",
+        "_assert_restored_fleet_clean_through_target",
         lambda *_args, **_kwargs: events.append("audit"),
     )
     qualifier = fresh_install_module.FreshInstallQualifier(config)
@@ -504,6 +575,7 @@ def test_release_matrix_holds_one_lease_across_physical_e2e_and_runpod(
             issue_count=0,
             fresh_provenance_report_count=33,
             expected_commit_report_count=33,
+            live_commit_report_count=33,
             passed=True,
         ),
     ).finish(passed=True)
@@ -591,7 +663,7 @@ def test_release_matrix_holds_one_lease_across_physical_e2e_and_runpod(
 
     monkeypatch.setattr(
         fresh_install_module,
-        "_assert_restored_fleet_clean",
+        "_assert_restored_fleet_clean_through_target",
         fail_restoration_audit,
     )
     failed_audit = qualifier.qualify_release_matrix(

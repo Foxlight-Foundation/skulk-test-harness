@@ -2072,6 +2072,7 @@ class FreshInstallE2EBatteryEvidence(HarnessBaseModel):
     issue_count: int = Field(ge=0)
     fresh_provenance_report_count: int = Field(ge=0)
     expected_commit_report_count: int = Field(ge=0)
+    live_commit_report_count: int = Field(ge=0)
     passed: bool
 
 
@@ -2144,7 +2145,9 @@ class ReleaseQualificationReport(HarnessBaseModel):
     lease_renewal_expiries: list[datetime] = Field(default_factory=list)
     issues: list[Issue] = Field(default_factory=list)
 
-    def finish(self, *, passed: bool, lease_released: bool) -> "ReleaseQualificationReport":
+    def finish(
+        self, *, passed: bool, lease_released: bool
+    ) -> "ReleaseQualificationReport":
         """Return a completed composite release verdict."""
 
         return self.model_copy(
