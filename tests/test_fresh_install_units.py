@@ -1907,9 +1907,10 @@ def test_random_vision_fixture_has_exact_judge_free_contract(tmp_path: Path) -> 
     assert first.sha256 != second.sha256
     assert first.code != second.code
     assert first.code not in first.prompt
-    assert "COLOR SHAPE | CODE" in first.prompt
-    assert "COLOR from red, blue, green, or orange" in first.prompt
-    assert "SHAPE from circle, diamond, or triangle" in first.prompt
+    assert "first, transcribe the exact large six-character code" in first.prompt
+    assert "among red, blue, green, or orange" in first.prompt
+    assert "circle, diamond, or triangle" in first.prompt
+    assert "COLOR SHAPE | CODE" not in first.prompt
     assert data_url_sha256(first.data_url) == first.sha256
     assert first.response_matches(f"{first.code}\n{first.color} {first.shape}") == (
         True,
@@ -1956,6 +1957,11 @@ def test_random_vision_fixture_has_exact_judge_free_contract(tmp_path: Path) -> 
     assert first.response_format_matches(
         f"{first.color} | {first.shape} | {grouped_code}"
     )
+    assert first.response_format_matches(
+        f"{grouped_code}; {first.color}; {first.shape}."
+    )
+    assert not first.response_format_matches(f"{grouped_code}; {first.color}")
+    assert not first.response_format_matches(f"{grouped_code}; {first.shape}")
     assert first.response_format_matches(f"COLOR SHAPE | CODE {exact_response}")
     assert first.response_format_matches(
         "I checked the visible attributes.\n\n" + exact_response
@@ -2082,7 +2088,7 @@ def test_direct_vision_requires_concise_response_and_redacts_code() -> None:
         def stream_chat(self, **kwargs: object) -> SimpleNamespace:
             calls.append(kwargs)
             return SimpleNamespace(
-                text=f"{fixture.color} {fixture.shape} | {fixture.code}"
+                text=f"{fixture.code}; {fixture.color}; {fixture.shape}."
             )
 
     evidence = qualify_direct_vision(
@@ -2095,6 +2101,11 @@ def test_direct_vision_requires_concise_response_and_redacts_code() -> None:
     assert evidence.passed is True
     assert evidence.response_matched_format is True
     assert calls[0]["max_tokens"] == 512
+    sent_messages = cast(list[dict[str, object]], calls[0]["messages"])
+    sent_content = cast(list[dict[str, object]], sent_messages[0]["content"])
+    sent_prompt = cast(str, sent_content[0]["text"])
+    assert sent_prompt.startswith("Inspect the image")
+    assert "first, transcribe the exact large six-character code" in sent_prompt
     assert evidence.response_excerpt is not None
     assert "<hidden-code>" in evidence.response_excerpt
     assert fixture.code not in evidence.response_excerpt
