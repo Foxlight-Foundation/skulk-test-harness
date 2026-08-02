@@ -18,6 +18,7 @@ from skulk_test_harness.models import (
     GenerationMetrics,
     HarnessConfig,
     InstallProvenance,
+    ReleaseQualificationReport,
     RunReport,
     RunSpec,
 )
@@ -329,6 +330,16 @@ class _StubFreshQualifier:
         self.calls.append(("target", target_name))
         return self._report("nvidia")
 
+    def qualify_release_matrix(self, **_kwargs: object) -> ReleaseQualificationReport:
+        self.calls.append(("release", "matrix"))
+        return ReleaseQualificationReport(
+            qualification_id="release-candidate-test",
+            profile="candidate",
+            expected_commit="a" * 40,
+            required_platforms=["apple", "amd", "nvidia"],
+            started_at=datetime.now(UTC),
+        ).finish(passed=True, lease_released=True)
+
 
 _fresh_qualifiers: list[_StubFreshQualifier] = []
 
@@ -345,7 +356,7 @@ def test_fresh_cli_explicit_physical_fleet_does_not_also_run_provider(
         cli.app,
         [
             "fresh-install",
-            "qualify",
+            "diagnose",
             "--profile",
             "candidate",
             "--expected-commit",
@@ -371,7 +382,7 @@ def test_fresh_cli_explicit_provider_does_not_also_run_physical_fleet(
         cli.app,
         [
             "fresh-install",
-            "qualify",
+            "diagnose",
             "--profile",
             "candidate",
             "--expected-commit",
@@ -383,6 +394,30 @@ def test_fresh_cli_explicit_provider_does_not_also_run_physical_fleet(
 
     assert result.exit_code == 0
     assert _fresh_qualifiers[-1].calls == [("target", "nvidia")]
+
+
+def test_fresh_cli_qualify_runs_only_the_atomic_release_matrix(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _fresh_qualifiers.clear()
+    monkeypatch.setattr(cli, "load_config", lambda _path: _fresh_cli_config(tmp_path))
+    monkeypatch.setattr(cli, "FreshInstallQualifier", _StubFreshQualifier)
+
+    result = runner_cli.invoke(
+        cli.app,
+        [
+            "fresh-install",
+            "qualify",
+            "--profile",
+            "candidate",
+            "--expected-commit",
+            "a" * 40,
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert _fresh_qualifiers[-1].calls == [("release", "matrix")]
 
 
 def test_eligible_fleet_ignores_incidental_transport() -> None:

@@ -197,11 +197,11 @@ def _require_shipping_data_transport(
 ) -> None:
     """Refuse an E2E run whose live fleet is not on the required DATA transport.
 
-    The Foxlight battery is release qualification, so testing a hand-configured
-    transport that differs from a fresh Skulk installation gives false
-    confidence. ``nodeResources`` carries each node's startup-resolved transport;
-    require a complete, uniform match before any placement or model-store
-    mutation. Generic harness profiles leave the requirement unset.
+    The configured-fleet battery is regression coverage, but it still must not
+    normalize a transport configuration different from what Skulk ships.
+    ``nodeResources`` carries each node's startup-resolved transport; require a
+    complete, uniform match before any placement or model-store mutation.
+    Generic harness profiles leave the requirement unset.
     """
     required = cfg.required_data_transport
     if required is None:
@@ -346,6 +346,53 @@ def fresh_install_qualify(
         str | None,
         typer.Option(
             "--expected-commit",
+            help="Full 40-character commit certified by every mandatory leg.",
+        ),
+    ] = None,
+    config: ConfigPath = Path("skulk-harness.yaml"),
+) -> None:
+    """Run the atomic fresh physical E2E plus RunPod release gate."""
+
+    cfg = load_config(config)
+    if cfg.fresh_install is None:
+        console.print("[bold red]REFUSED[/]: config has no fresh_install section")
+        raise typer.Exit(code=2)
+    if expected_commit is None:
+        console.print(
+            f"[bold red]REFUSED[/]: {profile} requires --expected-commit with "
+            "the full commit that the release gate will certify"
+        )
+        raise typer.Exit(code=2)
+    try:
+        report = FreshInstallQualifier(cfg).qualify_release_matrix(
+            profile=profile,
+            expected_commit=expected_commit,
+        )
+    except ValueError as exception:
+        console.print(f"[bold red]REFUSED[/]: {exception}")
+        raise typer.Exit(code=2) from exception
+    status = "[green]PASS[/]" if report.passed else "[bold red]FAIL[/]"
+    console.print(
+        f"{status} atomic release qualification report="
+        f"{cfg.output_dir / report.qualification_id}"
+    )
+    if not report.passed:
+        raise typer.Exit(code=1)
+
+
+@fresh_install_app.command("diagnose")
+def fresh_install_diagnose(
+    profile: Annotated[
+        FreshInstallProfile,
+        typer.Option(
+            "--profile",
+            help="candidate pins a commit; shipping runs the literal main installer.",
+        ),
+    ],
+    expected_commit: Annotated[
+        str | None,
+        typer.Option(
+            "--expected-commit",
             help=(
                 "Full 40-character promoted commit. Candidate installs it "
                 "directly; shipping asserts the literal main installer resolved it."
@@ -371,7 +418,7 @@ def fresh_install_qualify(
     ] = None,
     config: ConfigPath = Path("skulk-harness.yaml"),
 ) -> None:
-    """Run release-blocking qualification from an empty installation."""
+    """Run selected fresh-install legs without producing a release verdict."""
 
     cfg = load_config(config)
     if cfg.fresh_install is None:
@@ -381,6 +428,12 @@ def fresh_install_qualify(
         console.print(
             f"[bold red]REFUSED[/]: {profile} requires --expected-commit with "
             "the full commit that the release gate will certify"
+        )
+        raise typer.Exit(code=2)
+    if target is None and physical_fleet is None:
+        console.print(
+            "[bold red]REFUSED[/]: diagnostics require --target or "
+            "--physical-fleet; use fresh-install qualify for the release matrix"
         )
         raise typer.Exit(code=2)
     try:
@@ -411,11 +464,6 @@ def fresh_install_qualify(
             for name, target_config in selected
             if name not in fleet_member_names
         ]
-        if target is None and physical_fleet is None:
-            cfg.fresh_install.assert_complete_release_matrix(
-                selected,
-                selected_fleets,
-            )
     except ValueError as exception:
         console.print(f"[bold red]REFUSED[/]: {exception}")
         raise typer.Exit(code=2) from exception
@@ -431,7 +479,7 @@ def fresh_install_qualify(
     critical_recovery = False
     for fleet_name, fleet_config in selected_fleets:
         console.print(
-            f"[bold]Fresh install[/] {profile}: "
+            f"[bold]Diagnostic fresh install[/] {profile}: "
             f"mixed/{fleet_config.hardware_class}"
         )
         report = qualifier.qualify_physical_fleet(
@@ -440,7 +488,11 @@ def fresh_install_qualify(
             profile=profile,
             expected_commit=expected_commit,
         )
-        status = "[green]PASS[/]" if report.passed else "[bold red]FAIL[/]"
+        status = (
+            "[green]DIAGNOSTIC PASS[/]"
+            if report.passed
+            else "[bold red]DIAGNOSTIC FAIL[/]"
+        )
         console.print(
             f"{status} {report.platform}/{report.hardware_class} "
             f"report={qualifier.writer.run_dir(report.qualification_id)}"
@@ -467,7 +519,7 @@ def fresh_install_qualify(
         raise typer.Exit(code=1)
     for target_name, target_config in selected:
         console.print(
-            f"[bold]Fresh install[/] {profile}: "
+            f"[bold]Diagnostic fresh install[/] {profile}: "
             f"{target_config.platform}/{target_config.hardware_class}"
         )
         report = qualifier.qualify_target(
@@ -476,7 +528,11 @@ def fresh_install_qualify(
             profile=profile,
             expected_commit=expected_commit,
         )
-        status = "[green]PASS[/]" if report.passed else "[bold red]FAIL[/]"
+        status = (
+            "[green]DIAGNOSTIC PASS[/]"
+            if report.passed
+            else "[bold red]DIAGNOSTIC FAIL[/]"
+        )
         console.print(
             f"{status} {report.platform}/{report.hardware_class} "
             f"report={qualifier.writer.run_dir(report.qualification_id)}"

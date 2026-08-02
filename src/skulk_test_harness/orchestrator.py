@@ -151,7 +151,10 @@ class HarnessRunner:
                         _placement_from_preview(model.model_id, preview)
                     )
             fingerprint, fp_issues = gather_fingerprint(
-                client, spec, run_reason=spec.mode
+                client,
+                spec,
+                run_reason=spec.mode,
+                fresh_install_report_path=self.config.fresh_install_report_path,
             )
             report.issues.extend(fp_issues)
             report.fingerprint = fingerprint
@@ -205,7 +208,10 @@ class HarnessRunner:
                 if placed_after_retry:
                     _clear_deferred_placement_issues(report, model.model_id)
             fingerprint, fp_issues = gather_fingerprint(
-                client, spec, run_reason=spec.mode
+                client,
+                spec,
+                run_reason=spec.mode,
+                fresh_install_report_path=self.config.fresh_install_report_path,
             )
             report.issues.extend(fp_issues)
             report.fingerprint = fingerprint

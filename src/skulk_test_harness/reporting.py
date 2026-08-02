@@ -8,6 +8,7 @@ from pathlib import Path
 from skulk_test_harness.models import (
     FreshInstallQualificationReport,
     Issue,
+    ReleaseQualificationReport,
     RunReport,
     StabilityReport,
 )
@@ -58,6 +59,20 @@ class ReportWriter:
         report_path.chmod(0o600)
         summary_path = run_dir / "fresh-install-summary.md"
         summary_path.write_text(_fresh_install_markdown(report))
+        summary_path.chmod(0o600)
+        return run_dir
+
+    def write_release_qualification(self, report: ReleaseQualificationReport) -> Path:
+        """Write one private atomic release-gate report and summary."""
+
+        run_dir = self.run_dir(report.qualification_id)
+        run_dir.mkdir(parents=True, exist_ok=True)
+        run_dir.chmod(0o700)
+        report_path = run_dir / "release-qualification-report.json"
+        report_path.write_text(report.model_dump_json(indent=2))
+        report_path.chmod(0o600)
+        summary_path = run_dir / "release-qualification-summary.md"
+        summary_path.write_text(_release_qualification_markdown(report))
         summary_path.chmod(0o600)
         return run_dir
 
@@ -318,6 +333,24 @@ def _fresh_install_markdown(report: FreshInstallQualificationReport) -> str:
         )
     else:
         lines.append("- Audio: not applicable")
+    lines.extend(["", "## Complete fresh-fleet E2E battery", ""])
+    if report.e2e_battery is not None:
+        battery = report.e2e_battery
+        lines.append(
+            f"- Cells `{battery.completed_cell_count}/{battery.cell_count}`, "
+            f"reports `{battery.report_count}`, results "
+            f"`{battery.passed_result_count}/{battery.result_count}`, "
+            f"fresh provenance `{battery.fresh_provenance_report_count}/"
+            f"{battery.report_count}`, exact commit "
+            f"`{battery.expected_commit_report_count}/{battery.report_count}`, "
+            f"live commit `{battery.live_commit_report_count}/"
+            f"{battery.report_count}`, "
+            f"exact topology `{battery.exact_topology_report_count}/"
+            f"{battery.report_count}`, "
+            f"issues `{battery.issue_count}`, passed `{battery.passed}`"
+        )
+    else:
+        lines.append("- Not run")
     lines.extend(["", "## Served engines", ""])
     if report.served_engines:
         for evidence in report.served_engines:
@@ -342,6 +375,41 @@ def _fresh_install_markdown(report: FreshInstallQualificationReport) -> str:
     )
     for stage in report.lifecycle:
         lines.append(f"- `{stage.status}` **{stage.name}**: {stage.message or ''}")
+    lines.extend(["", "## Issues", ""])
+    if report.issues:
+        for issue in report.issues:
+            lines.extend(_issue_lines(issue))
+    else:
+        lines.append("- None")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _release_qualification_markdown(report: ReleaseQualificationReport) -> str:
+    """Render the single release verdict spanning every mandatory platform."""
+
+    lines = [
+        f"# Release qualification: {'PASS' if report.passed else 'FAIL'}",
+        "",
+        f"- Qualification: `{report.qualification_id}`",
+        f"- Profile: `{report.profile}`",
+        f"- Expected commit: `{report.expected_commit}`",
+        f"- Required platforms: `{', '.join(report.required_platforms)}`",
+        f"- Lease released: `{report.lease_released}`",
+        f"- Critical recovery required: `{report.critical_recovery_required}`",
+        "",
+        "## Mandatory legs",
+        "",
+    ]
+    for leg in report.legs:
+        lines.append(
+            f"- `{leg.platform}` / `{leg.hardware_class}`: passed "
+            f"`{leg.passed}`, complete E2E `{leg.complete_e2e_passed}`, "
+            f"critical recovery `{leg.critical_recovery_required}`, report "
+            f"`{leg.qualification_id}`"
+        )
+    if not report.legs:
+        lines.append("- None")
     lines.extend(["", "## Issues", ""])
     if report.issues:
         for issue in report.issues:

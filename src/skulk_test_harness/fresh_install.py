@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
+import os
 import re
 import shlex
 import signal
@@ -12,7 +14,7 @@ import subprocess
 import threading
 import time
 from collections.abc import Callable, Iterable, Sequence
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -20,6 +22,7 @@ from types import FrameType
 from typing import BinaryIO, Literal, TypeVar
 
 import httpx
+import yaml
 
 from skulk_test_harness.client import (
     SkulkApiError,
@@ -34,16 +37,21 @@ from skulk_test_harness.lease_heartbeat import (
     LeaseHeartbeatError,
 )
 from skulk_test_harness.models import (
+    FreshInstallE2EBatteryEvidence,
     FreshInstallLifecycleStage,
     FreshInstallMemberEvidence,
     FreshInstallPhysicalFleet,
+    FreshInstallPlatform,
     FreshInstallProfile,
     FreshInstallQualificationReport,
     FreshInstallTarget,
     HarnessConfig,
     InstallProvenance,
     Issue,
+    ReleaseQualificationLegEvidence,
+    ReleaseQualificationReport,
     RunPodFreshInstallConfig,
+    RunReport,
     ServedEngineContract,
     ServedEngineEvidence,
 )
@@ -288,6 +296,264 @@ class FreshInstallQualifier:
         self.fresh = config.fresh_install
         self.writer = ReportWriter(config.output_dir)
 
+    def qualify_release_matrix(
+        self,
+        *,
+        profile: FreshInstallProfile,
+        expected_commit: str | None,
+    ) -> ReleaseQualificationReport:
+        """Run one atomic fresh physical E2E plus RunPod release gate."""
+
+        with QualificationSignalGuard() as signal_guard:
+            return self._qualify_release_matrix(
+                profile=profile,
+                expected_commit=expected_commit,
+                signal_guard=signal_guard,
+            )
+
+    def _qualify_release_matrix(
+        self,
+        *,
+        profile: FreshInstallProfile,
+        expected_commit: str | None,
+        signal_guard: QualificationSignalGuard,
+    ) -> ReleaseQualificationReport:
+        """Execute the composite gate under one outer interruption guard."""
+
+        _require_commit_sha(expected_commit)
+        assert expected_commit is not None
+        if self.config.fleet_lock is None:
+            raise ValueError("release qualification requires fleet_lock")
+        physical_fleets = self.fresh.eligible_physical_fleets()
+        fleet_member_names = {
+            target_name
+            for _fleet_name, fleet in physical_fleets
+            for target_name in fleet.member_targets
+        }
+        targets = [
+            (name, target)
+            for name, target in self.fresh.eligible_targets()
+            if name not in fleet_member_names
+        ]
+        self.fresh.assert_complete_release_matrix(targets, physical_fleets)
+        if not physical_fleets:
+            raise ValueError(
+                "release qualification requires an eligible whole physical fleet"
+            )
+        if len(physical_fleets) != 1:
+            raise ValueError(
+                "release qualification requires exactly one eligible whole "
+                "physical fleet containing every release node"
+            )
+        unexpected_physical = [
+            name for name, target in targets if target.kind == "physical"
+        ]
+        if unexpected_physical:
+            raise ValueError(
+                "release qualification cannot run physical targets separately: "
+                f"{unexpected_physical}"
+            )
+        runpod_targets = [
+            (name, target) for name, target in targets if target.kind == "runpod"
+        ]
+        if not runpod_targets:
+            raise ValueError("release qualification requires an eligible RunPod target")
+
+        qualification_id = (
+            f"release-{profile}-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}"
+        )
+        report = ReleaseQualificationReport(
+            qualification_id=qualification_id,
+            profile=profile,
+            expected_commit=expected_commit,
+            required_platforms=list(self.fresh.required_platforms),
+            started_at=datetime.now(UTC),
+        )
+        self.writer.write_release_qualification(report)
+        store = FleetLockStore(self.config.fleet_lock)
+        heartbeat = AuthoritativeLeaseHeartbeat(
+            store,
+            holder=self.config.fleet_lock.holder,
+            ttl_s=self.fresh.lease_ttl_s,
+            interval_s=self.fresh.resolved_lease_heartbeat_s,
+            on_verified_expiry=report.lease_renewal_expiries.append,
+        )
+        acquired = False
+        heartbeat_failed = False
+        release_failed = False
+        try:
+            outcome = store.acquire(
+                branch=expected_commit,
+                host=socket.gethostname(),
+                battery="fresh-install-release-qualification",
+                ttl_s=self.fresh.lease_ttl_s,
+                note=f"{profile} complete physical E2E plus RunPod",
+            )
+            if not outcome.ok:
+                raise RuntimeError(outcome.message)
+            acquired = True
+            heartbeat.start()
+            self.writer.write_release_qualification(report)
+
+            for fleet_name, fleet in physical_fleets:
+                child = self.qualify_physical_fleet(
+                    fleet_name=fleet_name,
+                    fleet=fleet,
+                    profile=profile,
+                    expected_commit=expected_commit,
+                    shared_heartbeat=heartbeat,
+                )
+                report.legs.append(_release_leg_evidence(child))
+                self.writer.write_release_qualification(report)
+                if not child.passed:
+                    if child.critical_recovery_required:
+                        report.critical_recovery_required = True
+                    raise RuntimeError(
+                        f"mandatory physical fleet leg failed: {child.qualification_id}"
+                    )
+
+            for target_name, target in runpod_targets:
+                heartbeat.raise_if_failed()
+                child = self.qualify_target(
+                    target_name=target_name,
+                    target=target,
+                    profile=profile,
+                    expected_commit=expected_commit,
+                    heartbeat=heartbeat,
+                )
+                report.legs.append(_release_leg_evidence(child))
+                self.writer.write_release_qualification(report)
+                if not child.passed:
+                    if child.critical_recovery_required:
+                        report.critical_recovery_required = True
+                    raise RuntimeError(
+                        f"mandatory RunPod leg failed: {child.qualification_id}"
+                    )
+
+            heartbeat.raise_if_failed()
+            try:
+                _assert_restored_fleet_clean_through_target(
+                    self.fresh.targets[physical_fleets[0][1].entrypoint_target],
+                    expected_node_count=len(physical_fleets[0][1].member_targets),
+                    remote_port=self.fresh.remote_port,
+                    timeout_s=self.fresh.readiness_timeout_s,
+                    poll_interval_s=self.fresh.poll_interval_s,
+                )
+            except Exception as exception:
+                # The child lifecycle has already attempted restoration. A
+                # failed independent audit means that recovery is not proven,
+                # so the authoritative lease must remain held for an operator.
+                report.critical_recovery_required = True
+                raise RuntimeError(
+                    f"restored fleet composite audit failed: {exception}"
+                ) from exception
+        except QualificationInterruptedError as exception:
+            report.issues.append(
+                Issue(
+                    severity="error",
+                    message=f"release qualification interrupted: {exception}",
+                )
+            )
+        except Exception as exception:  # noqa: BLE001 - composite gate boundary
+            heartbeat_failed = isinstance(exception, LeaseHeartbeatError)
+            report.issues.append(
+                Issue(
+                    severity="error",
+                    message=f"release qualification failed: {exception}",
+                )
+            )
+        finally:
+            # Signals during product work stop the gate immediately. From here
+            # onward they are recorded but deferred so provider teardown, fleet
+            # restoration auditing, and lease disposition cannot be interrupted.
+            signal_guard.begin_recovery()
+            try:
+                heartbeat.raise_if_failed()
+            except LeaseHeartbeatError as exception:
+                heartbeat_failed = True
+                report.issues.append(
+                    Issue(
+                        severity="error", message=f"lease heartbeat failed: {exception}"
+                    )
+                )
+            heartbeat.stop()
+            try:
+                heartbeat.raise_if_failed()
+            except LeaseHeartbeatError as exception:
+                heartbeat_failed = True
+                if not any(
+                    "lease heartbeat failed" in issue.message for issue in report.issues
+                ):
+                    report.issues.append(
+                        Issue(
+                            severity="error",
+                            message=f"lease heartbeat failed: {exception}",
+                        )
+                    )
+
+            if (
+                acquired
+                and not report.critical_recovery_required
+                and not heartbeat_failed
+            ):
+                release = store.release()
+                if release.ok:
+                    report = report.model_copy(update={"lease_released": True})
+                else:
+                    release_failed = True
+                    report.issues.append(
+                        Issue(
+                            severity="error",
+                            message=f"fleet lease release failed: {release.message}",
+                        )
+                    )
+            if acquired and (
+                report.critical_recovery_required or heartbeat_failed or release_failed
+            ):
+                report.critical_recovery_required = True
+                try:
+                    heartbeat.emergency_extend(ttl_s=self.fresh.emergency_lease_ttl_s)
+                except LeaseHeartbeatError as exception:
+                    report.issues.append(
+                        Issue(
+                            severity="error",
+                            message=f"emergency lease extension failed: {exception}",
+                        )
+                    )
+                report.issues.append(
+                    Issue(
+                        severity="error",
+                        message=(
+                            "fleet lease intentionally remains held pending "
+                            "operator recovery"
+                        ),
+                    )
+                )
+            covered_platforms = {
+                platform
+                for leg in report.legs
+                if leg.passed
+                for platform in leg.covered_platforms
+            }
+            physical_e2e_passed = any(
+                leg.platform == "mixed" and leg.complete_e2e_passed is True
+                for leg in report.legs
+            )
+            _record_deferred_interruption(report, signal_guard)
+            passed = (
+                not report.issues
+                and set(report.required_platforms).issubset(covered_platforms)
+                and physical_e2e_passed
+                and report.lease_released
+                and not report.critical_recovery_required
+            )
+            report = report.finish(
+                passed=passed,
+                lease_released=report.lease_released,
+            )
+            self.writer.write_release_qualification(report)
+        return report
+
     def qualify_target(
         self,
         *,
@@ -295,6 +561,7 @@ class FreshInstallQualifier:
         target: FreshInstallTarget,
         profile: FreshInstallProfile,
         expected_commit: str | None,
+        heartbeat: AuthoritativeLeaseHeartbeat | None = None,
     ) -> FreshInstallQualificationReport:
         """Run one explicitly eligible target leg."""
 
@@ -337,6 +604,7 @@ class FreshInstallQualifier:
                     journal=journal,
                     artifact_directory=artifact_directory,
                     signal_guard=signal_guard,
+                    heartbeat=heartbeat,
                 )
             return self._qualify_physical(
                 target=target,
@@ -355,6 +623,7 @@ class FreshInstallQualifier:
         fleet: FreshInstallPhysicalFleet,
         profile: FreshInstallProfile,
         expected_commit: str | None,
+        shared_heartbeat: AuthoritativeLeaseHeartbeat | None = None,
     ) -> FreshInstallQualificationReport:
         """Install and qualify every member of one physical topology together."""
 
@@ -433,6 +702,7 @@ class FreshInstallQualifier:
                 journal=journal,
                 artifact_directory=artifact_directory,
                 signal_guard=signal_guard,
+                shared_heartbeat=shared_heartbeat,
             )
 
     def _qualify_physical(
@@ -454,6 +724,7 @@ class FreshInstallQualifier:
                 "Skulk-network isolation; use a physical_fleet for normal networking"
             )
         store = FleetLockStore(self.config.fleet_lock)
+        owns_lease = True
         controller = SshTargetController(target)
         heartbeat = AuthoritativeLeaseHeartbeat(
             store,
@@ -603,22 +874,28 @@ class FreshInstallQualifier:
                         severity="error", message=f"lease heartbeat failed: {exception}"
                     )
                 )
-            heartbeat.stop()
-            try:
-                heartbeat.raise_if_failed()
-            except LeaseHeartbeatError as exception:
-                if not heartbeat_failed:
-                    report.issues.append(
-                        Issue(
-                            severity="error",
-                            message=f"lease heartbeat failed: {exception}",
+            if owns_lease:
+                heartbeat.stop()
+                try:
+                    heartbeat.raise_if_failed()
+                except LeaseHeartbeatError as exception:
+                    if not heartbeat_failed:
+                        report.issues.append(
+                            Issue(
+                                severity="error",
+                                message=f"lease heartbeat failed: {exception}",
+                            )
                         )
-                    )
-                heartbeat_failed = True
+                    heartbeat_failed = True
             if tunnel is not None:
                 _terminate_process(tunnel)
             release_failed = False
-            if acquired and restoration_succeeded and not heartbeat_failed:
+            if (
+                owns_lease
+                and acquired
+                and restoration_succeeded
+                and not heartbeat_failed
+            ):
                 try:
                     with journal.stage("release restored fleet lease"):
                         release = store.release()
@@ -636,24 +913,27 @@ class FreshInstallQualifier:
                 not restoration_succeeded or heartbeat_failed or release_failed
             ):
                 report.critical_recovery_required = True
-                try:
-                    heartbeat.emergency_extend(ttl_s=self.fresh.emergency_lease_ttl_s)
-                except LeaseHeartbeatError as exception:
+                if owns_lease:
+                    try:
+                        heartbeat.emergency_extend(
+                            ttl_s=self.fresh.emergency_lease_ttl_s
+                        )
+                    except LeaseHeartbeatError as exception:
+                        report.issues.append(
+                            Issue(
+                                severity="error",
+                                message=f"emergency lease extension failed: {exception}",
+                            )
+                        )
                     report.issues.append(
                         Issue(
                             severity="error",
-                            message=f"emergency lease extension failed: {exception}",
+                            message=(
+                                "fleet lease intentionally remains held pending "
+                                "operator recovery"
+                            ),
                         )
                     )
-                report.issues.append(
-                    Issue(
-                        severity="error",
-                        message=(
-                            "fleet lease intentionally remains held pending "
-                            "operator recovery"
-                        ),
-                    )
-                )
             _record_deferred_interruption(report, signal_guard)
             report = report.finish(
                 passed=(
@@ -681,6 +961,7 @@ class FreshInstallQualifier:
         journal: _LifecycleJournal,
         artifact_directory: Path,
         signal_guard: QualificationSignalGuard,
+        shared_heartbeat: AuthoritativeLeaseHeartbeat | None,
     ) -> FreshInstallQualificationReport:
         """Run one fail-safe unsandboxed whole-fleet qualification lifecycle."""
 
@@ -691,14 +972,15 @@ class FreshInstallQualifier:
                 "whole-fleet qualification must not declare runtime isolation prefixes"
             )
         store = FleetLockStore(self.config.fleet_lock)
-        heartbeat = AuthoritativeLeaseHeartbeat(
+        owns_lease = shared_heartbeat is None
+        heartbeat = shared_heartbeat or AuthoritativeLeaseHeartbeat(
             store,
             holder=self.config.fleet_lock.holder,
             ttl_s=self.fresh.lease_ttl_s,
             interval_s=self.fresh.resolved_lease_heartbeat_s,
             on_verified_expiry=report.lease_renewal_expiries.append,
         )
-        acquired = False
+        acquired = not owns_lease
         restoration_succeeded = False
         cleanup_succeeded = True
         heartbeat_failed = False
@@ -709,18 +991,22 @@ class FreshInstallQualifier:
         installer_digest: str | None = None
         expected_node_count = len(members)
         try:
-            with journal.stage("acquire authoritative fleet lease"):
-                outcome = store.acquire(
-                    branch=expected_commit or "main",
-                    host=socket.gethostname(),
-                    battery="fresh-install-whole-fleet-qualification",
-                    ttl_s=self.fresh.lease_ttl_s,
-                    note=f"{profile} mixed {expected_node_count} nodes",
-                )
-                if not outcome.ok:
-                    raise RuntimeError(outcome.message)
-                acquired = True
-                heartbeat.start()
+            if owns_lease:
+                with journal.stage("acquire authoritative fleet lease"):
+                    outcome = store.acquire(
+                        branch=expected_commit or "main",
+                        host=socket.gethostname(),
+                        battery="fresh-install-whole-fleet-qualification",
+                        ttl_s=self.fresh.lease_ttl_s,
+                        note=f"{profile} mixed {expected_node_count} nodes",
+                    )
+                    if not outcome.ok:
+                        raise RuntimeError(outcome.message)
+                    acquired = True
+                    heartbeat.start()
+            else:
+                with journal.stage("verify composite release fleet lease"):
+                    heartbeat.verify_current()
 
             with journal.stage("open API tunnels to every physical member"):
 
@@ -1001,6 +1287,18 @@ class FreshInstallQualifier:
                 artifact_directory=artifact_directory,
                 heartbeat=heartbeat,
             )
+            with journal.stage("run complete E2E battery on fresh physical fleet"):
+                report.e2e_battery = self._run_complete_e2e_battery(
+                    api_base_url=api_base_url,
+                    fleet=fleet,
+                    expected_node_ids=fresh_node_ids,
+                    expected_commit=expected_commit,
+                    report=report,
+                    journal=journal,
+                    artifact_directory=artifact_directory,
+                    heartbeat=heartbeat,
+                )
+                journal.persist()
         except QualificationInterruptedError as exception:
             report.issues.append(
                 Issue(
@@ -1063,22 +1361,28 @@ class FreshInstallQualifier:
                         severity="error", message=f"lease heartbeat failed: {exception}"
                     )
                 )
-            heartbeat.stop()
-            try:
-                heartbeat.raise_if_failed()
-            except LeaseHeartbeatError as exception:
-                if not heartbeat_failed:
-                    report.issues.append(
-                        Issue(
-                            severity="error",
-                            message=f"lease heartbeat failed: {exception}",
+            if owns_lease:
+                heartbeat.stop()
+                try:
+                    heartbeat.raise_if_failed()
+                except LeaseHeartbeatError as exception:
+                    if not heartbeat_failed:
+                        report.issues.append(
+                            Issue(
+                                severity="error",
+                                message=f"lease heartbeat failed: {exception}",
+                            )
                         )
-                    )
-                heartbeat_failed = True
+                    heartbeat_failed = True
             for member in members:
                 if member.tunnel is not None:
                     _terminate_process(member.tunnel)
-            if acquired and restoration_succeeded and not heartbeat_failed:
+            if (
+                owns_lease
+                and acquired
+                and restoration_succeeded
+                and not heartbeat_failed
+            ):
                 try:
                     with journal.stage("release restored fleet lease"):
                         release = store.release()
@@ -1096,24 +1400,27 @@ class FreshInstallQualifier:
                 not restoration_succeeded or heartbeat_failed or release_failed
             ):
                 report.critical_recovery_required = True
-                try:
-                    heartbeat.emergency_extend(ttl_s=self.fresh.emergency_lease_ttl_s)
-                except LeaseHeartbeatError as exception:
+                if owns_lease:
+                    try:
+                        heartbeat.emergency_extend(
+                            ttl_s=self.fresh.emergency_lease_ttl_s
+                        )
+                    except LeaseHeartbeatError as exception:
+                        report.issues.append(
+                            Issue(
+                                severity="error",
+                                message=f"emergency lease extension failed: {exception}",
+                            )
+                        )
                     report.issues.append(
                         Issue(
                             severity="error",
-                            message=f"emergency lease extension failed: {exception}",
+                            message=(
+                                "fleet lease intentionally remains held pending "
+                                "operator recovery"
+                            ),
                         )
                     )
-                report.issues.append(
-                    Issue(
-                        severity="error",
-                        message=(
-                            "fleet lease intentionally remains held pending "
-                            "operator recovery"
-                        ),
-                    )
-                )
             _record_deferred_interruption(report, signal_guard)
             report = report.finish(
                 passed=(
@@ -1127,6 +1434,115 @@ class FreshInstallQualifier:
             journal.report = report
             journal.persist()
         return report
+
+    def _run_complete_e2e_battery(
+        self,
+        *,
+        api_base_url: str,
+        fleet: FreshInstallPhysicalFleet,
+        expected_node_ids: frozenset[str],
+        expected_commit: str | None,
+        report: FreshInstallQualificationReport,
+        journal: _LifecycleJournal,
+        artifact_directory: Path,
+        heartbeat: AuthoritativeLeaseHeartbeat,
+    ) -> FreshInstallE2EBatteryEvidence:
+        """Run and verify every configured E2E cell before fresh-fleet teardown."""
+
+        if expected_commit is None:
+            raise ValueError("fresh-fleet E2E requires an exact expected commit")
+        repository_root = Path(__file__).resolve().parents[2]
+        script_path = fleet.e2e_battery_script.expanduser()
+        if not script_path.is_absolute():
+            script_path = repository_root / script_path
+        if not script_path.is_file():
+            raise FileNotFoundError(
+                f"fresh-fleet E2E battery is missing: {script_path}"
+            )
+
+        e2e_root = artifact_directory / "complete-e2e"
+        e2e_root.mkdir(parents=True, exist_ok=True)
+        e2e_root.chmod(0o700)
+        active_report_path = artifact_directory / "fresh-install-report.json"
+        journal.persist()
+        generated_config = self.config.model_copy(
+            update={
+                "api_base_url": api_base_url,
+                "output_dir": e2e_root / "runs",
+                "fresh_install_report_path": active_report_path,
+            }
+        )
+        config_path = e2e_root / "qualification-config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                json.loads(generated_config.model_dump_json()),
+                sort_keys=False,
+            )
+        )
+        config_path.chmod(0o600)
+        battery_log = e2e_root / "battery.log"
+        controller_log = e2e_root / "controller.log"
+
+        environment = {
+            key: value
+            for key, value in os.environ.items()
+            if not key.startswith("SKULK_")
+        }
+        environment.update(
+            {
+                "SKULK_HARNESS_CONFIG": str(config_path),
+                "SKULK_E2E_BATTERY_LOG": str(battery_log),
+                "SKULK_E2E_FAIL_FAST": "1",
+                "SKULK_PUBLISH_RESULTS": "0",
+            }
+        )
+        heartbeat.raise_if_failed()
+        with (
+            controller_log.open("wb") as log_handle,
+            _FreshRuntimeMonitor(
+                api_base_url=api_base_url,
+                expected_node_ids=expected_node_ids,
+                expected_node_count=len(expected_node_ids),
+                poll_interval_s=self.fresh.poll_interval_s,
+                request_timeout_s=self.config.request_timeout_s,
+            ) as runtime_monitor,
+        ):
+            process = subprocess.Popen(
+                ["bash", str(script_path)],
+                cwd=repository_root,
+                env=environment,
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+            deadline = time.monotonic() + fleet.e2e_battery_timeout_s
+            try:
+                while process.poll() is None:
+                    heartbeat.raise_if_failed()
+                    runtime_monitor.raise_if_failed()
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError(
+                            "complete fresh-fleet E2E battery exceeded its timeout"
+                        )
+                    time.sleep(self.fresh.poll_interval_s)
+            finally:
+                if process.poll() is None:
+                    _terminate_process_group(process)
+        heartbeat.raise_if_failed()
+        assert process.returncode is not None
+        evidence = _summarize_fresh_e2e_battery(
+            script_path=script_path,
+            battery_log=battery_log,
+            report_root=e2e_root / "runs",
+            expected_commit=expected_commit,
+            expected_node_ids=expected_node_ids,
+            process_returncode=process.returncode,
+        )
+        if not evidence.passed:
+            raise RuntimeError(
+                "complete fresh-fleet E2E battery failed its result or provenance gate"
+            )
+        return evidence
 
     @staticmethod
     def _create_temporary_home(controller: SshTargetController) -> str:
@@ -1696,6 +2112,7 @@ class FreshInstallQualifier:
         journal: _LifecycleJournal,
         artifact_directory: Path,
         signal_guard: QualificationSignalGuard,
+        heartbeat: AuthoritativeLeaseHeartbeat | None,
     ) -> FreshInstallQualificationReport:
         if self.fresh.runpod is None:
             raise ValueError("runpod target selected without fresh_install.runpod")
@@ -1708,6 +2125,7 @@ class FreshInstallQualifier:
         teardown_lock = threading.Lock()
         runpod = RunPodClient(self.fresh.runpod)
         try:
+            _check_heartbeat(heartbeat)
             with journal.stage("provision clean cost-bounded RunPod"):
                 pod = runpod.provision(qualification_id=report.qualification_id)
                 pod_id = pod.pod_id
@@ -1726,6 +2144,7 @@ class FreshInstallQualifier:
                 deadline_timer.daemon = True
                 deadline_timer.start()
                 endpoint = runpod.wait_for_ssh(pod_id)
+                _check_heartbeat(heartbeat)
             ephemeral_target = _runpod_ephemeral_target(
                 target=target,
                 runpod_config=self.fresh.runpod,
@@ -1745,7 +2164,7 @@ class FreshInstallQualifier:
                     report=report,
                     journal=journal,
                     artifact_directory=artifact_directory,
-                    heartbeat=None,
+                    heartbeat=heartbeat,
                     signal_guard=signal_guard,
                 )
             finally:
@@ -2436,6 +2855,166 @@ def _aggregate_digests(digests: Iterable[str]) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def _release_leg_evidence(
+    report: FreshInstallQualificationReport,
+) -> ReleaseQualificationLegEvidence:
+    """Reduce one private leg report to the atomic release-gate evidence."""
+
+    covered_platforms: list[FreshInstallPlatform] = sorted(
+        {member.platform for member in report.members}
+        or ({report.platform} if report.platform != "mixed" else set())
+    )
+    return ReleaseQualificationLegEvidence(
+        qualification_id=report.qualification_id,
+        platform=report.platform,
+        covered_platforms=covered_platforms,
+        hardware_class=report.hardware_class,
+        passed=report.passed,
+        critical_recovery_required=report.critical_recovery_required,
+        complete_e2e_passed=(
+            report.e2e_battery.passed if report.e2e_battery is not None else None
+        ),
+    )
+
+
+def _assert_restored_fleet_clean(
+    api_base_url: str,
+    *,
+    expected_node_count: int,
+) -> None:
+    """Require the restored physical fleet to be complete, idle, and drift-free."""
+
+    with SkulkClient(api_base_url) as client:
+        state = client.get_state()
+        node_identities = state.get("nodeIdentities")
+        if (
+            not isinstance(node_identities, dict)
+            or len(node_identities) != expected_node_count
+        ):
+            observed = len(node_identities) if isinstance(node_identities, dict) else 0
+            raise RuntimeError(
+                "restored fleet node count mismatch: "
+                f"expected {expected_node_count}, observed {observed}"
+            )
+        for field in ("instances", "runners"):
+            value = state.get(field)
+            if isinstance(value, dict) and value:
+                raise RuntimeError(f"restored fleet retained active {field}")
+        drift = client.detect_runner_state_drift()
+        if drift:
+            raise RuntimeError(
+                f"restored fleet retained {len(drift)} runner-state drift issue(s)"
+            )
+
+
+def _assert_restored_fleet_clean_through_target(
+    target: FreshInstallTarget,
+    *,
+    expected_node_count: int,
+    remote_port: int,
+    timeout_s: float,
+    poll_interval_s: float,
+) -> None:
+    """Reopen the physical entrypoint tunnel and audit the restored fleet."""
+
+    controller = SshTargetController(target)
+    local_port, tunnel = controller.open_tunnel(remote_port=remote_port)
+    try:
+        api_base_url = f"http://127.0.0.1:{local_port}"
+        _wait_for_api_identity(
+            api_base_url,
+            timeout_s=timeout_s,
+            poll_interval_s=poll_interval_s,
+        )
+        _assert_restored_fleet_clean(
+            api_base_url,
+            expected_node_count=expected_node_count,
+        )
+    finally:
+        _terminate_process(tunnel)
+
+
+def _summarize_fresh_e2e_battery(
+    *,
+    script_path: Path,
+    battery_log: Path,
+    report_root: Path,
+    expected_commit: str,
+    expected_node_ids: frozenset[str],
+    process_returncode: int,
+) -> FreshInstallE2EBatteryEvidence:
+    """Build a strict composite verdict from every full-battery report."""
+
+    log_text = battery_log.read_text() if battery_log.is_file() else ""
+    cell_count = len(re.findall(r"==== CELL .* START ====", log_text))
+    completed_cell_count = len(re.findall(r"==== CELL .* END \(rc=0\) ====", log_text))
+    reports = [
+        RunReport.model_validate_json(path.read_text())
+        for path in sorted(report_root.rglob("report.json"))
+    ]
+    results = [result for report in reports for result in report.results]
+    issues = [issue for report in reports for issue in report.issues]
+    fresh_reports = [
+        report
+        for report in reports
+        if report.fingerprint is not None
+        and report.fingerprint.install.mode == "fresh_install"
+        and report.fingerprint.install.environment == "fresh_install"
+    ]
+    expected_commit_reports = [
+        report
+        for report in fresh_reports
+        if report.fingerprint is not None
+        and report.fingerprint.install.expected_commit == expected_commit
+        and report.fingerprint.install.resolved_commit == expected_commit
+    ]
+    live_commit_reports = [
+        report
+        for report in reports
+        if report.fingerprint is not None
+        and report.fingerprint.runtime.skulk_commit == expected_commit
+    ]
+    exact_topology_reports = [
+        report
+        for report in reports
+        if report.fingerprint is not None
+        and report.fingerprint.cluster.node_count == len(expected_node_ids)
+        and {node.node_id for node in report.fingerprint.cluster.nodes}
+        == expected_node_ids
+    ]
+    passed_results = [result for result in results if result.passed]
+    failed_results = [result for result in results if not result.passed]
+    passed = (
+        process_returncode == 0
+        and "BATTERY COMPLETE (rc=0)" in log_text
+        and cell_count > 0
+        and completed_cell_count == cell_count
+        and len(reports) == cell_count
+        and bool(results)
+        and not failed_results
+        and not issues
+        and len(fresh_reports) == len(reports)
+        and len(expected_commit_reports) == len(reports)
+        and len(live_commit_reports) == len(reports)
+        and len(exact_topology_reports) == len(reports)
+    )
+    return FreshInstallE2EBatteryEvidence(
+        script_sha256=hashlib.sha256(script_path.read_bytes()).hexdigest(),
+        cell_count=cell_count,
+        completed_cell_count=completed_cell_count,
+        report_count=len(reports),
+        result_count=len(results),
+        passed_result_count=len(passed_results),
+        failed_result_count=len(failed_results),
+        issue_count=len(issues),
+        fresh_provenance_report_count=len(fresh_reports),
+        expected_commit_report_count=len(expected_commit_reports),
+        live_commit_report_count=len(live_commit_reports),
+        exact_topology_report_count=len(exact_topology_reports),
+        passed=passed,
+    )
+
+
 def _wait_for_exact_cluster(
     api_base_url: str,
     *,
@@ -2784,7 +3363,7 @@ def _blocking_issues(report: FreshInstallQualificationReport) -> list[Issue]:
 
 
 def _record_deferred_interruption(
-    report: FreshInstallQualificationReport,
+    report: FreshInstallQualificationReport | ReleaseQualificationReport,
     signal_guard: QualificationSignalGuard,
 ) -> None:
     """Record a signal deferred until mandatory recovery had completed."""
@@ -3197,6 +3776,24 @@ def _terminate_process(process: subprocess.Popen[bytes]) -> None:
         process.wait(timeout=15)
     except subprocess.TimeoutExpired:
         process.kill()
+        process.wait(timeout=5)
+
+
+def _terminate_process_group(process: subprocess.Popen[bytes]) -> None:
+    """Terminate a locally created process session, including its children."""
+
+    if process.poll() is not None:
+        return
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        process.wait(timeout=5)
+        return
+    try:
+        process.wait(timeout=15)
+    except subprocess.TimeoutExpired:
+        with suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGKILL)
         process.wait(timeout=5)
 
 

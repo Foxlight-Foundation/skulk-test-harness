@@ -62,6 +62,7 @@ from skulk_test_harness.fresh_install import (
     _runtime_start_command,  # pyright: ignore[reportPrivateUsage]
     _self_safe_process_pattern,  # pyright: ignore[reportPrivateUsage]
     _served_engine_envelope,  # pyright: ignore[reportPrivateUsage]
+    _summarize_fresh_e2e_battery,  # pyright: ignore[reportPrivateUsage]
     _wait_for_api_identity,  # pyright: ignore[reportPrivateUsage]
     _wait_for_runtime_contract,  # pyright: ignore[reportPrivateUsage]
 )
@@ -70,24 +71,35 @@ from skulk_test_harness.lease_heartbeat import (
     LeaseHeartbeatError,
 )
 from skulk_test_harness.models import (
+    ClusterFingerprint,
+    ClusterNodeFingerprint,
     DashboardAudioContract,
     DashboardAudioEvidence,
     DashboardContract,
     DashboardExperienceEvidence,
     FleetLock,
     FreshInstallConfig,
+    FreshInstallE2EBatteryEvidence,
     FreshInstallLifecycleStage,
     FreshInstallMemberEvidence,
     FreshInstallPhysicalFleet,
     FreshInstallQualificationReport,
     FreshInstallTarget,
+    GenerationMetrics,
     HarnessConfig,
     InstallProvenance,
     Issue,
     PlacementResult,
+    ReportFingerprint,
     RunPodFreshInstallConfig,
+    RunReport,
+    RunSpec,
+    RuntimeFingerprint,
     ServedEngineContract,
     ServedEngineEvidence,
+)
+from skulk_test_harness.models import (
+    TestResult as _TestResult,
 )
 from skulk_test_harness.qualification_checks import (
     UnexpectedFreshInstallPeerError,
@@ -102,6 +114,7 @@ from skulk_test_harness.reporting import (
     _fresh_install_markdown,  # pyright: ignore[reportPrivateUsage]
 )
 from skulk_test_harness.runpod import RunPodClient, RunPodSshEndpoint
+from skulk_test_harness.specs import load_config
 from skulk_test_harness.target_control import (
     OriginalTargetState,
     RecoverySnapshot,
@@ -217,6 +230,601 @@ def test_complete_release_matrix_requires_every_blocking_platform() -> None:
 
     with pytest.raises(ValueError, match="amd.*nvidia"):
         config.assert_complete_release_matrix(selected)
+
+
+def test_complete_e2e_summary_requires_every_report_to_prove_fresh_commit(
+    tmp_path: Path,
+) -> None:
+    expected_commit = "a" * 40
+    script_path = tmp_path / "battery.sh"
+    script_path.write_text("#!/usr/bin/env bash\n")
+    battery_log = tmp_path / "battery.log"
+    battery_log.write_text(
+        "==== CELL model-set=a test-set=b START ====\n"
+        "==== CELL model-set=a test-set=b END (rc=0) ====\n"
+        "BATTERY COMPLETE (rc=0)\n"
+    )
+    report_root = tmp_path / "runs" / "one"
+    report_root.mkdir(parents=True)
+    run_report = RunReport.start(
+        "one",
+        RunSpec(model_set="a", test_set="b", mode="execute"),
+        [],
+    )
+    run_report.results.append(
+        _TestResult(
+            model_id="model",
+            test_name="test",
+            repetition=1,
+            passed=True,
+            output_text="ok",
+            metrics=GenerationMetrics(elapsed_s=1),
+        )
+    )
+    run_report.fingerprint = ReportFingerprint(
+        runtime=RuntimeFingerprint(skulk_commit=expected_commit),
+        cluster=ClusterFingerprint(
+            node_count=1,
+            nodes=[ClusterNodeFingerprint(node_id="node-a")],
+        ),
+        install=InstallProvenance(
+            mode="fresh_install",
+            environment="fresh_install",
+            profile="candidate",
+            platform="mixed",
+            expected_commit=expected_commit,
+            resolved_commit=expected_commit,
+        ),
+    )
+    (report_root / "report.json").write_text(run_report.finish().model_dump_json())
+
+    evidence = _summarize_fresh_e2e_battery(
+        script_path=script_path,
+        battery_log=battery_log,
+        report_root=tmp_path / "runs",
+        expected_commit=expected_commit,
+        expected_node_ids=frozenset({"node-a"}),
+        process_returncode=0,
+    )
+
+    assert evidence.passed
+    assert evidence.cell_count == 1
+    assert evidence.fresh_provenance_report_count == 1
+    assert evidence.live_commit_report_count == 1
+
+    assert run_report.fingerprint is not None
+    run_report.fingerprint = run_report.fingerprint.model_copy(
+        update={
+            "runtime": run_report.fingerprint.runtime.model_copy(
+                update={"skulk_commit": "b" * 40}
+            )
+        }
+    )
+    (report_root / "report.json").write_text(run_report.finish().model_dump_json())
+    stale_runtime = _summarize_fresh_e2e_battery(
+        script_path=script_path,
+        battery_log=battery_log,
+        report_root=tmp_path / "runs",
+        expected_commit=expected_commit,
+        expected_node_ids=frozenset({"node-a"}),
+        process_returncode=0,
+    )
+
+    assert not stale_runtime.passed
+    assert stale_runtime.expected_commit_report_count == 1
+    assert stale_runtime.live_commit_report_count == 0
+
+    assert run_report.fingerprint is not None
+    run_report.fingerprint = run_report.fingerprint.model_copy(
+        update={
+            "runtime": run_report.fingerprint.runtime.model_copy(
+                update={"skulk_commit": expected_commit}
+            ),
+            "cluster": ClusterFingerprint(
+                node_count=1,
+                nodes=[ClusterNodeFingerprint(node_id="different-node")],
+            ),
+        }
+    )
+    (report_root / "report.json").write_text(run_report.finish().model_dump_json())
+    wrong_topology = _summarize_fresh_e2e_battery(
+        script_path=script_path,
+        battery_log=battery_log,
+        report_root=tmp_path / "runs",
+        expected_commit=expected_commit,
+        expected_node_ids=frozenset({"node-a"}),
+        process_returncode=0,
+    )
+
+    assert not wrong_topology.passed
+    assert wrong_topology.live_commit_report_count == 1
+    assert wrong_topology.exact_topology_report_count == 0
+
+    run_report.fingerprint = ReportFingerprint()
+    (report_root / "report.json").write_text(run_report.finish().model_dump_json())
+    attached = _summarize_fresh_e2e_battery(
+        script_path=script_path,
+        battery_log=battery_log,
+        report_root=tmp_path / "runs",
+        expected_commit=expected_commit,
+        expected_node_ids=frozenset({"node-a"}),
+        process_returncode=0,
+    )
+
+    assert not attached.passed
+    assert attached.fresh_provenance_report_count == 0
+
+
+def test_complete_e2e_uses_private_fresh_config_and_strips_product_overrides(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected_commit = "a" * 40
+    script_path = tmp_path / "battery.sh"
+    script_path.write_text("#!/usr/bin/env bash\n")
+    artifact_directory = tmp_path / "artifacts"
+    artifact_directory.mkdir()
+    report = FreshInstallQualificationReport(
+        qualification_id="fresh-candidate-mixed-test",
+        profile="candidate",
+        platform="mixed",
+        hardware_class="mixed",
+        started_at=datetime.now(UTC),
+        install=InstallProvenance(
+            mode="fresh_install",
+            environment="fresh_install",
+            expected_commit=expected_commit,
+        ),
+        artifact_directory=artifact_directory,
+    )
+
+    class Journal:
+        def persist(self) -> None:
+            (artifact_directory / "fresh-install-report.json").write_text(
+                report.model_dump_json()
+            )
+
+    class Heartbeat:
+        def raise_if_failed(self) -> None:
+            pass
+
+    observed: dict[str, object] = {}
+
+    class FakeProcess:
+        pid = 12345
+        returncode = 7
+
+        def poll(self) -> int:
+            return self.returncode
+
+    def fake_popen(*_args: object, **kwargs: object) -> FakeProcess:
+        environment = cast(dict[str, str], kwargs["env"])
+        generated = load_config(Path(environment["SKULK_HARNESS_CONFIG"]))
+        observed.update(
+            {
+                "environment": environment,
+                "generated": generated,
+            }
+        )
+        return FakeProcess()
+
+    monkeypatch.setenv("SKULK_PRODUCT_OVERRIDE", "must-not-leak")
+    monkeypatch.setattr(fresh_install_module.subprocess, "Popen", fake_popen)
+
+    class StableRuntimeMonitor:
+        def __enter__(self) -> "StableRuntimeMonitor":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            pass
+
+        def raise_if_failed(self) -> None:
+            pass
+
+    monkeypatch.setattr(
+        fresh_install_module,
+        "_FreshRuntimeMonitor",
+        lambda **_kwargs: StableRuntimeMonitor(),
+    )
+    config = HarnessConfig(
+        output_dir=tmp_path / "runs",
+        fresh_install=FreshInstallConfig(),
+    )
+    qualifier = fresh_install_module.FreshInstallQualifier(config)
+    fleet = FreshInstallPhysicalFleet(
+        hardware_class="mixed",
+        eligible=True,
+        member_targets=["apple", "amd"],
+        entrypoint_target="apple",
+        qualification_targets=["apple"],
+        e2e_battery_script=script_path,
+    )
+
+    with pytest.raises(RuntimeError, match="result or provenance gate"):
+        qualifier._run_complete_e2e_battery(  # pyright: ignore[reportPrivateUsage]
+            api_base_url="http://127.0.0.1:42000",
+            fleet=fleet,
+            expected_node_ids=frozenset({"node-a", "node-b"}),
+            expected_commit=expected_commit,
+            report=report,
+            journal=cast(fresh_install_module._LifecycleJournal, Journal()),  # pyright: ignore[reportPrivateUsage]
+            artifact_directory=artifact_directory,
+            heartbeat=cast(AuthoritativeLeaseHeartbeat, Heartbeat()),
+        )
+
+    environment = cast(dict[str, str], observed["environment"])
+    assert "SKULK_PRODUCT_OVERRIDE" not in environment
+    assert environment["SKULK_E2E_FAIL_FAST"] == "1"
+    assert environment["SKULK_PUBLISH_RESULTS"] == "0"
+    generated = cast(HarnessConfig, observed["generated"])
+    assert generated.api_base_url == "http://127.0.0.1:42000"
+    assert generated.fresh_install_report_path == (
+        artifact_directory / "fresh-install-report.json"
+    )
+    assert generated.output_dir == artifact_directory / "complete-e2e" / "runs"
+
+    class RunningProcess:
+        pid = 12345
+        returncode: int | None = None
+
+        def poll(self) -> None:
+            return None
+
+    class FailedHeartbeat:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def raise_if_failed(self) -> None:
+            self.calls += 1
+            if self.calls >= 2:
+                raise LeaseHeartbeatError("authoritative renewal failed")
+
+    running = RunningProcess()
+    terminated: list[object] = []
+    monkeypatch.setattr(
+        fresh_install_module.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: running,
+    )
+    monkeypatch.setattr(
+        fresh_install_module,
+        "_terminate_process_group",
+        terminated.append,
+    )
+
+    with pytest.raises(LeaseHeartbeatError, match="renewal failed"):
+        qualifier._run_complete_e2e_battery(  # pyright: ignore[reportPrivateUsage]
+            api_base_url="http://127.0.0.1:42000",
+            fleet=fleet,
+            expected_node_ids=frozenset({"node-a", "node-b"}),
+            expected_commit=expected_commit,
+            report=report,
+            journal=cast(fresh_install_module._LifecycleJournal, Journal()),  # pyright: ignore[reportPrivateUsage]
+            artifact_directory=artifact_directory,
+            heartbeat=cast(AuthoritativeLeaseHeartbeat, FailedHeartbeat()),
+        )
+
+    assert terminated == [running]
+
+    terminated.clear()
+
+    class FailedRuntimeMonitor(StableRuntimeMonitor):
+        def raise_if_failed(self) -> None:
+            raise RuntimeError("exact fresh topology changed")
+
+    monkeypatch.setattr(
+        fresh_install_module,
+        "_FreshRuntimeMonitor",
+        lambda **_kwargs: FailedRuntimeMonitor(),
+    )
+
+    with pytest.raises(RuntimeError, match="topology changed"):
+        qualifier._run_complete_e2e_battery(  # pyright: ignore[reportPrivateUsage]
+            api_base_url="http://127.0.0.1:42000",
+            fleet=fleet,
+            expected_node_ids=frozenset({"node-a", "node-b"}),
+            expected_commit=expected_commit,
+            report=report,
+            journal=cast(fresh_install_module._LifecycleJournal, Journal()),  # pyright: ignore[reportPrivateUsage]
+            artifact_directory=artifact_directory,
+            heartbeat=cast(AuthoritativeLeaseHeartbeat, Heartbeat()),
+        )
+
+    assert terminated == [running]
+
+
+def test_release_matrix_holds_one_lease_across_physical_e2e_and_runpod(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected_commit = "a" * 40
+    events: list[str] = []
+    apple = _whole_fleet_target("apple")
+    amd = _whole_fleet_target("amd")
+    nvidia = FreshInstallTarget(
+        kind="runpod",
+        platform="nvidia",
+        hardware_class="nvidia-cuda",
+        eligible=True,
+        expected_backends=["llama_server-cuda"],
+        vision_contract="unavailable",
+        text_models=["text/model"],
+    )
+    config = HarnessConfig(
+        api_base_url="http://restored.invalid",
+        output_dir=tmp_path / "runs",
+        fleet_lock=FleetLock(
+            remote="git@example.invalid:coordination.git",
+            holder="operator",
+        ),
+        fresh_install=FreshInstallConfig(
+            targets={"apple": apple, "amd": amd, "nvidia": nvidia},
+            physical_fleets={
+                "release": FreshInstallPhysicalFleet(
+                    hardware_class="mixed",
+                    eligible=True,
+                    member_targets=["apple", "amd"],
+                    entrypoint_target="apple",
+                    qualification_targets=["apple", "amd"],
+                )
+            },
+            runpod=RunPodFreshInstallConfig(
+                ssh_public_key_file=tmp_path / "key.pub",
+                ssh_private_key_file=tmp_path / "key",
+                image_name="nvidia/cuda:12.8.1-devel-ubuntu24.04",
+                gpu_type_ids=["NVIDIA L4"],
+            ),
+        ),
+    )
+
+    class FakeStore:
+        def __init__(self, _config: FleetLock) -> None:
+            pass
+
+        def acquire(self, **_kwargs: object) -> LeaseOutcome:
+            events.append("acquire")
+            return LeaseOutcome(True, FleetLease(state="held"), "acquired")
+
+        def release(self) -> LeaseOutcome:
+            events.append("release")
+            return LeaseOutcome(True, FleetLease(), "released")
+
+    class FakeHeartbeat:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def start(self) -> None:
+            events.append("heartbeat-start")
+
+        def stop(self) -> None:
+            events.append("heartbeat-stop")
+
+        def raise_if_failed(self) -> None:
+            pass
+
+        def emergency_extend(self, *, ttl_s: float) -> FleetLease:
+            del ttl_s
+            events.append("emergency-extend")
+            return FleetLease(state="held")
+
+    monkeypatch.setattr(fresh_install_module, "FleetLockStore", FakeStore)
+    monkeypatch.setattr(
+        fresh_install_module,
+        "AuthoritativeLeaseHeartbeat",
+        FakeHeartbeat,
+    )
+    monkeypatch.setattr(
+        fresh_install_module,
+        "_assert_restored_fleet_clean_through_target",
+        lambda *_args, **_kwargs: events.append("audit"),
+    )
+    qualifier = fresh_install_module.FreshInstallQualifier(config)
+
+    physical_report = FreshInstallQualificationReport(
+        qualification_id="fresh-candidate-mixed-test",
+        profile="candidate",
+        platform="mixed",
+        hardware_class="mixed",
+        started_at=datetime.now(UTC),
+        install=InstallProvenance(
+            mode="fresh_install",
+            environment="fresh_install",
+            expected_commit=expected_commit,
+        ),
+        members=[
+            FreshInstallMemberEvidence(
+                ordinal=1,
+                platform="apple",
+                hardware_class="apple",
+            ),
+            FreshInstallMemberEvidence(
+                ordinal=2,
+                platform="amd",
+                hardware_class="amd",
+            ),
+        ],
+        e2e_battery=FreshInstallE2EBatteryEvidence(
+            script_sha256="digest",
+            cell_count=33,
+            completed_cell_count=33,
+            report_count=33,
+            result_count=193,
+            passed_result_count=193,
+            failed_result_count=0,
+            issue_count=0,
+            fresh_provenance_report_count=33,
+            expected_commit_report_count=33,
+            live_commit_report_count=33,
+            exact_topology_report_count=33,
+            passed=True,
+        ),
+    ).finish(passed=True)
+    runpod_report = FreshInstallQualificationReport(
+        qualification_id="fresh-candidate-nvidia-test",
+        profile="candidate",
+        platform="nvidia",
+        hardware_class="nvidia-cuda",
+        started_at=datetime.now(UTC),
+        install=InstallProvenance(
+            mode="fresh_install",
+            environment="fresh_install",
+            expected_commit=expected_commit,
+        ),
+    ).finish(passed=True)
+
+    def qualify_physical_fleet(**kwargs: object) -> FreshInstallQualificationReport:
+        assert kwargs["expected_commit"] == expected_commit
+        assert kwargs["shared_heartbeat"] is not None
+        events.append("physical")
+        return physical_report
+
+    def qualify_target(**kwargs: object) -> FreshInstallQualificationReport:
+        assert kwargs["expected_commit"] == expected_commit
+        assert kwargs["heartbeat"] is not None
+        events.append("runpod")
+        return runpod_report
+
+    monkeypatch.setattr(qualifier, "qualify_physical_fleet", qualify_physical_fleet)
+    monkeypatch.setattr(qualifier, "qualify_target", qualify_target)
+
+    report = qualifier.qualify_release_matrix(
+        profile="candidate",
+        expected_commit=expected_commit,
+    )
+
+    assert report.passed
+    assert report.lease_released
+    assert events == [
+        "acquire",
+        "heartbeat-start",
+        "physical",
+        "runpod",
+        "audit",
+        "heartbeat-stop",
+        "release",
+    ]
+
+    events.clear()
+
+    def interrupt_after_acquisition(
+        **_kwargs: object,
+    ) -> FreshInstallQualificationReport:
+        events.append("physical")
+        os.kill(os.getpid(), signal.SIGINT)
+        raise AssertionError("signal guard did not stop product work")
+
+    monkeypatch.setattr(
+        qualifier,
+        "qualify_physical_fleet",
+        interrupt_after_acquisition,
+    )
+    interrupted = qualifier.qualify_release_matrix(
+        profile="candidate",
+        expected_commit=expected_commit,
+    )
+
+    assert not interrupted.passed
+    assert interrupted.lease_released
+    assert events == [
+        "acquire",
+        "heartbeat-start",
+        "physical",
+        "heartbeat-stop",
+        "release",
+    ]
+    assert any("interrupted" in issue.message for issue in interrupted.issues)
+
+    events.clear()
+    monkeypatch.setattr(qualifier, "qualify_physical_fleet", qualify_physical_fleet)
+
+    def fail_restoration_audit(*_args: object, **_kwargs: object) -> None:
+        events.append("audit")
+        raise RuntimeError("restored topology incomplete")
+
+    monkeypatch.setattr(
+        fresh_install_module,
+        "_assert_restored_fleet_clean_through_target",
+        fail_restoration_audit,
+    )
+    failed_audit = qualifier.qualify_release_matrix(
+        profile="candidate",
+        expected_commit=expected_commit,
+    )
+
+    assert not failed_audit.passed
+    assert not failed_audit.lease_released
+    assert failed_audit.critical_recovery_required
+    assert events == [
+        "acquire",
+        "heartbeat-start",
+        "physical",
+        "runpod",
+        "audit",
+        "heartbeat-stop",
+        "emergency-extend",
+    ]
+    assert any(
+        "composite audit failed" in issue.message for issue in failed_audit.issues
+    )
+
+
+def test_release_matrix_refuses_multiple_partial_physical_fleets(
+    tmp_path: Path,
+) -> None:
+    apple_one = _whole_fleet_target("apple")
+    apple_two = _whole_fleet_target("apple")
+    amd_one = _whole_fleet_target("amd")
+    amd_two = _whole_fleet_target("amd")
+    nvidia = FreshInstallTarget(
+        kind="runpod",
+        platform="nvidia",
+        hardware_class="nvidia-cuda",
+        eligible=True,
+        expected_backends=["llama_server-cuda"],
+        vision_contract="unavailable",
+        text_models=["text/model"],
+    )
+    config = HarnessConfig(
+        output_dir=tmp_path / "runs",
+        fleet_lock=FleetLock(remote="private", holder="operator"),
+        fresh_install=FreshInstallConfig(
+            targets={
+                "apple-one": apple_one,
+                "apple-two": apple_two,
+                "amd-one": amd_one,
+                "amd-two": amd_two,
+                "nvidia": nvidia,
+            },
+            physical_fleets={
+                "apple-only": FreshInstallPhysicalFleet(
+                    hardware_class="apple",
+                    eligible=True,
+                    member_targets=["apple-one", "apple-two"],
+                    entrypoint_target="apple-one",
+                    qualification_targets=["apple-one"],
+                ),
+                "amd-only": FreshInstallPhysicalFleet(
+                    hardware_class="amd",
+                    eligible=True,
+                    member_targets=["amd-one", "amd-two"],
+                    entrypoint_target="amd-one",
+                    qualification_targets=["amd-one"],
+                ),
+            },
+            runpod=RunPodFreshInstallConfig(
+                ssh_public_key_file=tmp_path / "key.pub",
+                ssh_private_key_file=tmp_path / "key",
+                image_name="nvidia/cuda:12.8.1-devel-ubuntu24.04",
+                gpu_type_ids=["NVIDIA L4"],
+            ),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="exactly one eligible whole physical fleet"):
+        fresh_install_module.FreshInstallQualifier(config).qualify_release_matrix(
+            profile="candidate",
+            expected_commit="a" * 40,
+        )
 
 
 def test_physical_fleet_accepts_normal_networking_and_composes_platforms() -> None:

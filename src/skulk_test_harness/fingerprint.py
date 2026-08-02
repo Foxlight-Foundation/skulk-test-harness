@@ -22,6 +22,8 @@ from .models import (
     CacheState,
     ClusterFingerprint,
     ClusterNodeFingerprint,
+    FreshInstallQualificationReport,
+    InstallProvenance,
     Issue,
     RepoRef,
     ReportFingerprint,
@@ -186,6 +188,7 @@ def gather_fingerprint(
     harness_repo: Path | None = None,
     run_reason: str | None = None,
     operator_note: str | None = None,
+    fresh_install_report_path: Path | None = None,
 ) -> tuple[ReportFingerprint, list[Issue]]:
     """Assemble a run's fingerprint; return it plus any probe issues.
 
@@ -202,6 +205,27 @@ def gather_fingerprint(
 
     cluster, cluster_issues = _cluster_fingerprint(client)
     issues.extend(cluster_issues)
+
+    install = InstallProvenance()
+    if fresh_install_report_path is not None:
+        try:
+            lifecycle = FreshInstallQualificationReport.model_validate_json(
+                fresh_install_report_path.read_text()
+            )
+            if (
+                lifecycle.install.mode != "fresh_install"
+                or lifecycle.install.environment != "fresh_install"
+            ):
+                raise ValueError("lifecycle report is not fresh-install provenance")
+            install = lifecycle.install
+        except Exception as exception:
+            issues.append(
+                Issue(
+                    severity="error",
+                    message="fingerprint: fresh-install provenance could not be verified",
+                    evidence={"error": str(exception)},
+                )
+            )
 
     skulk_version = skulk_commit = None
     try:
@@ -245,6 +269,7 @@ def gather_fingerprint(
             delete_staged_models=spec.delete_staged_models,
             classification=_classify_cache(spec),
         ),
+        install=install,
     )
     _ = sys  # reserved for future entrypoint capture
     return fingerprint, issues

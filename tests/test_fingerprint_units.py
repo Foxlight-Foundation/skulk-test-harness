@@ -6,8 +6,14 @@ no live cluster and no git dependency on the checkout's real state.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from skulk_test_harness.fingerprint import _classify_cache, gather_fingerprint
-from skulk_test_harness.models import RunSpec
+from skulk_test_harness.models import (
+    FreshInstallQualificationReport,
+    InstallProvenance,
+    RunSpec,
+)
 
 
 class _FakeClient:
@@ -98,6 +104,40 @@ def test_gather_fingerprint_populates_cluster_and_runtime() -> None:
     assert by_name["kite1"].gtt_total_bytes is None
     # Uniform version across nodes is the mixed-version detector's clean case.
     assert {n.skulk_version for n in cluster.nodes} == {"1.4.2"}
+
+
+def test_gather_fingerprint_stamps_active_fresh_install_provenance(tmp_path) -> None:
+    expected_commit = "a" * 40
+    lifecycle = FreshInstallQualificationReport(
+        qualification_id="fresh-candidate-mixed-test",
+        profile="candidate",
+        platform="mixed",
+        hardware_class="test-fleet",
+        started_at=datetime.now(UTC),
+        install=InstallProvenance(
+            mode="fresh_install",
+            environment="fresh_install",
+            profile="candidate",
+            platform="mixed",
+            hardware_class="test-fleet",
+            expected_commit=expected_commit,
+            resolved_commit=expected_commit,
+            node_count=5,
+        ),
+    )
+    report_path = tmp_path / "fresh-install-report.json"
+    report_path.write_text(lifecycle.model_dump_json())
+
+    fingerprint, issues = gather_fingerprint(
+        _FakeClient(state=_state(), diag=_diag()),  # type: ignore[arg-type]
+        RunSpec(model_set="m", test_set="t", mode="execute"),
+        fresh_install_report_path=report_path,
+    )
+
+    assert issues == []
+    assert fingerprint.install.mode == "fresh_install"
+    assert fingerprint.install.environment == "fresh_install"
+    assert fingerprint.install.expected_commit == expected_commit
 
 
 def test_gather_fingerprint_flags_mixed_versions_in_data() -> None:

@@ -125,14 +125,25 @@ uv run skulk-harness fresh-install qualify \
   --config skulk-harness.fresh-install.yaml
 ```
 
+`fresh-install qualify` is atomic and always runs the complete eligible release
+matrix. It holds one authoritative lease while it fresh-installs the physical
+topology, runs the full E2E battery before restoring that topology, and then
+provisions and deletes the mandatory RunPod/NVIDIA target. It emits one release
+verdict and refuses partial selectors. Every E2E cell must prove fresh-install
+provenance for the exact expected commit.
+
+Use `fresh-install diagnose --physical-fleet <name>` or
+`fresh-install diagnose --target <name>` to debug one leg. A diagnostic pass is
+never a release qualification and cannot satisfy the release gate.
+
 The inventory is opt-in: a physical fleet or target is ignored unless its local
 configuration sets `eligible: true`. The physical release gate stops every
 declared member, installs all of them into empty temporary homes with normal
 networking, and qualifies the topology they actually form—without a sandbox.
 Every member is protected by the authoritative fleet lease, dual recovery
-snapshots, verified all-node restoration, and a lease heartbeat. RunPod is
-created without a network volume and is deleted in `finally`, with provider
-deletion polled to completion. See the
+snapshots, verified all-node restoration, and a lease heartbeat. RunPod is a
+mandatory part of the complete matrix, is created without a network volume,
+and is deleted in `finally`, with provider deletion polled to completion. See the
 [fresh-install guide](https://foxlight-foundation.github.io/skulk-test-harness/guides/fresh-install-qualification).
 The browser gate also covers Settings save, topology rendering, persisted
 conversations and attachments, a failed-request recovery, WebKit text chat,

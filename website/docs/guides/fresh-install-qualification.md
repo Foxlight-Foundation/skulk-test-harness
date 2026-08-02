@@ -7,6 +7,12 @@ release E2E gate. The older battery connects to an already configured cluster;
 it remains configured-fleet regression coverage for multi-node routing,
 failover, concurrency, remote vision transport, and performance.
 
+The release command is one atomic matrix. It holds one lease across the fresh
+physical fleet, the complete E2E battery executed before that fleet is torn
+down, and the clean RunPod/NVIDIA leg. It emits one composite verdict only after
+every mandatory platform passes against the same exact commit. Individual legs
+are diagnostics and cannot be combined later into a qualification.
+
 ## Profiles
 
 `candidate` installs a full expected commit SHA from `dev`. The installer
@@ -70,16 +76,20 @@ harness:
     of making one model's output the other model's input;
 11. inspects a served engine on whichever compatible member placement selected
    and proves its shipped concurrency and unified-KV settings;
-12. stops every temporary runtime and proves every temporary `HOME` is gone;
-13. restores and verifies every original service, checkout, config hash,
+12. runs every complete E2E battery cell and requires every child report to
+    prove fresh-install provenance for the exact expected commit;
+13. stops every temporary runtime and proves every temporary `HOME` is gone;
+14. restores and verifies every original service, checkout, config hash,
     process arguments, API identity, and the complete original topology; and
-14. releases the lease only after restoration succeeds and verifies the
-    intended release against an authoritative remote reread.
+15. keeps the lease through mandatory RunPod qualification and releases it only
+    after restoration, provider deletion, and the composite audit succeed.
 
 Legacy single-target diagnostic legs can still declare paired isolation
 commands. They are not the physical release gate. A target used by
 `physical_fleets` declares `whole_fleet_member: true`, supplies no isolation
 wrapper, and is never run individually by the default complete-matrix command.
+Selected debugging uses `fresh-install diagnose`; diagnostic reports never
+produce a composite release verdict.
 
 The lease renews at one third of its TTL. Every renewal is followed by an
 authoritative reread. A renewal or restoration failure stops further testing,
@@ -99,7 +109,7 @@ The NVIDIA leg creates an ephemeral pod from a neutral CUDA image, provisions
 Node and SSH as infrastructure prerequisites, attaches no network volume, and
 rejects a provider price above the configured ceiling. A local deadline bounds
 cost. Deletion always runs in `finally` and is polled until the provider returns
-not found.
+not found. Omitting or failing this leg fails the composite qualification.
 
 ## Acceptance matrix
 
