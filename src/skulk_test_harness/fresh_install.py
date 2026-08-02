@@ -8,6 +8,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import signal
 import socket
 import subprocess
@@ -358,6 +359,22 @@ class FreshInstallQualifier:
         ]
         if not runpod_targets:
             raise ValueError("release qualification requires an eligible RunPod target")
+        repository_root = Path(__file__).resolve().parents[2]
+        _qualification_source_path(
+            repository_root,
+            physical_fleets[0][1].e2e_battery_script,
+            label="full E2E battery script",
+        )
+        _qualification_source_path(
+            repository_root,
+            self.config.model_sets_path,
+            label="model-set matrix",
+        )
+        _qualification_source_path(
+            repository_root,
+            self.config.test_sets_path,
+            label="test-set matrix",
+        )
 
         qualification_id = (
             f"release-{profile}-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}"
@@ -1336,6 +1353,7 @@ class FreshInstallQualifier:
                         members=members,
                         report=report,
                         journal=journal,
+                        heartbeat=heartbeat,
                     )
                     restoration_succeeded = (
                         cleanup_succeeded and service_restoration_succeeded
@@ -1452,17 +1470,31 @@ class FreshInstallQualifier:
         if expected_commit is None:
             raise ValueError("fresh-fleet E2E requires an exact expected commit")
         repository_root = Path(__file__).resolve().parents[2]
-        script_path = fleet.e2e_battery_script.expanduser()
-        if not script_path.is_absolute():
-            script_path = repository_root / script_path
-        if not script_path.is_file():
-            raise FileNotFoundError(
-                f"fresh-fleet E2E battery is missing: {script_path}"
-            )
+        script_path = _qualification_source_path(
+            repository_root,
+            fleet.e2e_battery_script,
+            label="full E2E battery script",
+        )
+        model_sets_source = _qualification_source_path(
+            repository_root,
+            self.config.model_sets_path,
+            label="model-set matrix",
+        )
+        test_sets_source = _qualification_source_path(
+            repository_root,
+            self.config.test_sets_path,
+            label="test-set matrix",
+        )
 
         e2e_root = artifact_directory / "complete-e2e"
         e2e_root.mkdir(parents=True, exist_ok=True)
         e2e_root.chmod(0o700)
+        model_sets_snapshot = e2e_root / "model-sets.yaml"
+        test_sets_snapshot = e2e_root / "test-sets.yaml"
+        shutil.copyfile(model_sets_source, model_sets_snapshot)
+        shutil.copyfile(test_sets_source, test_sets_snapshot)
+        model_sets_snapshot.chmod(0o600)
+        test_sets_snapshot.chmod(0o600)
         active_report_path = artifact_directory / "fresh-install-report.json"
         journal.persist()
         generated_config = self.config.model_copy(
@@ -1470,6 +1502,8 @@ class FreshInstallQualifier:
                 "api_base_url": api_base_url,
                 "output_dir": e2e_root / "runs",
                 "fresh_install_report_path": active_report_path,
+                "model_sets_path": model_sets_snapshot,
+                "test_sets_path": test_sets_snapshot,
             }
         )
         config_path = e2e_root / "qualification-config.yaml"
@@ -1996,6 +2030,7 @@ class FreshInstallQualifier:
         members: list[_PhysicalFleetMemberRuntime],
         report: FreshInstallQualificationReport,
         journal: _LifecycleJournal,
+        heartbeat: AuthoritativeLeaseHeartbeat,
     ) -> bool:
         """Restore and verify every original service and the complete topology."""
 
@@ -2025,30 +2060,13 @@ class FreshInstallQualifier:
             recovery_start_succeeded = False
             try:
                 _run_member_operations(members, start_original)
-                for member in members:
-                    if member.snapshot is None or member.local_port is None:
-                        failures.append(
-                            f"member {member.ordinal} lacks recovery metadata"
-                        )
-                        continue
-                    api_base_url = f"http://127.0.0.1:{member.local_port}"
-                    node_id, node_count = _wait_for_api_identity(
-                        api_base_url,
-                        timeout_s=self.fresh.readiness_timeout_s,
-                        poll_interval_s=self.fresh.poll_interval_s,
-                    )
-                    observed_node_ids = _wait_for_exact_cluster(
-                        api_base_url,
-                        expected_node_count=len(members),
-                        timeout_s=self.fresh.readiness_timeout_s,
-                        poll_interval_s=self.fresh.poll_interval_s,
-                    )
-                    restored_observations.append(
-                        (member, node_id, node_count, observed_node_ids)
-                    )
-                recovery_start_succeeded = not failures and len(
-                    restored_observations
-                ) == len(members)
+                restored_observations = _wait_for_restored_declared_topology(
+                    members,
+                    timeout_s=self.fresh.readiness_timeout_s,
+                    poll_interval_s=self.fresh.poll_interval_s,
+                    heartbeat=heartbeat,
+                )
+                recovery_start_succeeded = True
             finally:
 
                 def stop_failed_start(member: _PhysicalFleetMemberRuntime) -> None:
@@ -3043,6 +3061,69 @@ def _wait_for_exact_cluster(
     )
 
 
+def _wait_for_restored_declared_topology(
+    members: Sequence[_PhysicalFleetMemberRuntime],
+    *,
+    timeout_s: float,
+    poll_interval_s: float,
+    heartbeat: AuthoritativeLeaseHeartbeat,
+) -> list[tuple[_PhysicalFleetMemberRuntime, str, int, frozenset[str]]]:
+    """Wait until every restored member reports one identical complete topology.
+
+    Restored services can expose their local API before election and discovery
+    have converged on the replacement runtime identities. Sampling each member
+    with an independent readiness wait can therefore combine individually valid
+    but temporally inconsistent views. A release recovery verdict must instead
+    come from one complete sweep in which every declared member agrees.
+    """
+
+    deadline = time.monotonic() + timeout_s
+    last_error: Exception | None = None
+    while time.monotonic() < deadline:
+        _observe_heartbeat_during_recovery(heartbeat)
+        observations: list[
+            tuple[_PhysicalFleetMemberRuntime, str, int, frozenset[str]]
+        ] = []
+        try:
+            for member in members:
+                _observe_heartbeat_during_recovery(heartbeat)
+                if member.local_port is None:
+                    raise RuntimeError(
+                        f"member {member.ordinal} lacks a recovery API tunnel"
+                    )
+                api_base_url = f"http://127.0.0.1:{member.local_port}"
+                with SkulkClient(api_base_url) as client:
+                    node_id = client.get_node_id()
+                    observed_node_ids = assert_fresh_cluster(
+                        client,
+                        expected_node_count=len(members),
+                    )
+                observations.append(
+                    (
+                        member,
+                        node_id,
+                        len(observed_node_ids),
+                        observed_node_ids,
+                    )
+                )
+            _assert_declared_member_topologies(
+                expected_node_count=len(members),
+                local_node_ids=(node_id for _, node_id, _, _ in observations),
+                member_observed_node_ids=(
+                    observed_node_ids
+                    for _, _, _, observed_node_ids in observations
+                ),
+            )
+            return observations
+        except Exception as exception:  # noqa: BLE001 - restored peers converge
+            last_error = exception
+        time.sleep(poll_interval_s)
+    raise TimeoutError(
+        "restored physical fleet did not converge on one complete declared "
+        f"topology: {last_error}"
+    )
+
+
 def _qualify_served_engine_fleet(
     *,
     members: Sequence[_PhysicalFleetMemberRuntime],
@@ -3832,6 +3913,37 @@ def _check_heartbeat(
 
     if heartbeat is not None:
         heartbeat.raise_if_failed()
+
+
+def _observe_heartbeat_during_recovery(
+    heartbeat: AuthoritativeLeaseHeartbeat,
+) -> None:
+    """Poll lease health without allowing failure to interrupt restoration.
+
+    The heartbeat retains its first failure, so the lifecycle reports it and
+    performs the emergency extension immediately after recovery. Original
+    services must still finish restoring even when lease renewal has failed.
+    """
+
+    with suppress(LeaseHeartbeatError):
+        heartbeat.raise_if_failed()
+
+
+def _qualification_source_path(
+    repository_root: Path,
+    configured_path: Path,
+    *,
+    label: str,
+) -> Path:
+    """Resolve and require one local input before qualification mutates state."""
+
+    source_path = configured_path.expanduser()
+    if not source_path.is_absolute():
+        source_path = repository_root / source_path
+    source_path = source_path.resolve()
+    if not source_path.is_file():
+        raise FileNotFoundError(f"{label} is missing: {source_path}")
+    return source_path
 
 
 def _require_commit_sha(value: str | None) -> None:

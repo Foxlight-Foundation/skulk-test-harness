@@ -130,7 +130,9 @@ matrix. It holds one authoritative lease while it fresh-installs the physical
 topology, runs the full E2E battery before restoring that topology, and then
 provisions and deletes the mandatory RunPod/NVIDIA target. It emits one release
 verdict and refuses partial selectors. Every E2E cell must prove fresh-install
-provenance for the exact expected commit.
+provenance for the exact expected commit. The command validates the battery
+script and both matrix files before acquiring the lease, then records private
+mode-600 snapshots of the exact matrices consumed by the run.
 
 Use `fresh-install diagnose --physical-fleet <name>` or
 `fresh-install diagnose --target <name>` to debug one leg. A diagnostic pass is
