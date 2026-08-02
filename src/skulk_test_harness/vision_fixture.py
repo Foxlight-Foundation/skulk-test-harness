@@ -52,13 +52,20 @@ class VisionFixture:
 
     @property
     def prompt(self) -> str:
-        """Return a prompt that never embeds the hidden answer."""
+        """Return a prompt that never embeds the hidden answer.
+
+        The exact code comes first because small VLMs can terminate after the
+        easier color and shape when an answer template puts OCR last. Asking
+        for semantic facts instead of showing placeholder labels also avoids
+        the model copying the labels rather than supplying their values.
+        """
 
         return (
-            "Read the qualification card. Reply exactly in this format: "
-            "COLOR SHAPE | CODE. Use the pictured color, pictured shape, and "
-            "complete large six-character code. Choose COLOR from red, blue, "
-            "green, or orange, and SHAPE from circle, diamond, or triangle."
+            "Inspect the image and give only three facts on one line: first, "
+            "transcribe the exact large six-character code at the top; second, "
+            "state which color the shape is among red, blue, green, or orange; "
+            "and third, state whether the shape is a circle, diamond, or triangle. "
+            "Do not echo instruction labels."
         )
 
     def response_matches(self, response: str) -> tuple[bool, bool]:
@@ -95,11 +102,18 @@ class VisionFixture:
             return False
         separator = r"[\s-]*"
         grouped_code = separator.join(re.escape(character) for character in self.code)
-        prompt_label = r"(?:COLOR\s+SHAPE\s*\|\s*CODE\s+)?"
-        attribute_separator = r"(?:\s+|\s*\|\s*)"
+        fact_separator = r"(?:\s+|\s*[;|,]\s*)"
+        legacy_prompt_label = r"(?:COLOR\s+SHAPE\s*\|\s*CODE\s+)?"
+        legacy_answer = (
+            rf"{legacy_prompt_label}{re.escape(self.color)}{fact_separator}"
+            rf"{re.escape(self.shape)}\s*\|\s*{grouped_code}"
+        )
+        code_first_answer = (
+            rf"{grouped_code}{fact_separator}{re.escape(self.color)}"
+            rf"{fact_separator}{re.escape(self.shape)}"
+        )
         pattern = (
-            rf"\s*[`*_\"']*\s*{prompt_label}{re.escape(self.color)}"
-            rf"{attribute_separator}{re.escape(self.shape)}\s*\|\s*{grouped_code}"
+            rf"\s*[`*_\"']*\s*(?:{code_first_answer}|{legacy_answer})"
             r"\s*[`*_\"'.!]*\s*"
         )
         lines = [line for line in response.splitlines() if line.strip()]
