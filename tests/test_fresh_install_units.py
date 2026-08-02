@@ -362,6 +362,10 @@ def test_complete_e2e_uses_private_fresh_config_and_strips_product_overrides(
     expected_commit = "a" * 40
     script_path = tmp_path / "battery.sh"
     script_path.write_text("#!/usr/bin/env bash\n")
+    model_sets_path = tmp_path / "model-sets-source.yaml"
+    model_sets_path.write_text("model_sets: {}\n")
+    test_sets_path = tmp_path / "test-sets-source.yaml"
+    test_sets_path.write_text("test_sets: {}\n")
     artifact_directory = tmp_path / "artifacts"
     artifact_directory.mkdir()
     report = FreshInstallQualificationReport(
@@ -428,6 +432,8 @@ def test_complete_e2e_uses_private_fresh_config_and_strips_product_overrides(
     )
     config = HarnessConfig(
         output_dir=tmp_path / "runs",
+        model_sets_path=model_sets_path,
+        test_sets_path=test_sets_path,
         fresh_install=FreshInstallConfig(),
     )
     qualifier = fresh_install_module.FreshInstallQualifier(config)
@@ -462,6 +468,14 @@ def test_complete_e2e_uses_private_fresh_config_and_strips_product_overrides(
         artifact_directory / "fresh-install-report.json"
     )
     assert generated.output_dir == artifact_directory / "complete-e2e" / "runs"
+    model_sets_snapshot = artifact_directory / "complete-e2e" / "model-sets.yaml"
+    test_sets_snapshot = artifact_directory / "complete-e2e" / "test-sets.yaml"
+    assert generated.model_sets_path == model_sets_snapshot
+    assert generated.test_sets_path == test_sets_snapshot
+    assert model_sets_snapshot.read_bytes() == model_sets_path.read_bytes()
+    assert test_sets_snapshot.read_bytes() == test_sets_path.read_bytes()
+    assert model_sets_snapshot.stat().st_mode & 0o777 == 0o600
+    assert test_sets_snapshot.stat().st_mode & 0o777 == 0o600
 
     class RunningProcess:
         pid = 12345
@@ -766,6 +780,66 @@ def test_release_matrix_holds_one_lease_across_physical_e2e_and_runpod(
     assert any(
         "composite audit failed" in issue.message for issue in failed_audit.issues
     )
+
+
+def test_release_matrix_rejects_missing_matrix_input_before_lease_acquisition(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stale matrix path must fail before any fleet lifecycle mutation."""
+
+    store_constructed = False
+
+    class ForbiddenStore:
+        def __init__(self, _config: FleetLock) -> None:
+            nonlocal store_constructed
+            store_constructed = True
+
+    monkeypatch.setattr(fresh_install_module, "FleetLockStore", ForbiddenStore)
+    config = HarnessConfig(
+        output_dir=tmp_path / "runs",
+        model_sets_path=tmp_path / "deleted-worktree" / "model-sets.yaml",
+        test_sets_path=Path("configs/test_sets.yaml"),
+        fleet_lock=FleetLock(remote="private", holder="operator"),
+        fresh_install=FreshInstallConfig(
+            targets={
+                "apple": _whole_fleet_target("apple"),
+                "amd": _whole_fleet_target("amd"),
+                "nvidia": FreshInstallTarget(
+                    kind="runpod",
+                    platform="nvidia",
+                    hardware_class="nvidia-cuda",
+                    eligible=True,
+                    expected_backends=["llama_server-cuda"],
+                    vision_contract="unavailable",
+                    text_models=["text/model"],
+                ),
+            },
+            physical_fleets={
+                "release": FreshInstallPhysicalFleet(
+                    hardware_class="mixed",
+                    eligible=True,
+                    member_targets=["apple", "amd"],
+                    entrypoint_target="apple",
+                    qualification_targets=["apple", "amd"],
+                )
+            },
+            runpod=RunPodFreshInstallConfig(
+                ssh_public_key_file=tmp_path / "key.pub",
+                ssh_private_key_file=tmp_path / "key",
+                image_name="nvidia/cuda:12.8.1-devel-ubuntu24.04",
+                gpu_type_ids=["NVIDIA L4"],
+            ),
+        ),
+    )
+
+    with pytest.raises(FileNotFoundError, match="model-set matrix is missing"):
+        fresh_install_module.FreshInstallQualifier(config).qualify_release_matrix(
+            profile="candidate",
+            expected_commit="a" * 40,
+        )
+
+    assert not store_constructed
 
 
 def test_release_matrix_refuses_multiple_partial_physical_fleets(
@@ -1120,24 +1194,17 @@ def test_restoration_rejects_asymmetric_member_topology(
         )
         for ordinal in (1, 2)
     ]
-    local_ids = {
-        "http://127.0.0.1:52001": ("node-a", 2),
-        "http://127.0.0.1:52002": ("node-b", 2),
-    }
-    member_views = {
-        "http://127.0.0.1:52001": frozenset({"node-a", "node-b"}),
-        "http://127.0.0.1:52002": frozenset({"node-a", "incidental-node"}),
-    }
     monkeypatch.setattr(
         fresh_install_module,
-        "_wait_for_api_identity",
-        lambda api_base_url, **_kwargs: local_ids[api_base_url],
+        "_wait_for_restored_declared_topology",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("mismatched member views [2]")
+        ),
     )
-    monkeypatch.setattr(
-        fresh_install_module,
-        "_wait_for_exact_cluster",
-        lambda api_base_url, **_kwargs: member_views[api_base_url],
-    )
+
+    class Heartbeat:
+        def raise_if_failed(self) -> None:
+            pass
 
     class FakeJournal:
         def stage(self, _name: str) -> object:
@@ -1167,8 +1234,130 @@ def test_restoration_rejects_asymmetric_member_topology(
             members=members,
             report=report,
             journal=cast(fresh_install_module._LifecycleJournal, FakeJournal()),  # pyright: ignore[reportPrivateUsage]
+            heartbeat=cast(AuthoritativeLeaseHeartbeat, Heartbeat()),
         )
     assert [member.restored for member in report.members] == [None, None]
+
+
+def test_restored_topology_wait_retries_until_every_member_view_agrees(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    members = [
+        _PhysicalFleetMemberRuntime(
+            ordinal=ordinal,
+            target_name=f"apple-{ordinal}",
+            target=_whole_fleet_target("apple"),
+            controller=SshTargetController(_whole_fleet_target("apple")),
+            local_port=54000 + ordinal,
+        )
+        for ordinal in (1, 2)
+    ]
+    state_calls = 0
+
+    class FakeSkulkClient:
+        def __init__(self, api_base_url: str) -> None:
+            self.api_base_url = api_base_url
+
+        def __enter__(self) -> "FakeSkulkClient":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            pass
+
+        def get_node_id(self) -> str:
+            return "node-a" if self.api_base_url.endswith("54001") else "node-b"
+
+        def get_state(self) -> dict[str, object]:
+            nonlocal state_calls
+            state_calls += 1
+            if state_calls == 1:
+                observed = {"node-a", "retiring-node"}
+            else:
+                observed = {"node-a", "node-b"}
+            return {"nodeResources": dict.fromkeys(observed, {})}
+
+    class Heartbeat:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def raise_if_failed(self) -> None:
+            self.calls += 1
+
+    heartbeat = Heartbeat()
+    monkeypatch.setattr(fresh_install_module, "SkulkClient", FakeSkulkClient)
+    monkeypatch.setattr(fresh_install_module.time, "sleep", lambda _seconds: None)
+
+    observations = fresh_install_module._wait_for_restored_declared_topology(  # pyright: ignore[reportPrivateUsage]
+        members,
+        timeout_s=10,
+        poll_interval_s=0.01,
+        heartbeat=cast(AuthoritativeLeaseHeartbeat, heartbeat),
+    )
+
+    assert state_calls == 4
+    assert [node_id for _, node_id, _, _ in observations] == ["node-a", "node-b"]
+    assert all(
+        observed == frozenset({"node-a", "node-b"})
+        for _, _, _, observed in observations
+    )
+    assert heartbeat.calls >= 6
+
+
+def test_restored_topology_wait_times_out_on_persistent_member_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    members = [
+        _PhysicalFleetMemberRuntime(
+            ordinal=ordinal,
+            target_name=f"apple-{ordinal}",
+            target=_whole_fleet_target("apple"),
+            controller=SshTargetController(_whole_fleet_target("apple")),
+            local_port=55000 + ordinal,
+        )
+        for ordinal in (1, 2)
+    ]
+
+    class FakeSkulkClient:
+        def __init__(self, api_base_url: str) -> None:
+            self.api_base_url = api_base_url
+
+        def __enter__(self) -> "FakeSkulkClient":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            pass
+
+        def get_node_id(self) -> str:
+            return "node-a" if self.api_base_url.endswith("55001") else "node-b"
+
+        def get_state(self) -> dict[str, object]:
+            observed = (
+                {"node-a", "node-b"}
+                if self.api_base_url.endswith("55001")
+                else {"node-a", "incidental-node"}
+            )
+            return {"nodeResources": dict.fromkeys(observed, {})}
+
+    class Heartbeat:
+        def raise_if_failed(self) -> None:
+            pass
+
+    monotonic_values = iter((0.0, 0.0, 1.0))
+    monkeypatch.setattr(fresh_install_module, "SkulkClient", FakeSkulkClient)
+    monkeypatch.setattr(
+        fresh_install_module.time,
+        "monotonic",
+        lambda: next(monotonic_values),
+    )
+    monkeypatch.setattr(fresh_install_module.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(TimeoutError, match="did not converge"):
+        fresh_install_module._wait_for_restored_declared_topology(  # pyright: ignore[reportPrivateUsage]
+            members,
+            timeout_s=0.5,
+            poll_interval_s=0.01,
+            heartbeat=cast(AuthoritativeLeaseHeartbeat, Heartbeat()),
+        )
 
 
 def test_fresh_runtime_evidence_rejects_asymmetric_member_topology(

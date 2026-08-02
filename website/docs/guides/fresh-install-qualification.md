@@ -76,11 +76,14 @@ harness:
     of making one model's output the other model's input;
 11. inspects a served engine on whichever compatible member placement selected
    and proves its shipped concurrency and unified-KV settings;
-12. runs every complete E2E battery cell and requires every child report to
-    prove fresh-install provenance for the exact expected commit;
+12. validates the battery script and matrix inputs before acquiring the lease,
+    snapshots the exact model and test matrices as private artifacts, runs every
+    complete E2E battery cell from those snapshots, and requires every child
+    report to prove fresh-install provenance for the exact expected commit;
 13. stops every temporary runtime and proves every temporary `HOME` is gone;
 14. restores and verifies every original service, checkout, config hash,
-    process arguments, API identity, and the complete original topology; and
+    process arguments, and API identity, waiting until every member reports the
+    same complete original topology before accepting recovery; and
 15. keeps the lease through mandatory RunPod qualification and releases it only
     after restoration, provider deletion, and the composite audit succeed.
 
