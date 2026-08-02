@@ -440,6 +440,18 @@ class FreshInstallPhysicalFleet(HarnessBaseModel):
             "Other members still install, join, and contribute backend capacity."
         ),
     )
+    e2e_battery_script: Path = Field(
+        default=Path("examples/foxlight/run_e2e_battery.sh"),
+        description=(
+            "Repository-relative full E2E battery executed while the freshly "
+            "installed fleet is still live."
+        ),
+    )
+    e2e_battery_timeout_s: float = Field(
+        default=86400.0,
+        gt=0,
+        description="Hard wall-clock limit for the complete fresh-fleet battery.",
+    )
 
     @model_validator(mode="after")
     def _validate_members(self) -> "FreshInstallPhysicalFleet":
@@ -740,6 +752,13 @@ class HarnessConfig(HarnessBaseModel):
         ),
     )
     output_dir: Path = Path("runs")
+    fresh_install_report_path: Path | None = Field(
+        default=None,
+        description=(
+            "Private active fresh-install lifecycle report used to stamp E2E "
+            "fingerprints. Only the qualification orchestrator should set it."
+        ),
+    )
     model_sets_path: Path = Path("configs/model_sets.yaml")
     test_sets_path: Path = Path("configs/test_sets.yaml")
     required_data_transport: Literal["zenoh", "gossipsub"] | None = Field(
@@ -2040,6 +2059,22 @@ class FreshInstallMemberEvidence(HarnessBaseModel):
     restored: bool | None = None
 
 
+class FreshInstallE2EBatteryEvidence(HarnessBaseModel):
+    """Summary proving the complete E2E battery ran on the active fresh fleet."""
+
+    script_sha256: str
+    cell_count: int = Field(ge=0)
+    completed_cell_count: int = Field(ge=0)
+    report_count: int = Field(ge=0)
+    result_count: int = Field(ge=0)
+    passed_result_count: int = Field(ge=0)
+    failed_result_count: int = Field(ge=0)
+    issue_count: int = Field(ge=0)
+    fresh_provenance_report_count: int = Field(ge=0)
+    expected_commit_report_count: int = Field(ge=0)
+    passed: bool
+
+
 class FreshInstallQualificationReport(HarnessBaseModel):
     """Complete private report for one clean-install target leg."""
 
@@ -2059,6 +2094,7 @@ class FreshInstallQualificationReport(HarnessBaseModel):
     dashboard_experience: DashboardExperienceEvidence | None = None
     dashboard_audio: DashboardAudioEvidence | None = None
     served_engines: list[ServedEngineEvidence] = Field(default_factory=list)
+    e2e_battery: FreshInstallE2EBatteryEvidence | None = None
     members: list[FreshInstallMemberEvidence] = Field(default_factory=list)
     snapshot_target_sha256: str | None = None
     snapshot_controller_sha256: str | None = None
@@ -2076,6 +2112,47 @@ class FreshInstallQualificationReport(HarnessBaseModel):
 
         return self.model_copy(
             update={"finished_at": datetime.now(tz=UTC), "passed": passed}
+        )
+
+
+class ReleaseQualificationLegEvidence(HarnessBaseModel):
+    """One mandatory leg included in a composite release qualification."""
+
+    qualification_id: str
+    platform: FreshInstallPlatform
+    covered_platforms: list[FreshInstallPlatform]
+    hardware_class: str
+    passed: bool
+    critical_recovery_required: bool
+    complete_e2e_passed: bool | None = None
+
+
+class ReleaseQualificationReport(HarnessBaseModel):
+    """Atomic release verdict spanning fresh physical E2E and RunPod NVIDIA."""
+
+    schema_version: str = "1.0"
+    qualification_id: str
+    profile: FreshInstallProfile
+    expected_commit: str
+    required_platforms: list[FreshInstallPlatform]
+    started_at: datetime
+    finished_at: datetime | None = None
+    passed: bool = False
+    lease_released: bool = False
+    critical_recovery_required: bool = False
+    legs: list[ReleaseQualificationLegEvidence] = Field(default_factory=list)
+    lease_renewal_expiries: list[datetime] = Field(default_factory=list)
+    issues: list[Issue] = Field(default_factory=list)
+
+    def finish(self, *, passed: bool, lease_released: bool) -> "ReleaseQualificationReport":
+        """Return a completed composite release verdict."""
+
+        return self.model_copy(
+            update={
+                "finished_at": datetime.now(tz=UTC),
+                "passed": passed,
+                "lease_released": lease_released,
+            }
         )
 
 

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Configured-fleet regression + benchmark battery against the live multi-node
-# cluster. This does not install Skulk and cannot satisfy the release E2E gate.
+# Full regression + benchmark battery against the live multi-node cluster.
+# Invoked directly, it is configured-fleet coverage and cannot satisfy the
+# release gate. The fresh-install qualifier invokes this same script before
+# restoring the temporary fleet and verifies every report's install provenance.
 # Each cell
 # places from the store, runs its test set, then tears the instance down to free
 # memory. The MLX/llama.cpp cells capture wall-clock TTFT + approx TPS; the MTP
@@ -41,8 +43,14 @@ cell() {
   if [ "$rc" -eq 130 ] || [ "$rc" -eq 143 ]; then
     stop_battery "$rc"
   fi
-  [ "$rc" -ne 0 ] && battery_rc=$rc
+  if [ "$rc" -ne 0 ]; then
+    battery_rc=$rc
+  fi
   say "==== CELL  model-set=$mset  test-set=$tset  END (rc=$rc) ===="
+  if [ "$rc" -ne 0 ] && [ "${SKULK_E2E_FAIL_FAST:-0}" = "1" ]; then
+    say "BATTERY ABORTED AFTER FIRST FAILED CELL (rc=$rc)"
+    exit "$rc"
+  fi
 }
 
 say "BATTERY START on $(uv run skulk-harness doctor --config "$CONFIG" 2>/dev/null | grep -m1 API || echo cluster)"

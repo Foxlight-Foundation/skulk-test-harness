@@ -115,6 +115,8 @@ fresh_install:
       member_targets: [apple-1, apple-2, apple-3, amd-1, amd-2]
       entrypoint_target: apple-1
       qualification_targets: [apple-1, amd-1]
+      e2e_battery_script: examples/foxlight/run_e2e_battery.sh
+      e2e_battery_timeout_s: 86400
 
   runpod:
     ssh_public_key_file: ~/.ssh/id_ed25519.pub
