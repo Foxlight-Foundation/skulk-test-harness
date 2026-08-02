@@ -4,8 +4,8 @@
 <meta charset="UTF-8">
 <meta name="generator" content="Docusaurus v3.10.1">
 <title data-rh="true">Fresh-install release qualification | Skulk Test Harness</title><meta data-rh="true" name="viewport" content="width=device-width,initial-scale=1"><meta data-rh="true" name="twitter:card" content="summary_large_image"><meta data-rh="true" property="og:url" content="https://foxlight-foundation.github.io/skulk-test-harness/guides/fresh-install-qualification"><meta data-rh="true" property="og:locale" content="en"><meta data-rh="true" name="docusaurus_locale" content="en"><meta data-rh="true" name="docsearch:language" content="en"><meta data-rh="true" name="docusaurus_version" content="current"><meta data-rh="true" name="docusaurus_tag" content="docs-default-current"><meta data-rh="true" name="docsearch:version" content="current"><meta data-rh="true" name="docsearch:docusaurus_tag" content="docs-default-current"><meta data-rh="true" property="og:title" content="Fresh-install release qualification | Skulk Test Harness"><meta data-rh="true" name="description" content="Fresh-install qualification is the only harness suite that can satisfy Skulk&#x27;s"><meta data-rh="true" property="og:description" content="Fresh-install qualification is the only harness suite that can satisfy Skulk&#x27;s"><link data-rh="true" rel="icon" href="/skulk-test-harness/img/skulk-logo.svg"><link data-rh="true" rel="canonical" href="https://foxlight-foundation.github.io/skulk-test-harness/guides/fresh-install-qualification"><link data-rh="true" rel="alternate" href="https://foxlight-foundation.github.io/skulk-test-harness/guides/fresh-install-qualification" hreflang="en"><link data-rh="true" rel="alternate" href="https://foxlight-foundation.github.io/skulk-test-harness/guides/fresh-install-qualification" hreflang="x-default"><script data-rh="true" type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Fresh-install release qualification","item":"https://foxlight-foundation.github.io/skulk-test-harness/guides/fresh-install-qualification"}]}</script><link rel="stylesheet" href="/skulk-test-harness/assets/css/styles.9fe42a7d.css">
-<script src="/skulk-test-harness/assets/js/runtime~main.e382e8d6.js" defer="defer"></script>
-<script src="/skulk-test-harness/assets/js/main.02fa4216.js" defer="defer"></script>
+<script src="/skulk-test-harness/assets/js/runtime~main.580d50b2.js" defer="defer"></script>
+<script src="/skulk-test-harness/assets/js/main.42683a4a.js" defer="defer"></script>
 </head>
 <body>
 <svg style="display: none;"><defs>
@@ -66,11 +66,14 @@ use separate fixtures so a failure names the broken user journey instead
 of making one model&#x27;s output the other model&#x27;s input;</li>
 <li class="">inspects a served engine on whichever compatible member placement selected
 and proves its shipped concurrency and unified-KV settings;</li>
-<li class="">runs every complete E2E battery cell and requires every child report to
-prove fresh-install provenance for the exact expected commit;</li>
+<li class="">validates the battery script and matrix inputs before acquiring the lease,
+snapshots the exact model and test matrices as private artifacts, runs every
+complete E2E battery cell from those snapshots, and requires every child
+report to prove fresh-install provenance for the exact expected commit;</li>
 <li class="">stops every temporary runtime and proves every temporary <code>HOME</code> is gone;</li>
 <li class="">restores and verifies every original service, checkout, config hash,
-process arguments, API identity, and the complete original topology; and</li>
+process arguments, and API identity, waiting until every member reports the
+same complete original topology before accepting recovery; and</li>
 <li class="">keeps the lease through mandatory RunPod qualification and releases it only
 after restoration, provider deletion, and the composite audit succeed.</li>
 </ol>
