@@ -21,6 +21,7 @@ from __future__ import annotations
 import fcntl
 import json
 import subprocess
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -32,6 +33,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from skulk_test_harness.models import FleetLock
 
 _GIT_OPERATION_TIMEOUT_S = 30.0
+_GIT_FETCH_RETRY_DELAYS_S = (1.0, 3.0)
 
 
 def _utcnow() -> datetime:
@@ -180,7 +182,7 @@ class FleetLockStore:
         """Ensure a clean clone at the remote branch tip."""
 
         if (self._dir / ".git").is_dir():
-            self._git("fetch", "--quiet", "origin", self._config.branch)
+            self._fetch_authoritative_branch()
             self._git(
                 "reset", "--quiet", "--hard", f"origin/{self._config.branch}"
             )
@@ -203,6 +205,29 @@ class FleetLockStore:
             text=True,
             timeout=_GIT_OPERATION_TIMEOUT_S,
         )
+
+    def _fetch_authoritative_branch(self) -> None:
+        """Fetch the lease branch with bounded transient transport retries.
+
+        Fetch is read-only and therefore safe to repeat after a timeout or
+        transport error. The lease operation still fails closed when every
+        attempt fails, and callers still reset and reread the authoritative
+        record before trusting it.
+        """
+
+        retry_delays = (*_GIT_FETCH_RETRY_DELAYS_S, None)
+        for retry_delay in retry_delays:
+            try:
+                self._git("fetch", "--quiet", "origin", self._config.branch)
+                return
+            except (
+                OSError,
+                subprocess.CalledProcessError,
+                subprocess.TimeoutExpired,
+            ):
+                if retry_delay is None:
+                    raise
+                time.sleep(retry_delay)
 
     def _commit_and_push(self, lease: FleetLease, message: str) -> bool:
         """Write, commit, and push the lease. Return False on non-fast-forward.
