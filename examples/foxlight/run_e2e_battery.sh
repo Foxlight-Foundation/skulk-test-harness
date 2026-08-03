@@ -30,15 +30,19 @@ trap 'stop_battery 143' TERM
 battery_rc=0
 cell() {
   local mset="$1" tset="$2" extra="${3:-}"
+  local cleanup=""
+  if [ "${SKULK_E2E_DELETE_STAGED_MODELS:-0}" = "1" ]; then
+    cleanup="--delete-staged-models"
+  fi
   say "==== CELL  model-set=$mset  test-set=$tset  START ===="
-  # shellcheck disable=SC2086 -- $extra is an intentional optional flag list
+  # shellcheck disable=SC2086 -- cleanup/extra are intentional optional flag lists
   uv run skulk-harness run \
     --config "$CONFIG" \
     --model-set "$mset" \
     --test-set "$tset" \
     --execute \
     --ensure-store-downloads \
-    --delete-created-instances $extra >>"$LOG" 2>&1
+    --delete-created-instances $cleanup $extra >>"$LOG" 2>&1
   local rc=$?
   if [ "$rc" -eq 130 ] || [ "$rc" -eq 143 ]; then
     stop_battery "$rc"

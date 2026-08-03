@@ -133,6 +133,10 @@ verdict and refuses partial selectors. Every E2E cell must prove fresh-install
 provenance for the exact expected commit. The command validates the battery
 script and both matrix files before acquiring the lease, then records private
 mode-600 snapshots of the exact matrices consumed by the run.
+To keep one cell's downloaded artifacts from consuming another cell's disk
+budget, qualification evicts every harness-created model after its instance is
+verified and torn down. Configured-fleet runs retain their warm-cache behavior
+unless the operator explicitly requests the same cleanup.
 
 Use `fresh-install diagnose --physical-fleet <name>` or
 `fresh-install diagnose --target <name>` to debug one leg. A diagnostic pass is
