@@ -283,6 +283,71 @@ def test_git_coordination_operations_have_a_hard_deadline(
     assert observed_timeouts == [30.0, 30.0]
 
 
+def test_authoritative_fetch_retries_transient_timeout(
+    remote: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One black-holed fetch must not abort a lease with ample TTL remaining."""
+
+    store = _store(remote, tmp_path / "cache", "codex")
+    store.read()
+    original_git = store._git  # pyright: ignore[reportPrivateUsage]
+    fetch_attempts = 0
+    observed_delays: list[float] = []
+
+    def flaky_git(
+        *args: str,
+        check: bool = True,
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal fetch_attempts
+        if args[:3] == ("fetch", "--quiet", "origin"):
+            fetch_attempts += 1
+            if fetch_attempts == 1:
+                raise subprocess.TimeoutExpired(["git", *args], 30)
+        return original_git(*args, check=check)
+
+    monkeypatch.setattr(store, "_git", flaky_git)
+    monkeypatch.setattr(fleet_lock_module.time, "sleep", observed_delays.append)
+
+    assert store.read().state == "free"
+    assert fetch_attempts == 2
+    assert observed_delays == [1.0]
+
+
+def test_authoritative_fetch_fails_closed_after_bounded_retries(
+    remote: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Repeated fetch failure must still surface before the lease is trusted."""
+
+    store = _store(remote, tmp_path / "cache", "codex")
+    store.read()
+    original_git = store._git  # pyright: ignore[reportPrivateUsage]
+    fetch_attempts = 0
+    observed_delays: list[float] = []
+
+    def timed_out_git(
+        *args: str,
+        check: bool = True,
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal fetch_attempts
+        if args[:3] == ("fetch", "--quiet", "origin"):
+            fetch_attempts += 1
+            raise subprocess.TimeoutExpired(["git", *args], 30)
+        return original_git(*args, check=check)
+
+    monkeypatch.setattr(store, "_git", timed_out_git)
+    monkeypatch.setattr(fleet_lock_module.time, "sleep", observed_delays.append)
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        store.read()
+
+    assert fetch_attempts == 3
+    assert observed_delays == [1.0, 3.0]
+
+
 def test_require_fleet_or_refuse(remote: Path, tmp_path: Path) -> None:
     import typer
 

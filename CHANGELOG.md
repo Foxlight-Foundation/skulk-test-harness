@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Authoritative fleet-lease reads now retry bounded, read-only Git fetch
+  transport failures before failing closed, so one transient 30-second fetch
+  timeout cannot abort and restore an otherwise healthy multi-hour
+  qualification run.
 - Fresh-install restoration now suppresses the supervised service's automatic
   update only for the recovery start and reapplies archived configuration after
   API readiness, preserving the exact pre-run commit and config bytes. Eligible
