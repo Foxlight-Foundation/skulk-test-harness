@@ -1535,6 +1535,7 @@ class FreshInstallQualifier:
             {
                 "SKULK_HARNESS_CONFIG": str(config_path),
                 "SKULK_E2E_BATTERY_LOG": str(battery_log),
+                "SKULK_E2E_DELETE_STAGED_MODELS": "1",
                 "SKULK_E2E_FAIL_FAST": "1",
                 "SKULK_PUBLISH_RESULTS": "0",
             }

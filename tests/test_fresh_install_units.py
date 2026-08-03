@@ -460,6 +460,7 @@ def test_complete_e2e_uses_private_fresh_config_and_strips_product_overrides(
 
     environment = cast(dict[str, str], observed["environment"])
     assert "SKULK_PRODUCT_OVERRIDE" not in environment
+    assert environment["SKULK_E2E_DELETE_STAGED_MODELS"] == "1"
     assert environment["SKULK_E2E_FAIL_FAST"] == "1"
     assert environment["SKULK_PUBLISH_RESULTS"] == "0"
     generated = cast(HarnessConfig, observed["generated"])

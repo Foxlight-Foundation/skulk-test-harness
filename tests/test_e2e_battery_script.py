@@ -37,6 +37,7 @@ def test_e2e_battery_stops_when_a_cell_is_interrupted(tmp_path: Path) -> None:
             "FAKE_UV_CALLS": str(calls_path),
             "PATH": f"{fake_bin}{os.pathsep}{environment['PATH']}",
             "SKULK_E2E_BATTERY_LOG": str(log_path),
+            "SKULK_E2E_DELETE_STAGED_MODELS": "1",
             "SKULK_PUBLISH_RESULTS": "0",
         }
     )
@@ -55,6 +56,7 @@ def test_e2e_battery_stops_when_a_cell_is_interrupted(tmp_path: Path) -> None:
     calls = calls_path.read_text().splitlines()
     assert len(calls) == 1
     assert "--model-set dense-singles" in calls[0]
+    assert "--delete-staged-models" in calls[0]
     assert "BATTERY INTERRUPTED (rc=130)" in completed.stdout
 
 
