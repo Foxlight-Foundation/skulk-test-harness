@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="generator" content="Docusaurus v3.10.1">
 <title data-rh="true">Fresh-install release qualification | Skulk Test Harness</title><meta data-rh="true" name="viewport" content="width=device-width,initial-scale=1"><meta data-rh="true" name="twitter:card" content="summary_large_image"><meta data-rh="true" property="og:url" content="https://foxlight-foundation.github.io/skulk-test-harness/previews/feature-fresh-qualification-resumption/guides/fresh-install-qualification"><meta data-rh="true" property="og:locale" content="en"><meta data-rh="true" name="docusaurus_locale" content="en"><meta data-rh="true" name="docsearch:language" content="en"><meta data-rh="true" name="docusaurus_version" content="current"><meta data-rh="true" name="docusaurus_tag" content="docs-default-current"><meta data-rh="true" name="docsearch:version" content="current"><meta data-rh="true" name="docsearch:docusaurus_tag" content="docs-default-current"><meta data-rh="true" property="og:title" content="Fresh-install release qualification | Skulk Test Harness"><meta data-rh="true" name="description" content="Fresh-install qualification is the only harness suite that can satisfy Skulk&#x27;s"><meta data-rh="true" property="og:description" content="Fresh-install qualification is the only harness suite that can satisfy Skulk&#x27;s"><link data-rh="true" rel="icon" href="/skulk-test-harness/previews/feature-fresh-qualification-resumption/img/skulk-logo.svg"><link data-rh="true" rel="canonical" href="https://foxlight-foundation.github.io/skulk-test-harness/previews/feature-fresh-qualification-resumption/guides/fresh-install-qualification"><link data-rh="true" rel="alternate" href="https://foxlight-foundation.github.io/skulk-test-harness/previews/feature-fresh-qualification-resumption/guides/fresh-install-qualification" hreflang="en"><link data-rh="true" rel="alternate" href="https://foxlight-foundation.github.io/skulk-test-harness/previews/feature-fresh-qualification-resumption/guides/fresh-install-qualification" hreflang="x-default"><script data-rh="true" type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Fresh-install release qualification","item":"https://foxlight-foundation.github.io/skulk-test-harness/previews/feature-fresh-qualification-resumption/guides/fresh-install-qualification"}]}</script><link rel="stylesheet" href="/skulk-test-harness/previews/feature-fresh-qualification-resumption/assets/css/styles.9fe42a7d.css">
-<script src="/skulk-test-harness/previews/feature-fresh-qualification-resumption/assets/js/runtime~main.2b8f5a02.js" defer="defer"></script>
+<script src="/skulk-test-harness/previews/feature-fresh-qualification-resumption/assets/js/runtime~main.3c62e33a.js" defer="defer"></script>
 <script src="/skulk-test-harness/previews/feature-fresh-qualification-resumption/assets/js/main.2f0e70fd.js" defer="defer"></script>
 </head>
 <body>
@@ -39,10 +39,13 @@ corrected harness can resume that exact failed stage:</p>
 requires the predecessor to have exactly one failed lifecycle stage, the same
 candidate commit, successful teardown and restoration, identical matrix bytes
 and cell sequence, one stable complete topology, and all-green result and
-fresh-install provenance checks. Both the recorded predecessor harness checkout
-and the corrected checkout must be clean; their commit and Git tree identities
-are verified again at the resumed gate. It seals checksummed copies of those
-reports and records both harness source identities in the new report.</p>
+fresh-install provenance checks. The predecessor report must prove that its
+harness checkout was clean; the immutable recorded commit/tree is resolved even
+if that checkout has since advanced to the fix. Legacy reports that could not
+distinguish clean from unknown require a still-clean checkout at the recorded
+commit. The corrected checkout must remain clean at the same commit/tree from
+preflight through the resumed gate. The harness seals checksummed copies of the
+reports and records both source identities in the new report.</p>
 <p>The resumed qualification still begins with a normal whole-fleet fresh install
 and repeats its installer, topology, backend, dashboard, API, vision, audio,
 and served-engine acceptance. It advances only the already-completed E2E cells
