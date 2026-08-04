@@ -138,9 +138,11 @@ uv run skulk-harness fresh-install qualify \
 ```
 
 Resumption is fail-closed: the predecessor must prove the same candidate,
-matrices, complete cell sequence, topology, and all-green results. The resumed
-run still performs a normal whole-fleet fresh install and acceptance journey,
-then seals and rechecks the predecessor cell evidence before continuing to the
+matrices, complete cell sequence, topology, all-green results, and a clean
+recorded harness source tree. The corrected harness checkout must also remain
+clean and unchanged from preflight through the resumed gate. The resumed run
+still performs a normal whole-fleet fresh install and acceptance journey, then
+seals and rechecks the predecessor cell evidence before continuing to the
 mandatory clean RunPod leg. It cannot skip a product failure or combine
 unrelated qualification legs.
 

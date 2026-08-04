@@ -6,9 +6,15 @@ no live cluster and no git dependency on the checkout's real state.
 
 from __future__ import annotations
 
+import subprocess
 from datetime import UTC, datetime
+from pathlib import Path
 
-from skulk_test_harness.fingerprint import _classify_cache, gather_fingerprint
+from skulk_test_harness.fingerprint import (
+    _classify_cache,
+    _repo_ref,
+    gather_fingerprint,
+)
 from skulk_test_harness.models import (
     FreshInstallQualificationReport,
     InstallProvenance,
@@ -30,6 +36,41 @@ class _FakeClient:
 
     def get_diagnostics_node(self) -> dict[str, object]:
         return self._diag
+
+
+def test_repo_ref_distinguishes_clean_and_dirty_checkouts(tmp_path: Path) -> None:
+    """A clean Git status must be durable provenance, not an unknown value."""
+
+    subprocess.run(["git", "init", "--quiet"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "tests@example.invalid"],
+        cwd=tmp_path,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Harness Tests"],
+        cwd=tmp_path,
+        check=True,
+    )
+    tracked = tmp_path / "tracked.txt"
+    tracked.write_text("clean\n")
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "commit", "--quiet", "-m", "test source"],
+        cwd=tmp_path,
+        check=True,
+    )
+
+    clean = _repo_ref("test", tmp_path)
+
+    assert clean is not None
+    assert clean.dirty is False
+
+    tracked.write_text("dirty\n")
+    dirty = _repo_ref("test", tmp_path)
+
+    assert dirty is not None
+    assert dirty.dirty is True
 
 
 def _state() -> dict[str, object]:

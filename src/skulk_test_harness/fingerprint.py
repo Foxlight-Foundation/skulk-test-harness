@@ -53,19 +53,34 @@ def _git(repo: Path, *args: str) -> str | None:
         return None
 
 
+def _git_dirty(repo: Path) -> bool | None:
+    """Return checkout dirtiness while distinguishing clean from probe failure."""
+
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo), "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=True,
+        )
+    except Exception:
+        return None
+    return bool(result.stdout.strip())
+
+
 def _repo_ref(name: str, repo: Path) -> RepoRef | None:
     """Git provenance for ``repo``, or None if it is not a git checkout."""
     commit = _git(repo, "rev-parse", "HEAD")
     if commit is None:
         return None
     branch = _git(repo, "rev-parse", "--abbrev-ref", "HEAD")
-    status = _git(repo, "status", "--porcelain")
     return RepoRef(
         name=name,
         path=str(repo),
         branch=branch,
         commit=commit[:12],
-        dirty=bool(status) if status is not None else None,
+        dirty=_git_dirty(repo),
     )
 
 

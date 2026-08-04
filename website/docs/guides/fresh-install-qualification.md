@@ -57,8 +57,10 @@ This is not a general skip-cells option. Before any fleet mutation, the harness
 requires the predecessor to have exactly one failed lifecycle stage, the same
 candidate commit, successful teardown and restoration, identical matrix bytes
 and cell sequence, one stable complete topology, and all-green result and
-fresh-install provenance checks. It seals checksummed copies of those reports
-and records both harness commits in the new report.
+fresh-install provenance checks. Both the recorded predecessor harness checkout
+and the corrected checkout must be clean; their commit and Git tree identities
+are verified again at the resumed gate. It seals checksummed copies of those
+reports and records both harness source identities in the new report.
 
 The resumed qualification still begins with a normal whole-fleet fresh install
 and repeats its installer, topology, backend, dashboard, API, vision, audio,

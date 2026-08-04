@@ -403,6 +403,21 @@ def _write_resumable_e2e_predecessor(
     model_sets_path.write_text("model_sets: {}\n")
     test_sets_path = repository_root / "test-sets.yaml"
     test_sets_path.write_text("test_sets: {}\n")
+    for command in (
+        ["git", "init", "--quiet"],
+        ["git", "config", "user.email", "tests@example.invalid"],
+        ["git", "config", "user.name", "Harness Tests"],
+        ["git", "add", "."],
+        ["git", "commit", "--quiet", "-m", "test source"],
+    ):
+        subprocess.run(command, cwd=repository_root, check=True)
+    harness_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repository_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
 
     predecessor_root = tmp_path / "fresh-candidate-mixed-predecessor"
     e2e_root = predecessor_root / "complete-e2e"
@@ -435,7 +450,9 @@ def _write_resumable_e2e_predecessor(
             repositories=[
                 RepoRef(
                     name="Foxlight-Foundation/skulk-test-harness",
-                    commit="b" * 40,
+                    path=str(repository_root),
+                    commit=harness_commit,
+                    dirty=False,
                 )
             ]
         ),
@@ -503,7 +520,6 @@ def _write_resumable_e2e_predecessor(
 
 def test_e2e_resumption_is_fail_closed_and_seals_green_evidence(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Resumption must revalidate and seal the exact predecessor evidence."""
 
@@ -524,11 +540,6 @@ def test_e2e_resumption_is_fail_closed_and_seals_green_evidence(
         profile="candidate",
         expected_commit=expected_commit,
     )
-    monkeypatch.setattr(
-        fresh_install_module.subprocess,
-        "run",
-        lambda *_args, **_kwargs: SimpleNamespace(stdout=f"{'c' * 40}\n"),
-    )
     artifact_directory = tmp_path / "resumed"
     artifact_directory.mkdir()
 
@@ -544,8 +555,10 @@ def test_e2e_resumption_is_fail_closed_and_seals_green_evidence(
     assert evidence.passed
     assert evidence.completed_cell_count == 1
     assert evidence.passed_result_count == 1
-    assert evidence.predecessor_harness_commit == "b" * 40
-    assert evidence.current_harness_commit == "c" * 40
+    assert evidence.predecessor_harness_commit == source.predecessor_harness_commit
+    assert evidence.predecessor_harness_tree == source.predecessor_harness_tree
+    assert evidence.current_harness_commit == source.current_harness_commit
+    assert evidence.current_harness_tree == source.current_harness_tree
     manifest_path = (
         artifact_directory
         / "complete-e2e-resumption"
@@ -593,6 +606,38 @@ def test_e2e_resumption_rejects_any_additional_failed_stage(tmp_path: Path) -> N
     predecessor_path.write_text(predecessor.model_dump_json())
 
     with pytest.raises(ValueError, match="only after the complete E2E provenance"):
+        _prepare_e2e_resumption_source(
+            resume_from=predecessor_path,
+            repository_root=repository_root,
+            fleet=fleet,
+            model_sets_path=model_sets_path,
+            test_sets_path=test_sets_path,
+            profile="candidate",
+            expected_commit=expected_commit,
+        )
+
+
+def test_e2e_resumption_rejects_dirty_harness_provenance(tmp_path: Path) -> None:
+    """Dirty source may never produce a commit-attributed release verdict."""
+
+    (
+        predecessor_path,
+        repository_root,
+        fleet,
+        model_sets_path,
+        test_sets_path,
+        expected_commit,
+    ) = _write_resumable_e2e_predecessor(tmp_path)
+    report_path = next(
+        (predecessor_path.parent / "complete-e2e" / "runs").glob("*/report.json")
+    )
+    run_report = RunReport.model_validate_json(report_path.read_text())
+    assert run_report.fingerprint is not None
+    references = run_report.fingerprint.source_context.repositories
+    references[0] = references[0].model_copy(update={"dirty": True})
+    report_path.write_text(run_report.model_dump_json())
+
+    with pytest.raises(ValueError, match="dirty harness checkout"):
         _prepare_e2e_resumption_source(
             resume_from=predecessor_path,
             repository_root=repository_root,

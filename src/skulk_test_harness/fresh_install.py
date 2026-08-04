@@ -104,7 +104,11 @@ class _FreshE2EResumptionSource:
     report_paths: tuple[Path, ...]
     reports: tuple[RunReport, ...]
     expected_node_ids: frozenset[str]
+    predecessor_harness_root: Path
     predecessor_harness_commit: str
+    predecessor_harness_tree: str
+    current_harness_commit: str
+    current_harness_tree: str
 
 
 class QualificationInterruptedError(BaseException):
@@ -3028,6 +3032,40 @@ def _assert_restored_fleet_clean_through_target(
         _terminate_process(tunnel)
 
 
+def _clean_git_checkout_identity(
+    repository_root: Path,
+    *,
+    expected_commit: str | None = None,
+) -> tuple[str, str]:
+    """Return commit and tree IDs only for a clean, pinned Git checkout."""
+
+    def git(*arguments: str) -> str:
+        try:
+            result = subprocess.run(
+                ["git", *arguments],
+                cwd=repository_root,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except (OSError, subprocess.CalledProcessError) as exception:
+            raise ValueError(
+                "resumption harness source checkout could not be verified"
+            ) from exception
+        return result.stdout.strip()
+
+    commit = git("rev-parse", "HEAD")
+    if expected_commit is not None and not commit_matches(expected_commit, commit):
+        raise ValueError("resumption harness source commit does not match its report")
+    if git("status", "--porcelain"):
+        raise ValueError("resumption requires a clean harness source checkout")
+    tree = git("rev-parse", "HEAD^{tree}")
+    if not commit or not tree:
+        raise ValueError("resumption harness source identity is incomplete")
+    return commit, tree
+
+
 def _prepare_e2e_resumption_source(
     *,
     resume_from: Path,
@@ -3151,16 +3189,36 @@ def _prepare_e2e_resumption_source(
         raise ValueError(
             "resumption predecessor does not pass every result and provenance gate"
         )
-    harness_commits = {
-        repository.commit
+    harness_references = [
+        repository
         for report in reports
         if report.fingerprint is not None
         for repository in report.fingerprint.source_context.repositories
         if repository.name.endswith("/skulk-test-harness")
-        and repository.commit is not None
+    ]
+    if len(harness_references) != len(reports):
+        raise ValueError("resumption predecessor has incomplete harness provenance")
+    if any(reference.dirty is True for reference in harness_references):
+        raise ValueError("resumption predecessor used a dirty harness checkout")
+    harness_commits = {
+        reference.commit for reference in harness_references if reference.commit
     }
-    if len(harness_commits) != 1:
+    harness_paths = {
+        reference.path for reference in harness_references if reference.path
+    }
+    if len(harness_commits) != 1 or len(harness_paths) != 1:
         raise ValueError("resumption predecessor has ambiguous harness provenance")
+    predecessor_harness_root = Path(next(iter(harness_paths))).expanduser().resolve()
+    predecessor_harness_commit = next(iter(harness_commits))
+    predecessor_harness_commit, predecessor_harness_tree = (
+        _clean_git_checkout_identity(
+            predecessor_harness_root,
+            expected_commit=predecessor_harness_commit,
+        )
+    )
+    current_harness_commit, current_harness_tree = _clean_git_checkout_identity(
+        repository_root
+    )
     return _FreshE2EResumptionSource(
         report=predecessor,
         root=e2e_root,
@@ -3168,7 +3226,11 @@ def _prepare_e2e_resumption_source(
         report_paths=report_paths,
         reports=reports,
         expected_node_ids=expected_node_ids,
-        predecessor_harness_commit=next(iter(harness_commits)),
+        predecessor_harness_root=predecessor_harness_root,
+        predecessor_harness_commit=predecessor_harness_commit,
+        predecessor_harness_tree=predecessor_harness_tree,
+        current_harness_commit=current_harness_commit,
+        current_harness_tree=current_harness_tree,
     )
 
 
@@ -3225,20 +3287,33 @@ def _seal_and_replay_e2e_resumption(
             }
         )
 
-    current_harness_commit = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=repository_root,
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=30,
-    ).stdout.strip()
+    predecessor_identity = _clean_git_checkout_identity(
+        source.predecessor_harness_root,
+        expected_commit=source.predecessor_harness_commit,
+    )
+    if predecessor_identity != (
+        source.predecessor_harness_commit,
+        source.predecessor_harness_tree,
+    ):
+        raise RuntimeError("predecessor harness source changed during resumption")
+    current_identity = _clean_git_checkout_identity(
+        repository_root,
+        expected_commit=source.current_harness_commit,
+    )
+    if current_identity != (
+        source.current_harness_commit,
+        source.current_harness_tree,
+    ):
+        raise RuntimeError("current harness source changed during resumption")
+    current_harness_commit, current_harness_tree = current_identity
     manifest = {
         "schema_version": "1.0",
         "predecessor_qualification_id": source.report.qualification_id,
         "predecessor_expected_commit": expected_commit,
         "predecessor_harness_commit": source.predecessor_harness_commit,
+        "predecessor_harness_tree": source.predecessor_harness_tree,
         "current_harness_commit": current_harness_commit,
+        "current_harness_tree": current_harness_tree,
         "battery_script_sha256": hashlib.sha256(script_path.read_bytes()).hexdigest(),
         "model_sets_sha256": hashlib.sha256(
             (sealed_root / "model-sets.yaml").read_bytes()
@@ -3268,7 +3343,9 @@ def _seal_and_replay_e2e_resumption(
         predecessor_qualification_id=source.report.qualification_id,
         predecessor_expected_commit=expected_commit,
         predecessor_harness_commit=source.predecessor_harness_commit,
+        predecessor_harness_tree=source.predecessor_harness_tree,
         current_harness_commit=current_harness_commit,
+        current_harness_tree=current_harness_tree,
         completed_cell_manifest_sha256=hashlib.sha256(manifest_bytes).hexdigest(),
         completed_cell_count=evidence.completed_cell_count,
         passed_result_count=evidence.passed_result_count,
