@@ -2109,10 +2109,33 @@ class FreshInstallE2EResumptionEvidence(HarnessBaseModel):
     passed: bool
 
 
+class FreshInstallCellResumptionEvidence(HarnessBaseModel):
+    """Provenance for reusing green model cells after a product fix.
+
+    The replacement run is still a normal fresh install. Only model journeys
+    completed by the restored predecessor may be reused, while the primary
+    model prerequisite, fresh topology contract, failed dashboard cell, full
+    E2E battery, and remaining release legs run against the new candidate.
+    """
+
+    predecessor_qualification_id: str
+    predecessor_expected_commit: str
+    predecessor_resolved_commit: str
+    current_expected_commit: str
+    reused_model_ids: list[str]
+    rerun_model_ids: list[str]
+    completed_stage_manifest_sha256: str
+    completed_stage_count: int = Field(ge=1)
+    resumed_stage: Literal["dashboard_release_experience"] = (
+        "dashboard_release_experience"
+    )
+    passed: bool
+
+
 class FreshInstallQualificationReport(HarnessBaseModel):
     """Complete private report for one clean-install target leg."""
 
-    schema_version: str = "1.4"
+    schema_version: str = "1.5"
     qualification_id: str
     profile: FreshInstallProfile
     platform: FreshInstallPlatform
@@ -2130,6 +2153,7 @@ class FreshInstallQualificationReport(HarnessBaseModel):
     served_engines: list[ServedEngineEvidence] = Field(default_factory=list)
     e2e_battery: FreshInstallE2EBatteryEvidence | None = None
     e2e_resumption: FreshInstallE2EResumptionEvidence | None = None
+    cell_resumption: FreshInstallCellResumptionEvidence | None = None
     members: list[FreshInstallMemberEvidence] = Field(default_factory=list)
     snapshot_target_sha256: str | None = None
     snapshot_controller_sha256: str | None = None
@@ -2161,12 +2185,13 @@ class ReleaseQualificationLegEvidence(HarnessBaseModel):
     critical_recovery_required: bool
     complete_e2e_passed: bool | None = None
     e2e_resumption: FreshInstallE2EResumptionEvidence | None = None
+    cell_resumption: FreshInstallCellResumptionEvidence | None = None
 
 
 class ReleaseQualificationReport(HarnessBaseModel):
     """Atomic release verdict spanning fresh physical E2E and RunPod NVIDIA."""
 
-    schema_version: str = "1.1"
+    schema_version: str = "1.2"
     qualification_id: str
     profile: FreshInstallProfile
     expected_commit: str

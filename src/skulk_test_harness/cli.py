@@ -354,8 +354,9 @@ def fresh_install_qualify(
         typer.Option(
             "--resume-from",
             help=(
-                "Resume only a failed post-battery provenance gate from a "
-                "fully green, restored fresh-install predecessor."
+                "Resume a narrowly supported failed cell from a restored "
+                "fresh-install predecessor; the replacement still performs "
+                "a normal whole-fleet fresh install."
             ),
         ),
     ] = None,

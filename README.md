@@ -127,7 +127,8 @@ uv run skulk-harness fresh-install qualify \
 
 If a run restores cleanly after every physical E2E cell passed but a
 harness-only post-battery provenance gate failed, the corrected harness may
-resume that one failed gate:
+resume that one failed gate. A restored run whose only failure is the dashboard
+release-experience topology count may also resume after the product fix:
 
 ```bash
 uv run skulk-harness fresh-install qualify \
@@ -137,7 +138,14 @@ uv run skulk-harness fresh-install qualify \
   --config skulk-harness.fresh-install.yaml
 ```
 
-Resumption is fail-closed: the predecessor must prove the same candidate,
+For the dashboard boundary, `--expected-commit` is the new exact candidate.
+The replacement run fresh-installs every physical member, proves the complete
+topology again, reruns the primary model needed by the dashboard, and reruns
+the failed dashboard cell. Green non-primary model cells are sealed from the
+predecessor with a checksummed manifest; the complete E2E battery and RunPod
+leg then run normally against the new candidate.
+
+Post-battery resumption is fail-closed: the predecessor must prove the same candidate,
 matrices, complete cell sequence, ordered physical platform/hardware/backend
 contract, topology, all-green results, and a clean recorded harness source
 tree. The battery script bytes resolved from that tree
@@ -150,6 +158,11 @@ still performs a normal whole-fleet fresh install and acceptance journey, then
 seals and rechecks the predecessor cell evidence before continuing to the
 mandatory clean RunPod leg. It cannot skip a product failure or combine
 unrelated qualification legs.
+
+The dashboard-cell boundary is separately fail-closed: it accepts only a
+single topology-count failure after all model journeys passed, requires clean
+restoration and the unchanged fleet/model contract, and refuses to resume the
+same product commit. It does not convert missing nodes into an adaptive skip.
 
 `fresh-install qualify` is atomic and always runs the complete eligible release
 matrix. It holds one authoritative lease while it fresh-installs the physical

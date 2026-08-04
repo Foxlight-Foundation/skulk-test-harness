@@ -38,6 +38,8 @@ from skulk_test_harness.lease_heartbeat import (
     LeaseHeartbeatError,
 )
 from skulk_test_harness.models import (
+    DashboardJourneyOutcome,
+    FreshInstallCellResumptionEvidence,
     FreshInstallE2EBatteryEvidence,
     FreshInstallE2EResumptionEvidence,
     FreshInstallLifecycleStage,
@@ -56,6 +58,7 @@ from skulk_test_harness.models import (
     RunReport,
     ServedEngineContract,
     ServedEngineEvidence,
+    VisionFixtureEvidence,
 )
 from skulk_test_harness.qualification_checks import (
     UnexpectedFreshInstallPeerError,
@@ -114,6 +117,23 @@ class _FreshE2EResumptionSource:
     fleet_contract_sha256: str
     qualification_config: Path
     battery_config_sha256: str
+
+
+@dataclass(frozen=True)
+class _FreshDashboardResumptionSource:
+    """Validated green model cells preceding a dashboard topology failure."""
+
+    report: FreshInstallQualificationReport
+    report_path: Path
+    reused_browser: tuple[DashboardJourneyOutcome, ...]
+    reused_api_vision: tuple[VisionFixtureEvidence, ...]
+    reused_served_engines: tuple[ServedEngineEvidence, ...]
+    reused_model_ids: tuple[str, ...]
+    primary_model_id: str
+    completed_stage_names: tuple[str, ...]
+
+
+_FreshResumptionSource = _FreshE2EResumptionSource | _FreshDashboardResumptionSource
 
 
 class QualificationInterruptedError(BaseException):
@@ -330,10 +350,11 @@ class FreshInstallQualifier:
     ) -> ReleaseQualificationReport:
         """Run one atomic fresh physical E2E plus RunPod release gate.
 
-        ``resume_from`` is accepted only for a predecessor that completed every
-        E2E cell successfully and then failed the harness provenance gate. The
-        new run still performs a normal whole-fleet fresh install before
-        replaying that failed gate.
+        ``resume_from`` accepts either a predecessor that completed every E2E
+        cell before a harness provenance-gate failure, or a restored
+        predecessor whose first failure was the dashboard release-experience
+        cell. The replacement always performs a normal whole-fleet fresh
+        install before resuming the narrowly validated boundary.
         """
 
         with QualificationSignalGuard() as signal_guard:
@@ -409,7 +430,7 @@ class FreshInstallQualifier:
             label="test-set matrix",
         )
         resumption_source = (
-            _prepare_e2e_resumption_source(
+            _prepare_resumption_source(
                 resume_from=resume_from,
                 repository_root=repository_root,
                 fleet=physical_fleets[0][1],
@@ -472,7 +493,7 @@ class FreshInstallQualifier:
                     profile=profile,
                     expected_commit=expected_commit,
                     shared_heartbeat=heartbeat,
-                    e2e_resumption_source=resumption_source,
+                    resumption_source=resumption_source,
                 )
                 report.legs.append(_release_leg_evidence(child))
                 self.writer.write_release_qualification(report)
@@ -695,7 +716,7 @@ class FreshInstallQualifier:
         profile: FreshInstallProfile,
         expected_commit: str | None,
         shared_heartbeat: AuthoritativeLeaseHeartbeat | None = None,
-        e2e_resumption_source: _FreshE2EResumptionSource | None = None,
+        resumption_source: _FreshResumptionSource | None = None,
     ) -> FreshInstallQualificationReport:
         """Install and qualify every member of one physical topology together."""
 
@@ -782,7 +803,7 @@ class FreshInstallQualifier:
                 artifact_directory=artifact_directory,
                 signal_guard=signal_guard,
                 shared_heartbeat=shared_heartbeat,
-                e2e_resumption_source=e2e_resumption_source,
+                resumption_source=resumption_source,
             )
 
     def _qualify_physical(
@@ -1043,7 +1064,7 @@ class FreshInstallQualifier:
         artifact_directory: Path,
         signal_guard: QualificationSignalGuard,
         shared_heartbeat: AuthoritativeLeaseHeartbeat | None,
-        e2e_resumption_source: _FreshE2EResumptionSource | None,
+        resumption_source: _FreshResumptionSource | None,
     ) -> FreshInstallQualificationReport:
         """Run one fail-safe unsandboxed whole-fleet qualification lifecycle."""
 
@@ -1368,8 +1389,13 @@ class FreshInstallQualifier:
                 journal=journal,
                 artifact_directory=artifact_directory,
                 heartbeat=heartbeat,
+                dashboard_resumption_source=(
+                    resumption_source
+                    if isinstance(resumption_source, _FreshDashboardResumptionSource)
+                    else None
+                ),
             )
-            if e2e_resumption_source is None:
+            if not isinstance(resumption_source, _FreshE2EResumptionSource):
                 with journal.stage("run complete E2E battery on fresh physical fleet"):
                     assert e2e_entrypoint.local_port is not None
                     report.e2e_battery = self._run_complete_e2e_battery(
@@ -1387,7 +1413,7 @@ class FreshInstallQualifier:
                 with journal.stage("resume failed complete E2E provenance gate"):
                     heartbeat.raise_if_failed()
                     battery, resumption = _seal_and_replay_e2e_resumption(
-                        source=e2e_resumption_source,
+                        source=resumption_source,
                         repository_root=Path(__file__).resolve().parents[2],
                         fleet=fleet,
                         expected_commit=expected_commit,
@@ -1833,6 +1859,7 @@ class FreshInstallQualifier:
         journal: _LifecycleJournal,
         artifact_directory: Path,
         heartbeat: AuthoritativeLeaseHeartbeat,
+        dashboard_resumption_source: _FreshDashboardResumptionSource | None = None,
     ) -> None:
         """Exercise each platform contract through the formed mixed fleet."""
 
@@ -1851,6 +1878,11 @@ class FreshInstallQualifier:
         if not model_contracts:
             raise ValueError("fresh-install physical fleet has no qualification models")
         primary_chat_model = model_contracts[0][0]
+        if (
+            dashboard_resumption_source is not None
+            and dashboard_resumption_source.primary_model_id != primary_chat_model
+        ):
+            raise ValueError("dashboard resumption primary model no longer matches")
         audio_contracts = [
             member.target.dashboard_audio
             for member in contract_members
@@ -1900,9 +1932,34 @@ class FreshInstallQualifier:
             )
             thinking_toggles = client.resolved_thinking_toggle_by_model()
             card_image_input = client.resolved_image_input_by_model()
+            reused_model_ids: frozenset[str] = frozenset()
+            if dashboard_resumption_source is not None:
+                with journal.stage("seal completed predecessor model cells"):
+                    report.cell_resumption = _seal_dashboard_cell_resumption(
+                        source=dashboard_resumption_source,
+                        expected_commit=report.install.expected_commit,
+                        artifact_directory=artifact_directory,
+                    )
+                    report.browser.extend(dashboard_resumption_source.reused_browser)
+                    report.api_vision.extend(
+                        dashboard_resumption_source.reused_api_vision
+                    )
+                    report.served_engines.extend(
+                        dashboard_resumption_source.reused_served_engines
+                    )
+                    reused_model_ids = frozenset(
+                        dashboard_resumption_source.reused_model_ids
+                    )
+                    journal.persist()
             for model_id, contract_member in model_contracts:
                 target = contract_member.target
                 check_fresh_runtime()
+                if model_id in reused_model_ids:
+                    with journal.stage(
+                        f"reuse completed model qualification: {model_id}"
+                    ):
+                        check_fresh_runtime()
+                    continue
                 enable_thinking = (
                     False if thinking_toggles.get(model_id, False) else None
                 )
@@ -2984,6 +3041,7 @@ def _release_leg_evidence(
             report.e2e_battery.passed if report.e2e_battery is not None else None
         ),
         e2e_resumption=report.e2e_resumption,
+        cell_resumption=report.cell_resumption,
     )
 
 
@@ -3132,6 +3190,219 @@ def _normalized_battery_config_bytes(config: HarnessConfig) -> bytes:
     return (
         json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n"
     ).encode()
+
+
+def _prepare_resumption_source(
+    *,
+    resume_from: Path,
+    repository_root: Path,
+    fleet: FreshInstallPhysicalFleet,
+    current_config: HarnessConfig,
+    configured_members: tuple[FreshInstallTarget, ...],
+    model_sets_path: Path,
+    test_sets_path: Path,
+    profile: FreshInstallProfile,
+    expected_commit: str,
+) -> _FreshResumptionSource:
+    """Select the one fail-closed resumption boundary proven by a predecessor."""
+
+    report_path = resume_from.expanduser().resolve()
+    if report_path.is_dir():
+        report_path = report_path / "fresh-install-report.json"
+    if not report_path.is_file():
+        raise FileNotFoundError(f"resumption report is missing: {report_path}")
+    predecessor = FreshInstallQualificationReport.model_validate_json(
+        report_path.read_text()
+    )
+    failed_names = [
+        stage.name for stage in predecessor.lifecycle if stage.status == "failed"
+    ]
+    if failed_names == ["dashboard release experience"]:
+        return _prepare_dashboard_resumption_source(
+            report_path=report_path,
+            predecessor=predecessor,
+            fleet=fleet,
+            configured_members=configured_members,
+            profile=profile,
+            expected_commit=expected_commit,
+        )
+    return _prepare_e2e_resumption_source(
+        resume_from=report_path,
+        repository_root=repository_root,
+        fleet=fleet,
+        current_config=current_config,
+        configured_members=configured_members,
+        model_sets_path=model_sets_path,
+        test_sets_path=test_sets_path,
+        profile=profile,
+        expected_commit=expected_commit,
+    )
+
+
+def _prepare_dashboard_resumption_source(
+    *,
+    report_path: Path,
+    predecessor: FreshInstallQualificationReport,
+    fleet: FreshInstallPhysicalFleet,
+    configured_members: tuple[FreshInstallTarget, ...],
+    profile: FreshInstallProfile,
+    expected_commit: str,
+) -> _FreshDashboardResumptionSource:
+    """Validate a restored run that failed only the dashboard topology cell."""
+
+    if predecessor.passed:
+        raise ValueError("resumption predecessor already passed qualification")
+    if predecessor.profile != profile or predecessor.platform != "mixed":
+        raise ValueError("resumption predecessor profile or platform does not match")
+    predecessor_expected_commit = predecessor.install.expected_commit
+    predecessor_resolved_commit = predecessor.install.resolved_commit
+    if (
+        predecessor_expected_commit is None
+        or predecessor_resolved_commit is None
+        or not commit_matches(
+            predecessor_expected_commit, predecessor_resolved_commit
+        )
+    ):
+        raise ValueError("dashboard resumption predecessor does not prove its commit")
+    if predecessor_expected_commit == expected_commit:
+        raise ValueError(
+            "dashboard resumption requires a new candidate containing the product fix"
+        )
+    if (
+        predecessor.install.mode != "fresh_install"
+        or predecessor.install.environment != "fresh_install"
+        or predecessor.install.environment_override_names
+    ):
+        raise ValueError("dashboard resumption predecessor is not installer-default")
+    if (
+        predecessor.restoration_succeeded is not True
+        or predecessor.teardown_succeeded is not True
+        or predecessor.critical_recovery_required
+    ):
+        raise ValueError("dashboard resumption predecessor did not restore cleanly")
+    failed_stages = [stage for stage in predecessor.lifecycle if stage.status == "failed"]
+    if [stage.name for stage in failed_stages] != ["dashboard release experience"]:
+        raise ValueError(
+            "dashboard resumption requires exactly the dashboard release-experience failure"
+        )
+    experience = predecessor.dashboard_experience
+    if (
+        experience is None
+        or experience.passed
+        or not experience.settings_opened
+        or not experience.settings_saved
+        or not experience.request_failure_visible
+        or not experience.request_retry_passed
+        or not experience.webkit_loaded
+        or not experience.webkit_text_chat_passed
+        or experience.topology_expected_nodes != len(configured_members)
+        or experience.topology_visible_nodes >= experience.topology_expected_nodes
+    ):
+        raise ValueError(
+            "dashboard resumption predecessor was not an isolated topology-count failure"
+        )
+
+    predecessor_members = sorted(predecessor.members, key=lambda member: member.ordinal)
+    predecessor_contract = [
+        {
+            "ordinal": member.ordinal,
+            "platform": member.platform,
+            "hardware_class": member.hardware_class,
+            "expected_backends": member.expected_backends,
+            "data_transport": member.data_transport,
+        }
+        for member in predecessor_members
+    ]
+    configured_contract = [
+        {
+            "ordinal": ordinal,
+            "platform": member.platform,
+            "hardware_class": member.hardware_class,
+            "expected_backends": member.expected_backends,
+            "data_transport": member.expected_data_transport,
+        }
+        for ordinal, member in enumerate(configured_members, start=1)
+    ]
+    if (
+        len(configured_members) != len(fleet.member_targets)
+        or predecessor_contract != configured_contract
+    ):
+        raise ValueError("dashboard resumption fleet contract changed")
+
+    model_ids: list[str] = []
+    vision_model_ids: list[str] = []
+    served_model_ids: list[str] = []
+    required_stage_names: list[str] = []
+    for member in configured_members:
+        for model_id in [*member.text_models, *member.vision_models]:
+            if model_id in model_ids:
+                continue
+            model_ids.append(model_id)
+            required_stage_names.extend(
+                [
+                    f"dashboard fleet journey: {model_id}",
+                    f"direct fleet API parity: {model_id}",
+                ]
+            )
+            if model_id in member.vision_models:
+                vision_model_ids.append(model_id)
+            if member.served_engine_contract is not None:
+                served_model_ids.append(model_id)
+                required_stage_names.append(f"served engine fleet contract: {model_id}")
+    if not model_ids:
+        raise ValueError("dashboard resumption has no configured model cells")
+    primary_model_id = model_ids[0]
+    if experience.model_id != primary_model_id:
+        raise ValueError("dashboard resumption primary model changed")
+    stage_status = {stage.name: stage.status for stage in predecessor.lifecycle}
+    if any(stage_status.get(name) != "passed" for name in required_stage_names):
+        raise ValueError("dashboard resumption predecessor has incomplete model stages")
+
+    browser_by_model = {outcome.model_id: outcome for outcome in predecessor.browser}
+    if set(browser_by_model) != set(model_ids) or any(
+        not outcome.passed for outcome in browser_by_model.values()
+    ):
+        raise ValueError("dashboard resumption predecessor model journeys are incomplete")
+    if len(predecessor.api_vision) != len(vision_model_ids) or any(
+        not evidence.passed for evidence in predecessor.api_vision
+    ):
+        raise ValueError("dashboard resumption predecessor vision parity is incomplete")
+    vision_by_model = dict(zip(vision_model_ids, predecessor.api_vision, strict=True))
+    served_by_model = {evidence.model_id: evidence for evidence in predecessor.served_engines}
+    if set(served_by_model) != set(served_model_ids) or any(
+        not evidence.passed for evidence in served_by_model.values()
+    ):
+        raise ValueError("dashboard resumption predecessor served-engine proof is incomplete")
+
+    reused_model_ids = tuple(model_id for model_id in model_ids if model_id != primary_model_id)
+    if not reused_model_ids:
+        raise ValueError("dashboard resumption has no completed non-primary model cells")
+    reused_browser = tuple(browser_by_model[model_id] for model_id in reused_model_ids)
+    reused_api_vision = tuple(
+        vision_by_model[model_id]
+        for model_id in reused_model_ids
+        if model_id in vision_by_model
+    )
+    reused_served_engines = tuple(
+        served_by_model[model_id]
+        for model_id in reused_model_ids
+        if model_id in served_by_model
+    )
+    completed_stage_names = tuple(
+        name
+        for name in required_stage_names
+        if any(model_id in name for model_id in reused_model_ids)
+    )
+    return _FreshDashboardResumptionSource(
+        report=predecessor,
+        report_path=report_path,
+        reused_browser=reused_browser,
+        reused_api_vision=reused_api_vision,
+        reused_served_engines=reused_served_engines,
+        reused_model_ids=reused_model_ids,
+        primary_model_id=primary_model_id,
+        completed_stage_names=completed_stage_names,
+    )
 
 
 def _prepare_e2e_resumption_source(
@@ -3387,6 +3658,102 @@ def _prepare_e2e_resumption_source(
         fleet_contract_sha256=fleet_contract_sha256,
         qualification_config=qualification_config,
         battery_config_sha256=battery_config_sha256,
+    )
+
+
+def _seal_dashboard_cell_resumption(
+    *,
+    source: _FreshDashboardResumptionSource,
+    expected_commit: str | None,
+    artifact_directory: Path,
+) -> FreshInstallCellResumptionEvidence:
+    """Seal reused model evidence before rerunning the failed dashboard cell."""
+
+    if expected_commit is None:
+        raise ValueError("dashboard cell resumption requires an exact candidate commit")
+    sealed_root = artifact_directory / "dashboard-cell-resumption"
+    sealed_root.mkdir(parents=True, exist_ok=False)
+    sealed_root.chmod(0o700)
+    predecessor_root = source.report_path.parent.resolve()
+    artifact_paths: list[Path] = [source.report_path]
+    for model_id in source.reused_model_ids:
+        safe_name = _safe_model_name(model_id)
+        playwright_paths = sorted(
+            (predecessor_root / "playwright").glob(f"{safe_name}*")
+        )
+        if not playwright_paths:
+            raise ValueError(
+                f"dashboard resumption artifacts are missing for {model_id}"
+            )
+        artifact_paths.extend(playwright_paths)
+        api_fixture = predecessor_root / "api-fixtures" / f"{safe_name}.png"
+        if api_fixture.is_file():
+            artifact_paths.append(api_fixture)
+
+    artifacts: list[dict[str, object]] = []
+    for source_path in artifact_paths:
+        resolved_source = source_path.resolve()
+        if not resolved_source.is_file() or not resolved_source.is_relative_to(
+            predecessor_root
+        ):
+            raise ValueError("dashboard resumption artifact escaped its run directory")
+        relative_path = resolved_source.relative_to(predecessor_root)
+        target_path = sealed_root / relative_path
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.parent.chmod(0o700)
+        shutil.copy2(resolved_source, target_path)
+        target_path.chmod(0o600)
+        artifacts.append(
+            {
+                "path": relative_path.as_posix(),
+                "sha256": hashlib.sha256(target_path.read_bytes()).hexdigest(),
+                "size_bytes": target_path.stat().st_size,
+            }
+        )
+
+    predecessor_expected_commit = source.report.install.expected_commit
+    predecessor_resolved_commit = source.report.install.resolved_commit
+    assert predecessor_expected_commit is not None
+    assert predecessor_resolved_commit is not None
+    manifest = {
+        "schema_version": "1.0",
+        "predecessor_qualification_id": source.report.qualification_id,
+        "predecessor_expected_commit": predecessor_expected_commit,
+        "predecessor_resolved_commit": predecessor_resolved_commit,
+        "current_expected_commit": expected_commit,
+        "resumed_stage": "dashboard_release_experience",
+        "reused_model_ids": list(source.reused_model_ids),
+        "rerun_model_ids": [source.primary_model_id],
+        "completed_stage_names": list(source.completed_stage_names),
+        "browser_evidence": [
+            evidence.model_dump(mode="json") for evidence in source.reused_browser
+        ],
+        "api_vision_evidence": [
+            evidence.model_dump(mode="json")
+            for evidence in source.reused_api_vision
+        ],
+        "served_engine_evidence": [
+            evidence.model_dump(mode="json")
+            for evidence in source.reused_served_engines
+        ],
+        "artifacts": artifacts,
+    }
+    manifest_bytes = (
+        json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode()
+    manifest_path = sealed_root / "resumption-manifest.json"
+    manifest_path.write_bytes(manifest_bytes)
+    manifest_path.chmod(0o600)
+    return FreshInstallCellResumptionEvidence(
+        predecessor_qualification_id=source.report.qualification_id,
+        predecessor_expected_commit=predecessor_expected_commit,
+        predecessor_resolved_commit=predecessor_resolved_commit,
+        current_expected_commit=expected_commit,
+        reused_model_ids=list(source.reused_model_ids),
+        rerun_model_ids=[source.primary_model_id],
+        completed_stage_manifest_sha256=hashlib.sha256(manifest_bytes).hexdigest(),
+        completed_stage_count=len(source.completed_stage_names),
+        passed=True,
     )
 
 
