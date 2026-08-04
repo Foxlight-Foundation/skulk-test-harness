@@ -112,6 +112,8 @@ class _FreshE2EResumptionSource:
     battery_script_relative_path: str
     battery_script_bytes: bytes
     fleet_contract_sha256: str
+    qualification_config: Path
+    battery_config_sha256: str
 
 
 class QualificationInterruptedError(BaseException):
@@ -411,6 +413,7 @@ class FreshInstallQualifier:
                 resume_from=resume_from,
                 repository_root=repository_root,
                 fleet=physical_fleets[0][1],
+                current_config=self.config,
                 configured_members=tuple(
                     target
                     for _name, target in self.fresh.physical_fleet_targets(
@@ -3114,11 +3117,29 @@ def _clean_git_checkout_identity(
     return _git_commit_identity(repository_root, expected_commit=commit)
 
 
+def _normalized_battery_config_bytes(config: HarnessConfig) -> bytes:
+    """Serialize execution-affecting battery config without run-local paths."""
+
+    payload = json.loads(config.model_dump_json())
+    for dynamic_field in (
+        "api_base_url",
+        "output_dir",
+        "fresh_install_report_path",
+        "model_sets_path",
+        "test_sets_path",
+    ):
+        payload.pop(dynamic_field, None)
+    return (
+        json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode()
+
+
 def _prepare_e2e_resumption_source(
     *,
     resume_from: Path,
     repository_root: Path,
     fleet: FreshInstallPhysicalFleet,
+    current_config: HarnessConfig,
     configured_members: tuple[FreshInstallTarget, ...],
     model_sets_path: Path,
     test_sets_path: Path,
@@ -3219,6 +3240,22 @@ def _prepare_e2e_resumption_source(
         separators=(",", ":"),
     ).encode()
     fleet_contract_sha256 = hashlib.sha256(fleet_contract_bytes).hexdigest()
+
+    qualification_config = e2e_root / "qualification-config.yaml"
+    if not qualification_config.is_file():
+        raise ValueError(
+            "resumption predecessor is missing its generated battery configuration"
+        )
+    predecessor_config = HarnessConfig.model_validate(
+        yaml.safe_load(qualification_config.read_text())
+    )
+    predecessor_config_bytes = _normalized_battery_config_bytes(predecessor_config)
+    current_config_bytes = _normalized_battery_config_bytes(current_config)
+    if predecessor_config_bytes != current_config_bytes:
+        raise ValueError(
+            "resumption predecessor battery configuration differs from the current run"
+        )
+    battery_config_sha256 = hashlib.sha256(current_config_bytes).hexdigest()
 
     script_path = _qualification_source_path(
         repository_root,
@@ -3348,6 +3385,8 @@ def _prepare_e2e_resumption_source(
         battery_script_relative_path=battery_script_relative_path,
         battery_script_bytes=predecessor_script_bytes,
         fleet_contract_sha256=fleet_contract_sha256,
+        qualification_config=qualification_config,
+        battery_config_sha256=battery_config_sha256,
     )
 
 
@@ -3377,6 +3416,7 @@ def _seal_and_replay_e2e_resumption(
         (source.battery_log, "battery.log"),
         (source.root / "model-sets.yaml", "model-sets.yaml"),
         (source.root / "test-sets.yaml", "test-sets.yaml"),
+        (source.qualification_config, "qualification-config.yaml"),
     ):
         target_path = sealed_root / target_name
         shutil.copy2(source_path, target_path)
@@ -3422,6 +3462,13 @@ def _seal_and_replay_e2e_resumption(
     )
     if predecessor_script_bytes != source.battery_script_bytes:
         raise RuntimeError("predecessor battery script changed during resumption")
+    predecessor_config = HarnessConfig.model_validate(
+        yaml.safe_load(source.qualification_config.read_text())
+    )
+    if hashlib.sha256(
+        _normalized_battery_config_bytes(predecessor_config)
+    ).hexdigest() != source.battery_config_sha256:
+        raise RuntimeError("predecessor battery configuration changed during resumption")
     current_identity = _clean_git_checkout_identity(
         repository_root,
         expected_commit=source.current_harness_commit,
@@ -3444,6 +3491,7 @@ def _seal_and_replay_e2e_resumption(
             source.battery_script_bytes
         ).hexdigest(),
         "fleet_contract_sha256": source.fleet_contract_sha256,
+        "battery_config_sha256": source.battery_config_sha256,
         "model_sets_sha256": hashlib.sha256(
             (sealed_root / "model-sets.yaml").read_bytes()
         ).hexdigest(),
@@ -3476,6 +3524,7 @@ def _seal_and_replay_e2e_resumption(
         current_harness_commit=current_harness_commit,
         current_harness_tree=current_harness_tree,
         fleet_contract_sha256=source.fleet_contract_sha256,
+        battery_config_sha256=source.battery_config_sha256,
         completed_cell_manifest_sha256=hashlib.sha256(manifest_bytes).hexdigest(),
         completed_cell_count=evidence.completed_cell_count,
         passed_result_count=evidence.passed_result_count,

@@ -430,6 +430,23 @@ def _write_resumable_e2e_predecessor(
     )
     (e2e_root / "model-sets.yaml").write_bytes(model_sets_path.read_bytes())
     (e2e_root / "test-sets.yaml").write_bytes(test_sets_path.read_bytes())
+    base_config = HarnessConfig(
+        model_sets_path=model_sets_path,
+        test_sets_path=test_sets_path,
+    )
+    generated_config = base_config.model_copy(
+        update={
+            "api_base_url": "http://127.0.0.1:42000",
+            "output_dir": e2e_root / "runs",
+            "fresh_install_report_path": predecessor_root
+            / "fresh-install-report.json",
+            "model_sets_path": e2e_root / "model-sets.yaml",
+            "test_sets_path": e2e_root / "test-sets.yaml",
+        }
+    )
+    (e2e_root / "qualification-config.yaml").write_text(
+        generated_config.model_dump_json()
+    )
     run_report = RunReport.start(
         "green-cell",
         RunSpec(model_set="model-set", test_set="test-set", mode="execute"),
@@ -551,6 +568,10 @@ def test_e2e_resumption_is_fail_closed_and_seals_green_evidence(
         resume_from=predecessor_path,
         repository_root=repository_root,
         fleet=fleet,
+        current_config=HarnessConfig(
+            model_sets_path=model_sets_path,
+            test_sets_path=test_sets_path,
+        ),
         configured_members=(
             _whole_fleet_target("apple"),
             _whole_fleet_target("amd"),
@@ -580,6 +601,7 @@ def test_e2e_resumption_is_fail_closed_and_seals_green_evidence(
     assert evidence.current_harness_commit == source.current_harness_commit
     assert evidence.current_harness_tree == source.current_harness_tree
     assert evidence.fleet_contract_sha256 == source.fleet_contract_sha256
+    assert evidence.battery_config_sha256 == source.battery_config_sha256
     manifest_path = (
         artifact_directory
         / "complete-e2e-resumption"
@@ -595,9 +617,33 @@ def test_e2e_resumption_is_fail_closed_and_seals_green_evidence(
             resume_from=predecessor_path,
             repository_root=repository_root,
             fleet=fleet,
+            current_config=HarnessConfig(
+                model_sets_path=model_sets_path,
+                test_sets_path=test_sets_path,
+            ),
             configured_members=(
                 _whole_fleet_target("apple"),
                 _whole_fleet_target("apple"),
+            ),
+            model_sets_path=model_sets_path,
+            test_sets_path=test_sets_path,
+            profile="candidate",
+            expected_commit=expected_commit,
+        )
+
+    with pytest.raises(ValueError, match="battery configuration differs"):
+        _prepare_e2e_resumption_source(
+            resume_from=predecessor_path,
+            repository_root=repository_root,
+            fleet=fleet,
+            current_config=HarnessConfig(
+                generation_timeout_s=1,
+                model_sets_path=model_sets_path,
+                test_sets_path=test_sets_path,
+            ),
+            configured_members=(
+                _whole_fleet_target("apple"),
+                _whole_fleet_target("amd"),
             ),
             model_sets_path=model_sets_path,
             test_sets_path=test_sets_path,
@@ -611,6 +657,10 @@ def test_e2e_resumption_is_fail_closed_and_seals_green_evidence(
             resume_from=predecessor_path,
             repository_root=repository_root,
             fleet=fleet,
+            current_config=HarnessConfig(
+                model_sets_path=model_sets_path,
+                test_sets_path=test_sets_path,
+            ),
             configured_members=(
                 _whole_fleet_target("apple"),
                 _whole_fleet_target("amd"),
@@ -650,6 +700,10 @@ def test_e2e_resumption_rejects_any_additional_failed_stage(tmp_path: Path) -> N
             resume_from=predecessor_path,
             repository_root=repository_root,
             fleet=fleet,
+            current_config=HarnessConfig(
+                model_sets_path=model_sets_path,
+                test_sets_path=test_sets_path,
+            ),
             configured_members=(
                 _whole_fleet_target("apple"),
                 _whole_fleet_target("amd"),
@@ -686,6 +740,10 @@ def test_e2e_resumption_rejects_dirty_harness_provenance(tmp_path: Path) -> None
             resume_from=predecessor_path,
             repository_root=repository_root,
             fleet=fleet,
+            current_config=HarnessConfig(
+                model_sets_path=model_sets_path,
+                test_sets_path=test_sets_path,
+            ),
             configured_members=(
                 _whole_fleet_target("apple"),
                 _whole_fleet_target("amd"),
@@ -723,6 +781,10 @@ def test_e2e_resumption_resolves_clean_predecessor_after_checkout_advances(
         resume_from=predecessor_path,
         repository_root=repository_root,
         fleet=fleet,
+        current_config=HarnessConfig(
+            model_sets_path=model_sets_path,
+            test_sets_path=test_sets_path,
+        ),
         configured_members=(
             _whole_fleet_target("apple"),
             _whole_fleet_target("amd"),
@@ -766,6 +828,10 @@ def test_e2e_resumption_rejects_changed_battery_commands(tmp_path: Path) -> None
             resume_from=predecessor_path,
             repository_root=repository_root,
             fleet=fleet,
+            current_config=HarnessConfig(
+                model_sets_path=model_sets_path,
+                test_sets_path=test_sets_path,
+            ),
             configured_members=(
                 _whole_fleet_target("apple"),
                 _whole_fleet_target("amd"),

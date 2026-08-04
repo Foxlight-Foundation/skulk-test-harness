@@ -142,8 +142,10 @@ matrices, complete cell sequence, ordered physical platform/hardware/backend
 contract, topology, all-green results, and a clean recorded harness source
 tree. The battery script bytes resolved from that tree
 must exactly match the current script, including cell commands and flags. The
-corrected harness checkout must also remain clean and unchanged from preflight
-through the resumed gate. The resumed run
+normalized execution configuration must also match; only the tunneled API and
+run-local artifact/matrix paths are excluded after matrix bytes are verified.
+The corrected harness checkout must also remain clean and unchanged from
+preflight through the resumed gate. The resumed run
 still performs a normal whole-fleet fresh install and acceptance journey, then
 seals and rechecks the predecessor cell evidence before continuing to the
 mandatory clean RunPod leg. It cannot skip a product failure or combine

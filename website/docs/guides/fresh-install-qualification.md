@@ -66,6 +66,10 @@ commit. The corrected checkout must remain clean at the same commit/tree from
 preflight through the resumed gate. The harness seals checksummed copies of the
 reports, requires the predecessor-commit battery script bytes to match the
 current script exactly, and records both source identities in the new report.
+The predecessor's generated battery configuration is normalized only for the
+tunneled API endpoint and run-local output, lifecycle-report, and already
+content-verified matrix paths. Every execution-affecting setting must match the
+current configuration, and its normalized digest is sealed into the manifest.
 
 The resumed qualification still begins with a normal whole-fleet fresh install
 and repeats its installer, topology, backend, dashboard, API, vision, audio,
