@@ -236,6 +236,7 @@ def test_complete_e2e_summary_requires_every_report_to_prove_fresh_commit(
     tmp_path: Path,
 ) -> None:
     expected_commit = "a" * 40
+    abbreviated_commit = expected_commit[:7]
     script_path = tmp_path / "battery.sh"
     script_path.write_text("#!/usr/bin/env bash\n")
     battery_log = tmp_path / "battery.log"
@@ -262,7 +263,7 @@ def test_complete_e2e_summary_requires_every_report_to_prove_fresh_commit(
         )
     )
     run_report.fingerprint = ReportFingerprint(
-        runtime=RuntimeFingerprint(skulk_commit=expected_commit),
+        runtime=RuntimeFingerprint(skulk_commit=abbreviated_commit),
         cluster=ClusterFingerprint(
             node_count=1,
             nodes=[ClusterNodeFingerprint(node_id="node-a")],
@@ -273,7 +274,7 @@ def test_complete_e2e_summary_requires_every_report_to_prove_fresh_commit(
             profile="candidate",
             platform="mixed",
             expected_commit=expected_commit,
-            resolved_commit=expected_commit,
+            resolved_commit=abbreviated_commit,
         ),
     )
     (report_root / "report.json").write_text(run_report.finish().model_dump_json())
@@ -318,7 +319,35 @@ def test_complete_e2e_summary_requires_every_report_to_prove_fresh_commit(
     run_report.fingerprint = run_report.fingerprint.model_copy(
         update={
             "runtime": run_report.fingerprint.runtime.model_copy(
-                update={"skulk_commit": expected_commit}
+                update={"skulk_commit": abbreviated_commit}
+            ),
+            "install": run_report.fingerprint.install.model_copy(
+                update={"resolved_commit": "b" * 7}
+            ),
+        }
+    )
+    (report_root / "report.json").write_text(run_report.finish().model_dump_json())
+    stale_install = _summarize_fresh_e2e_battery(
+        script_path=script_path,
+        battery_log=battery_log,
+        report_root=tmp_path / "runs",
+        expected_commit=expected_commit,
+        expected_node_ids=frozenset({"node-a"}),
+        process_returncode=0,
+    )
+
+    assert not stale_install.passed
+    assert stale_install.expected_commit_report_count == 0
+    assert stale_install.live_commit_report_count == 1
+
+    assert run_report.fingerprint is not None
+    run_report.fingerprint = run_report.fingerprint.model_copy(
+        update={
+            "runtime": run_report.fingerprint.runtime.model_copy(
+                update={"skulk_commit": abbreviated_commit}
+            ),
+            "install": run_report.fingerprint.install.model_copy(
+                update={"resolved_commit": abbreviated_commit}
             ),
             "cluster": ClusterFingerprint(
                 node_count=1,

@@ -61,6 +61,7 @@ from skulk_test_harness.qualification_checks import (
     assert_fresh_cluster,
     assert_fresh_runtime_contract,
     assert_fresh_single_node,
+    commit_matches,
     qualify_direct_text,
     qualify_direct_vision,
 )
@@ -3004,13 +3005,15 @@ def _summarize_fresh_e2e_battery(
         for report in fresh_reports
         if report.fingerprint is not None
         and report.fingerprint.install.expected_commit == expected_commit
-        and report.fingerprint.install.resolved_commit == expected_commit
+        and commit_matches(
+            expected_commit, report.fingerprint.install.resolved_commit
+        )
     ]
     live_commit_reports = [
         report
         for report in reports
         if report.fingerprint is not None
-        and report.fingerprint.runtime.skulk_commit == expected_commit
+        and commit_matches(expected_commit, report.fingerprint.runtime.skulk_commit)
     ]
     exact_topology_reports = [
         report
