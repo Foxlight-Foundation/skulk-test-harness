@@ -39,6 +39,7 @@ from skulk_test_harness.lease_heartbeat import (
 )
 from skulk_test_harness.models import (
     FreshInstallE2EBatteryEvidence,
+    FreshInstallE2EResumptionEvidence,
     FreshInstallLifecycleStage,
     FreshInstallMemberEvidence,
     FreshInstallPhysicalFleet,
@@ -91,6 +92,28 @@ class _PhysicalFleetMemberRuntime:
     temporary_root: str | None = None
     skulk_process: subprocess.Popen[bytes] | None = None
     skulk_log_handle: BinaryIO | None = None
+
+
+@dataclass(frozen=True)
+class _FreshE2EResumptionSource:
+    """Validated predecessor artifacts eligible for one resumed provenance gate."""
+
+    report: FreshInstallQualificationReport
+    root: Path
+    battery_log: Path
+    report_paths: tuple[Path, ...]
+    reports: tuple[RunReport, ...]
+    expected_node_ids: frozenset[str]
+    predecessor_harness_root: Path
+    predecessor_harness_commit: str
+    predecessor_harness_tree: str
+    current_harness_commit: str
+    current_harness_tree: str
+    battery_script_relative_path: str
+    battery_script_bytes: bytes
+    fleet_contract_sha256: str
+    qualification_config: Path
+    battery_config_sha256: str
 
 
 class QualificationInterruptedError(BaseException):
@@ -303,13 +326,21 @@ class FreshInstallQualifier:
         *,
         profile: FreshInstallProfile,
         expected_commit: str | None,
+        resume_from: Path | None = None,
     ) -> ReleaseQualificationReport:
-        """Run one atomic fresh physical E2E plus RunPod release gate."""
+        """Run one atomic fresh physical E2E plus RunPod release gate.
+
+        ``resume_from`` is accepted only for a predecessor that completed every
+        E2E cell successfully and then failed the harness provenance gate. The
+        new run still performs a normal whole-fleet fresh install before
+        replaying that failed gate.
+        """
 
         with QualificationSignalGuard() as signal_guard:
             return self._qualify_release_matrix(
                 profile=profile,
                 expected_commit=expected_commit,
+                resume_from=resume_from,
                 signal_guard=signal_guard,
             )
 
@@ -318,6 +349,7 @@ class FreshInstallQualifier:
         *,
         profile: FreshInstallProfile,
         expected_commit: str | None,
+        resume_from: Path | None,
         signal_guard: QualificationSignalGuard,
     ) -> ReleaseQualificationReport:
         """Execute the composite gate under one outer interruption guard."""
@@ -376,6 +408,26 @@ class FreshInstallQualifier:
             self.config.test_sets_path,
             label="test-set matrix",
         )
+        resumption_source = (
+            _prepare_e2e_resumption_source(
+                resume_from=resume_from,
+                repository_root=repository_root,
+                fleet=physical_fleets[0][1],
+                current_config=self.config,
+                configured_members=tuple(
+                    target
+                    for _name, target in self.fresh.physical_fleet_targets(
+                        physical_fleets[0][1]
+                    )
+                ),
+                model_sets_path=self.config.model_sets_path,
+                test_sets_path=self.config.test_sets_path,
+                profile=profile,
+                expected_commit=expected_commit,
+            )
+            if resume_from is not None
+            else None
+        )
 
         qualification_id = (
             f"release-{profile}-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}"
@@ -420,6 +472,7 @@ class FreshInstallQualifier:
                     profile=profile,
                     expected_commit=expected_commit,
                     shared_heartbeat=heartbeat,
+                    e2e_resumption_source=resumption_source,
                 )
                 report.legs.append(_release_leg_evidence(child))
                 self.writer.write_release_qualification(report)
@@ -642,6 +695,7 @@ class FreshInstallQualifier:
         profile: FreshInstallProfile,
         expected_commit: str | None,
         shared_heartbeat: AuthoritativeLeaseHeartbeat | None = None,
+        e2e_resumption_source: _FreshE2EResumptionSource | None = None,
     ) -> FreshInstallQualificationReport:
         """Install and qualify every member of one physical topology together."""
 
@@ -728,6 +782,7 @@ class FreshInstallQualifier:
                 artifact_directory=artifact_directory,
                 signal_guard=signal_guard,
                 shared_heartbeat=shared_heartbeat,
+                e2e_resumption_source=e2e_resumption_source,
             )
 
     def _qualify_physical(
@@ -988,6 +1043,7 @@ class FreshInstallQualifier:
         artifact_directory: Path,
         signal_guard: QualificationSignalGuard,
         shared_heartbeat: AuthoritativeLeaseHeartbeat | None,
+        e2e_resumption_source: _FreshE2EResumptionSource | None,
     ) -> FreshInstallQualificationReport:
         """Run one fail-safe unsandboxed whole-fleet qualification lifecycle."""
 
@@ -1313,19 +1369,33 @@ class FreshInstallQualifier:
                 artifact_directory=artifact_directory,
                 heartbeat=heartbeat,
             )
-            with journal.stage("run complete E2E battery on fresh physical fleet"):
-                assert e2e_entrypoint.local_port is not None
-                report.e2e_battery = self._run_complete_e2e_battery(
-                    api_base_url=f"http://127.0.0.1:{e2e_entrypoint.local_port}",
-                    fleet=fleet,
-                    expected_node_ids=fresh_node_ids,
-                    expected_commit=expected_commit,
-                    report=report,
-                    journal=journal,
-                    artifact_directory=artifact_directory,
-                    heartbeat=heartbeat,
-                )
-                journal.persist()
+            if e2e_resumption_source is None:
+                with journal.stage("run complete E2E battery on fresh physical fleet"):
+                    assert e2e_entrypoint.local_port is not None
+                    report.e2e_battery = self._run_complete_e2e_battery(
+                        api_base_url=f"http://127.0.0.1:{e2e_entrypoint.local_port}",
+                        fleet=fleet,
+                        expected_node_ids=fresh_node_ids,
+                        expected_commit=expected_commit,
+                        report=report,
+                        journal=journal,
+                        artifact_directory=artifact_directory,
+                        heartbeat=heartbeat,
+                    )
+                    journal.persist()
+            else:
+                with journal.stage("resume failed complete E2E provenance gate"):
+                    heartbeat.raise_if_failed()
+                    battery, resumption = _seal_and_replay_e2e_resumption(
+                        source=e2e_resumption_source,
+                        repository_root=Path(__file__).resolve().parents[2],
+                        fleet=fleet,
+                        expected_commit=expected_commit,
+                        artifact_directory=artifact_directory,
+                    )
+                    report.e2e_battery = battery
+                    report.e2e_resumption = resumption
+                    journal.persist()
         except QualificationInterruptedError as exception:
             report.issues.append(
                 Issue(
@@ -2913,6 +2983,7 @@ def _release_leg_evidence(
         complete_e2e_passed=(
             report.e2e_battery.passed if report.e2e_battery is not None else None
         ),
+        e2e_resumption=report.e2e_resumption,
     )
 
 
@@ -2971,6 +3042,494 @@ def _assert_restored_fleet_clean_through_target(
         )
     finally:
         _terminate_process(tunnel)
+
+
+def _git_output(repository_root: Path, *arguments: str) -> str:
+    """Run one bounded Git identity probe with a private-path-safe error."""
+
+    try:
+        result = subprocess.run(
+            ["git", *arguments],
+            cwd=repository_root,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.CalledProcessError) as exception:
+        raise ValueError(
+            "resumption harness source checkout could not be verified"
+        ) from exception
+    return result.stdout.strip()
+
+
+def _git_blob_bytes(
+    repository_root: Path,
+    *,
+    commit: str,
+    relative_path: str,
+) -> bytes:
+    """Read exact file bytes from one recorded Git commit."""
+
+    try:
+        result = subprocess.run(
+            ["git", "show", f"{commit}:{relative_path}"],
+            cwd=repository_root,
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.CalledProcessError) as exception:
+        raise ValueError(
+            "resumption predecessor battery script could not be verified"
+        ) from exception
+    return result.stdout
+
+
+def _git_commit_identity(
+    repository_root: Path,
+    *,
+    expected_commit: str,
+) -> tuple[str, str]:
+    """Resolve one recorded commit and immutable tree from local Git objects."""
+
+    commit = _git_output(repository_root, "rev-parse", f"{expected_commit}^{{commit}}")
+    if not commit_matches(expected_commit, commit):
+        raise ValueError("resumption harness source commit does not match its report")
+    tree = _git_output(repository_root, "rev-parse", f"{commit}^{{tree}}")
+    if not commit or not tree:
+        raise ValueError("resumption harness source identity is incomplete")
+    return commit, tree
+
+
+def _clean_git_checkout_identity(
+    repository_root: Path,
+    *,
+    expected_commit: str | None = None,
+) -> tuple[str, str]:
+    """Return commit and tree IDs only for a clean, pinned Git checkout."""
+
+    commit = _git_output(repository_root, "rev-parse", "HEAD")
+    if expected_commit is not None and not commit_matches(expected_commit, commit):
+        raise ValueError("resumption harness source commit does not match its report")
+    if _git_output(repository_root, "status", "--porcelain"):
+        raise ValueError("resumption requires a clean harness source checkout")
+    return _git_commit_identity(repository_root, expected_commit=commit)
+
+
+def _normalized_battery_config_bytes(config: HarnessConfig) -> bytes:
+    """Serialize execution-affecting battery config without run-local paths."""
+
+    payload = json.loads(config.model_dump_json())
+    for dynamic_field in (
+        "api_base_url",
+        "output_dir",
+        "fresh_install_report_path",
+        "model_sets_path",
+        "test_sets_path",
+    ):
+        payload.pop(dynamic_field, None)
+    return (
+        json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode()
+
+
+def _prepare_e2e_resumption_source(
+    *,
+    resume_from: Path,
+    repository_root: Path,
+    fleet: FreshInstallPhysicalFleet,
+    current_config: HarnessConfig,
+    configured_members: tuple[FreshInstallTarget, ...],
+    model_sets_path: Path,
+    test_sets_path: Path,
+    profile: FreshInstallProfile,
+    expected_commit: str,
+) -> _FreshE2EResumptionSource:
+    """Validate a predecessor that may resume only the failed provenance gate."""
+
+    report_path = resume_from.expanduser().resolve()
+    if report_path.is_dir():
+        report_path = report_path / "fresh-install-report.json"
+    if not report_path.is_file():
+        raise FileNotFoundError(f"resumption report is missing: {report_path}")
+    predecessor = FreshInstallQualificationReport.model_validate_json(
+        report_path.read_text()
+    )
+    if predecessor.passed:
+        raise ValueError("resumption predecessor already passed qualification")
+    if predecessor.profile != profile or predecessor.platform != "mixed":
+        raise ValueError("resumption predecessor profile or platform does not match")
+    if predecessor.install.expected_commit != expected_commit or not commit_matches(
+        expected_commit, predecessor.install.resolved_commit
+    ):
+        raise ValueError("resumption predecessor does not prove the candidate commit")
+    if (
+        predecessor.install.mode != "fresh_install"
+        or predecessor.install.environment != "fresh_install"
+    ):
+        raise ValueError("resumption predecessor is not a fresh-install run")
+    if (
+        predecessor.restoration_succeeded is not True
+        or predecessor.teardown_succeeded is not True
+        or predecessor.critical_recovery_required
+    ):
+        raise ValueError("resumption predecessor did not restore and tear down cleanly")
+    failed_stages = [stage for stage in predecessor.lifecycle if stage.status == "failed"]
+    provenance_failures = [
+        stage
+        for stage in failed_stages
+        if stage.name == "run complete E2E battery on fresh physical fleet"
+        and stage.message is not None
+        and "result or provenance gate" in stage.message
+    ]
+    if len(failed_stages) != 1 or len(provenance_failures) != 1:
+        raise ValueError(
+            "resumption is allowed only after the complete E2E provenance gate failed"
+        )
+
+    e2e_root = report_path.parent / "complete-e2e"
+    battery_log = e2e_root / "battery.log"
+    report_paths = tuple(sorted((e2e_root / "runs").glob("*/report.json")))
+    if not battery_log.is_file() or not report_paths:
+        raise ValueError("resumption predecessor is missing complete E2E artifacts")
+    reports = tuple(
+        RunReport.model_validate_json(path.read_text()) for path in report_paths
+    )
+    node_sets = {
+        frozenset(node.node_id for node in report.fingerprint.cluster.nodes)
+        for report in reports
+        if report.fingerprint is not None
+    }
+    if len(node_sets) != 1:
+        raise ValueError("resumption predecessor reports do not share one topology")
+    expected_node_ids = next(iter(node_sets))
+    if len(expected_node_ids) != len(fleet.member_targets):
+        raise ValueError("resumption predecessor topology size does not match the fleet")
+    predecessor_members = sorted(predecessor.members, key=lambda member: member.ordinal)
+    predecessor_contract = [
+        {
+            "ordinal": member.ordinal,
+            "platform": member.platform,
+            "hardware_class": member.hardware_class,
+            "expected_backends": member.expected_backends,
+            "data_transport": member.data_transport,
+        }
+        for member in predecessor_members
+    ]
+    configured_contract = [
+        {
+            "ordinal": ordinal,
+            "platform": member.platform,
+            "hardware_class": member.hardware_class,
+            "expected_backends": member.expected_backends,
+            "data_transport": member.expected_data_transport,
+        }
+        for ordinal, member in enumerate(configured_members, start=1)
+    ]
+    if (
+        len(configured_members) != len(fleet.member_targets)
+        or predecessor_contract != configured_contract
+    ):
+        raise ValueError(
+            "resumption predecessor hardware contract does not match the configured fleet"
+        )
+    fleet_contract_bytes = json.dumps(
+        configured_contract,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    fleet_contract_sha256 = hashlib.sha256(fleet_contract_bytes).hexdigest()
+
+    qualification_config = e2e_root / "qualification-config.yaml"
+    if not qualification_config.is_file():
+        raise ValueError(
+            "resumption predecessor is missing its generated battery configuration"
+        )
+    predecessor_config = HarnessConfig.model_validate(
+        yaml.safe_load(qualification_config.read_text())
+    )
+    predecessor_config_bytes = _normalized_battery_config_bytes(predecessor_config)
+    current_config_bytes = _normalized_battery_config_bytes(current_config)
+    if predecessor_config_bytes != current_config_bytes:
+        raise ValueError(
+            "resumption predecessor battery configuration differs from the current run"
+        )
+    battery_config_sha256 = hashlib.sha256(current_config_bytes).hexdigest()
+
+    script_path = _qualification_source_path(
+        repository_root,
+        fleet.e2e_battery_script,
+        label="full E2E battery script",
+    )
+    current_model_sets = _qualification_source_path(
+        repository_root,
+        model_sets_path,
+        label="model-set matrix",
+    )
+    current_test_sets = _qualification_source_path(
+        repository_root,
+        test_sets_path,
+        label="test-set matrix",
+    )
+    for snapshot_name, current_path in (
+        ("model-sets.yaml", current_model_sets),
+        ("test-sets.yaml", current_test_sets),
+    ):
+        snapshot_path = e2e_root / snapshot_name
+        if not snapshot_path.is_file() or snapshot_path.read_bytes() != current_path.read_bytes():
+            raise ValueError(
+                f"resumption predecessor {snapshot_name} does not match the current matrix"
+            )
+
+    log_cells = re.findall(
+        r"==== CELL\s+model-set=(\S+)\s+test-set=(\S+)\s+START ====",
+        battery_log.read_text(),
+    )
+    script_cells = re.findall(
+        r"^\s*cell\s+(\S+)\s+(\S+)(?:\s|$)",
+        script_path.read_text(),
+        flags=re.MULTILINE,
+    )
+    report_cells = [(report.spec.model_set, report.spec.test_set) for report in reports]
+    if not log_cells or log_cells != script_cells or report_cells != log_cells:
+        raise ValueError(
+            "resumption predecessor cell manifest does not match the current battery"
+        )
+
+    evidence = _summarize_fresh_e2e_battery(
+        script_path=script_path,
+        battery_log=battery_log,
+        report_root=e2e_root / "runs",
+        expected_commit=expected_commit,
+        expected_node_ids=expected_node_ids,
+        process_returncode=0,
+    )
+    if not evidence.passed:
+        raise ValueError(
+            "resumption predecessor does not pass every result and provenance gate"
+        )
+    harness_references = [
+        repository
+        for report in reports
+        if report.fingerprint is not None
+        for repository in report.fingerprint.source_context.repositories
+        if repository.name.endswith("/skulk-test-harness")
+    ]
+    if len(harness_references) != len(reports):
+        raise ValueError("resumption predecessor has incomplete harness provenance")
+    if any(reference.dirty is True for reference in harness_references):
+        raise ValueError("resumption predecessor used a dirty harness checkout")
+    harness_dirty_states = {reference.dirty for reference in harness_references}
+    harness_commits = {
+        reference.commit for reference in harness_references if reference.commit
+    }
+    harness_paths = {
+        reference.path for reference in harness_references if reference.path
+    }
+    if (
+        len(harness_commits) != 1
+        or len(harness_paths) != 1
+        or len(harness_dirty_states) != 1
+    ):
+        raise ValueError("resumption predecessor has ambiguous harness provenance")
+    predecessor_harness_root = Path(next(iter(harness_paths))).expanduser().resolve()
+    predecessor_harness_commit = next(iter(harness_commits))
+    if next(iter(harness_dirty_states)) is False:
+        predecessor_harness_commit, predecessor_harness_tree = _git_commit_identity(
+            predecessor_harness_root,
+            expected_commit=predecessor_harness_commit,
+        )
+    else:
+        # Schema 2.3 historically encoded a clean status as ``None``. Those
+        # legacy reports need a still-clean checkout at the recorded commit;
+        # newer ``dirty=False`` reports can rely on the captured immutable tree.
+        predecessor_harness_commit, predecessor_harness_tree = (
+            _clean_git_checkout_identity(
+                predecessor_harness_root,
+                expected_commit=predecessor_harness_commit,
+            )
+        )
+    current_harness_commit, current_harness_tree = _clean_git_checkout_identity(
+        repository_root
+    )
+    try:
+        battery_script_relative_path = script_path.relative_to(
+            repository_root.resolve()
+        ).as_posix()
+    except ValueError as exception:
+        raise ValueError(
+            "resumption battery script must be inside the harness checkout"
+        ) from exception
+    predecessor_script_bytes = _git_blob_bytes(
+        predecessor_harness_root,
+        commit=predecessor_harness_commit,
+        relative_path=battery_script_relative_path,
+    )
+    if predecessor_script_bytes != script_path.read_bytes():
+        raise ValueError(
+            "resumption predecessor battery script differs from the current battery"
+        )
+    return _FreshE2EResumptionSource(
+        report=predecessor,
+        root=e2e_root,
+        battery_log=battery_log,
+        report_paths=report_paths,
+        reports=reports,
+        expected_node_ids=expected_node_ids,
+        predecessor_harness_root=predecessor_harness_root,
+        predecessor_harness_commit=predecessor_harness_commit,
+        predecessor_harness_tree=predecessor_harness_tree,
+        current_harness_commit=current_harness_commit,
+        current_harness_tree=current_harness_tree,
+        battery_script_relative_path=battery_script_relative_path,
+        battery_script_bytes=predecessor_script_bytes,
+        fleet_contract_sha256=fleet_contract_sha256,
+        qualification_config=qualification_config,
+        battery_config_sha256=battery_config_sha256,
+    )
+
+
+def _seal_and_replay_e2e_resumption(
+    *,
+    source: _FreshE2EResumptionSource,
+    repository_root: Path,
+    fleet: FreshInstallPhysicalFleet,
+    expected_commit: str | None,
+    artifact_directory: Path,
+) -> tuple[FreshInstallE2EBatteryEvidence, FreshInstallE2EResumptionEvidence]:
+    """Seal predecessor reports and rerun the failed provenance gate."""
+
+    if expected_commit is None:
+        raise ValueError("fresh E2E resumption requires an exact expected commit")
+    sealed_root = artifact_directory / "complete-e2e-resumption"
+    sealed_reports = sealed_root / "runs"
+    sealed_reports.mkdir(parents=True, exist_ok=False)
+    sealed_root.chmod(0o700)
+    sealed_reports.chmod(0o700)
+    script_path = _qualification_source_path(
+        repository_root,
+        fleet.e2e_battery_script,
+        label="full E2E battery script",
+    )
+    for source_path, target_name in (
+        (source.battery_log, "battery.log"),
+        (source.root / "model-sets.yaml", "model-sets.yaml"),
+        (source.root / "test-sets.yaml", "test-sets.yaml"),
+        (source.qualification_config, "qualification-config.yaml"),
+    ):
+        target_path = sealed_root / target_name
+        shutil.copy2(source_path, target_path)
+        target_path.chmod(0o600)
+    sealed_script_path = sealed_root / "run_e2e_battery.sh"
+    sealed_script_path.write_bytes(source.battery_script_bytes)
+    sealed_script_path.chmod(0o600)
+
+    cells: list[dict[str, object]] = []
+    for ordinal, (source_path, report) in enumerate(
+        zip(source.report_paths, source.reports, strict=True),
+        start=1,
+    ):
+        target_directory = sealed_reports / f"{ordinal:02d}"
+        target_directory.mkdir(mode=0o700)
+        target_path = target_directory / "report.json"
+        shutil.copy2(source_path, target_path)
+        target_path.chmod(0o600)
+        cells.append(
+            {
+                "ordinal": ordinal,
+                "run_id": report.run_id,
+                "model_set": report.spec.model_set,
+                "test_set": report.spec.test_set,
+                "report_sha256": hashlib.sha256(target_path.read_bytes()).hexdigest(),
+                "result_count": len(report.results),
+            }
+        )
+
+    predecessor_identity = _git_commit_identity(
+        source.predecessor_harness_root,
+        expected_commit=source.predecessor_harness_commit,
+    )
+    if predecessor_identity != (
+        source.predecessor_harness_commit,
+        source.predecessor_harness_tree,
+    ):
+        raise RuntimeError("predecessor harness source changed during resumption")
+    predecessor_script_bytes = _git_blob_bytes(
+        source.predecessor_harness_root,
+        commit=source.predecessor_harness_commit,
+        relative_path=source.battery_script_relative_path,
+    )
+    if predecessor_script_bytes != source.battery_script_bytes:
+        raise RuntimeError("predecessor battery script changed during resumption")
+    predecessor_config = HarnessConfig.model_validate(
+        yaml.safe_load(source.qualification_config.read_text())
+    )
+    if hashlib.sha256(
+        _normalized_battery_config_bytes(predecessor_config)
+    ).hexdigest() != source.battery_config_sha256:
+        raise RuntimeError("predecessor battery configuration changed during resumption")
+    current_identity = _clean_git_checkout_identity(
+        repository_root,
+        expected_commit=source.current_harness_commit,
+    )
+    if current_identity != (
+        source.current_harness_commit,
+        source.current_harness_tree,
+    ):
+        raise RuntimeError("current harness source changed during resumption")
+    current_harness_commit, current_harness_tree = current_identity
+    manifest = {
+        "schema_version": "1.0",
+        "predecessor_qualification_id": source.report.qualification_id,
+        "predecessor_expected_commit": expected_commit,
+        "predecessor_harness_commit": source.predecessor_harness_commit,
+        "predecessor_harness_tree": source.predecessor_harness_tree,
+        "current_harness_commit": current_harness_commit,
+        "current_harness_tree": current_harness_tree,
+        "battery_script_sha256": hashlib.sha256(
+            source.battery_script_bytes
+        ).hexdigest(),
+        "fleet_contract_sha256": source.fleet_contract_sha256,
+        "battery_config_sha256": source.battery_config_sha256,
+        "model_sets_sha256": hashlib.sha256(
+            (sealed_root / "model-sets.yaml").read_bytes()
+        ).hexdigest(),
+        "test_sets_sha256": hashlib.sha256(
+            (sealed_root / "test-sets.yaml").read_bytes()
+        ).hexdigest(),
+        "completed_cells": cells,
+    }
+    manifest_bytes = (
+        json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode()
+    manifest_path = sealed_root / "resumption-manifest.json"
+    manifest_path.write_bytes(manifest_bytes)
+    manifest_path.chmod(0o600)
+    evidence = _summarize_fresh_e2e_battery(
+        script_path=script_path,
+        battery_log=sealed_root / "battery.log",
+        report_root=sealed_reports,
+        expected_commit=expected_commit,
+        expected_node_ids=source.expected_node_ids,
+        process_returncode=0,
+    )
+    if not evidence.passed:
+        raise RuntimeError("sealed predecessor failed the resumed provenance gate")
+    return evidence, FreshInstallE2EResumptionEvidence(
+        predecessor_qualification_id=source.report.qualification_id,
+        predecessor_expected_commit=expected_commit,
+        predecessor_harness_commit=source.predecessor_harness_commit,
+        predecessor_harness_tree=source.predecessor_harness_tree,
+        current_harness_commit=current_harness_commit,
+        current_harness_tree=current_harness_tree,
+        fleet_contract_sha256=source.fleet_contract_sha256,
+        battery_config_sha256=source.battery_config_sha256,
+        completed_cell_manifest_sha256=hashlib.sha256(manifest_bytes).hexdigest(),
+        completed_cell_count=evidence.completed_cell_count,
+        passed_result_count=evidence.passed_result_count,
+        passed=True,
+    )
 
 
 def _summarize_fresh_e2e_battery(

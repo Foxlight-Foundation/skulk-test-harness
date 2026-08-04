@@ -349,6 +349,16 @@ def fresh_install_qualify(
             help="Full 40-character commit certified by every mandatory leg.",
         ),
     ] = None,
+    resume_from: Annotated[
+        Path | None,
+        typer.Option(
+            "--resume-from",
+            help=(
+                "Resume only a failed post-battery provenance gate from a "
+                "fully green, restored fresh-install predecessor."
+            ),
+        ),
+    ] = None,
     config: ConfigPath = Path("skulk-harness.yaml"),
 ) -> None:
     """Run the atomic fresh physical E2E plus RunPod release gate."""
@@ -367,6 +377,7 @@ def fresh_install_qualify(
         report = FreshInstallQualifier(cfg).qualify_release_matrix(
             profile=profile,
             expected_commit=expected_commit,
+            resume_from=resume_from,
         )
     except ValueError as exception:
         console.print(f"[bold red]REFUSED[/]: {exception}")

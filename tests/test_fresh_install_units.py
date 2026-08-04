@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import dataclasses
+import hashlib
 import io
 import json
 import os
@@ -54,12 +55,14 @@ from skulk_test_harness.fresh_install import (
     _installer_command,  # pyright: ignore[reportPrivateUsage]
     _llama_server_process_contract,  # pyright: ignore[reportPrivateUsage]
     _PhysicalFleetMemberRuntime,  # pyright: ignore[reportPrivateUsage]
+    _prepare_e2e_resumption_source,  # pyright: ignore[reportPrivateUsage]
     _provision_model_over_api,  # pyright: ignore[reportPrivateUsage]
     _qualify_served_engine,  # pyright: ignore[reportPrivateUsage]
     _run_member_operations,  # pyright: ignore[reportPrivateUsage]
     _run_remote_logged_command,  # pyright: ignore[reportPrivateUsage]
     _runpod_ephemeral_target,  # pyright: ignore[reportPrivateUsage]
     _runtime_start_command,  # pyright: ignore[reportPrivateUsage]
+    _seal_and_replay_e2e_resumption,  # pyright: ignore[reportPrivateUsage]
     _self_safe_process_pattern,  # pyright: ignore[reportPrivateUsage]
     _served_engine_envelope,  # pyright: ignore[reportPrivateUsage]
     _summarize_fresh_e2e_battery,  # pyright: ignore[reportPrivateUsage]
@@ -90,6 +93,7 @@ from skulk_test_harness.models import (
     InstallProvenance,
     Issue,
     PlacementResult,
+    RepoRef,
     ReportFingerprint,
     RunPodFreshInstallConfig,
     RunReport,
@@ -97,6 +101,7 @@ from skulk_test_harness.models import (
     RuntimeFingerprint,
     ServedEngineContract,
     ServedEngineEvidence,
+    SourceContext,
 )
 from skulk_test_harness.models import (
     TestResult as _TestResult,
@@ -382,6 +387,460 @@ def test_complete_e2e_summary_requires_every_report_to_prove_fresh_commit(
 
     assert not attached.passed
     assert attached.fresh_provenance_report_count == 0
+
+
+def _write_resumable_e2e_predecessor(
+    tmp_path: Path,
+) -> tuple[Path, Path, FreshInstallPhysicalFleet, Path, Path, str]:
+    """Write one complete green battery whose final harness gate failed."""
+
+    expected_commit = "a" * 40
+    repository_root = tmp_path / "harness"
+    script_path = repository_root / "scripts" / "run_e2e_battery.sh"
+    script_path.parent.mkdir(parents=True)
+    script_path.write_text("cell model-set test-set\n")
+    model_sets_path = repository_root / "model-sets.yaml"
+    model_sets_path.write_text("model_sets: {}\n")
+    test_sets_path = repository_root / "test-sets.yaml"
+    test_sets_path.write_text("test_sets: {}\n")
+    for command in (
+        ["git", "init", "--quiet"],
+        ["git", "config", "user.email", "tests@example.invalid"],
+        ["git", "config", "user.name", "Harness Tests"],
+        ["git", "add", "."],
+        ["git", "commit", "--quiet", "-m", "test source"],
+    ):
+        subprocess.run(command, cwd=repository_root, check=True)
+    harness_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repository_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    predecessor_root = tmp_path / "fresh-candidate-mixed-predecessor"
+    e2e_root = predecessor_root / "complete-e2e"
+    report_root = e2e_root / "runs" / "20260804-000000-cell"
+    report_root.mkdir(parents=True)
+    (e2e_root / "battery.log").write_text(
+        "==== CELL model-set=model-set test-set=test-set START ====\n"
+        "==== CELL model-set=model-set test-set=test-set END (rc=0) ====\n"
+        "BATTERY COMPLETE (rc=0)\n"
+    )
+    (e2e_root / "model-sets.yaml").write_bytes(model_sets_path.read_bytes())
+    (e2e_root / "test-sets.yaml").write_bytes(test_sets_path.read_bytes())
+    base_config = HarnessConfig(
+        model_sets_path=model_sets_path,
+        test_sets_path=test_sets_path,
+    )
+    generated_config = base_config.model_copy(
+        update={
+            "api_base_url": "http://127.0.0.1:42000",
+            "output_dir": e2e_root / "runs",
+            "fresh_install_report_path": predecessor_root
+            / "fresh-install-report.json",
+            "model_sets_path": e2e_root / "model-sets.yaml",
+            "test_sets_path": e2e_root / "test-sets.yaml",
+        }
+    )
+    (e2e_root / "qualification-config.yaml").write_text(
+        generated_config.model_dump_json()
+    )
+    run_report = RunReport.start(
+        "green-cell",
+        RunSpec(model_set="model-set", test_set="test-set", mode="execute"),
+        [],
+    )
+    run_report.results.append(
+        _TestResult(
+            model_id="model",
+            test_name="test",
+            repetition=1,
+            passed=True,
+            output_text="ok",
+            metrics=GenerationMetrics(elapsed_s=1),
+        )
+    )
+    run_report.fingerprint = ReportFingerprint(
+        source_context=SourceContext(
+            repositories=[
+                RepoRef(
+                    name="Foxlight-Foundation/skulk-test-harness",
+                    path=str(repository_root),
+                    commit=harness_commit,
+                    dirty=False,
+                )
+            ]
+        ),
+        runtime=RuntimeFingerprint(skulk_commit=expected_commit[:7]),
+        cluster=ClusterFingerprint(
+            node_count=2,
+            nodes=[
+                ClusterNodeFingerprint(node_id="node-a"),
+                ClusterNodeFingerprint(node_id="node-b"),
+            ],
+        ),
+        install=InstallProvenance(
+            mode="fresh_install",
+            environment="fresh_install",
+            profile="candidate",
+            platform="mixed",
+            expected_commit=expected_commit,
+            resolved_commit=expected_commit[:7],
+        ),
+    )
+    (report_root / "report.json").write_text(run_report.finish().model_dump_json())
+    predecessor = FreshInstallQualificationReport(
+        qualification_id="fresh-candidate-mixed-predecessor",
+        profile="candidate",
+        platform="mixed",
+        hardware_class="mixed",
+        started_at=datetime.now(UTC),
+        install=InstallProvenance(
+            mode="fresh_install",
+            environment="fresh_install",
+            profile="candidate",
+            platform="mixed",
+            expected_commit=expected_commit,
+            resolved_commit=expected_commit[:7],
+        ),
+        lifecycle=[
+            FreshInstallLifecycleStage(
+                name="run complete E2E battery on fresh physical fleet",
+                status="failed",
+                message="complete E2E result or provenance gate failed",
+            )
+        ],
+        members=[
+            FreshInstallMemberEvidence(
+                ordinal=1,
+                platform="apple",
+                hardware_class="apple-hardware",
+                expected_backends=["mlx"],
+                data_transport="zenoh",
+            ),
+            FreshInstallMemberEvidence(
+                ordinal=2,
+                platform="amd",
+                hardware_class="amd-hardware",
+                expected_backends=["llama_server"],
+                data_transport="zenoh",
+            ),
+        ],
+        restoration_succeeded=True,
+        teardown_succeeded=True,
+    )
+    predecessor_path = predecessor_root / "fresh-install-report.json"
+    predecessor_path.write_text(predecessor.model_dump_json())
+    fleet = FreshInstallPhysicalFleet(
+        hardware_class="mixed",
+        eligible=True,
+        member_targets=["apple", "amd"],
+        entrypoint_target="apple",
+        qualification_targets=["apple", "amd"],
+        e2e_battery_script=Path("scripts/run_e2e_battery.sh"),
+    )
+    return (
+        predecessor_path,
+        repository_root,
+        fleet,
+        model_sets_path,
+        test_sets_path,
+        expected_commit,
+    )
+
+
+def test_e2e_resumption_is_fail_closed_and_seals_green_evidence(
+    tmp_path: Path,
+) -> None:
+    """Resumption must revalidate and seal the exact predecessor evidence."""
+
+    (
+        predecessor_path,
+        repository_root,
+        fleet,
+        model_sets_path,
+        test_sets_path,
+        expected_commit,
+    ) = _write_resumable_e2e_predecessor(tmp_path)
+    source = _prepare_e2e_resumption_source(
+        resume_from=predecessor_path,
+        repository_root=repository_root,
+        fleet=fleet,
+        current_config=HarnessConfig(
+            model_sets_path=model_sets_path,
+            test_sets_path=test_sets_path,
+        ),
+        configured_members=(
+            _whole_fleet_target("apple"),
+            _whole_fleet_target("amd"),
+        ),
+        model_sets_path=model_sets_path,
+        test_sets_path=test_sets_path,
+        profile="candidate",
+        expected_commit=expected_commit,
+    )
+    artifact_directory = tmp_path / "resumed"
+    artifact_directory.mkdir()
+
+    battery, evidence = _seal_and_replay_e2e_resumption(
+        source=source,
+        repository_root=repository_root,
+        fleet=fleet,
+        expected_commit=expected_commit,
+        artifact_directory=artifact_directory,
+    )
+
+    assert battery.passed
+    assert evidence.passed
+    assert evidence.completed_cell_count == 1
+    assert evidence.passed_result_count == 1
+    assert evidence.predecessor_harness_commit == source.predecessor_harness_commit
+    assert evidence.predecessor_harness_tree == source.predecessor_harness_tree
+    assert evidence.current_harness_commit == source.current_harness_commit
+    assert evidence.current_harness_tree == source.current_harness_tree
+    assert evidence.fleet_contract_sha256 == source.fleet_contract_sha256
+    assert evidence.battery_config_sha256 == source.battery_config_sha256
+    manifest_path = (
+        artifact_directory
+        / "complete-e2e-resumption"
+        / "resumption-manifest.json"
+    )
+    assert manifest_path.stat().st_mode & 0o777 == 0o600
+    assert hashlib.sha256(manifest_path.read_bytes()).hexdigest() == (
+        evidence.completed_cell_manifest_sha256
+    )
+
+    with pytest.raises(ValueError, match="hardware contract"):
+        _prepare_e2e_resumption_source(
+            resume_from=predecessor_path,
+            repository_root=repository_root,
+            fleet=fleet,
+            current_config=HarnessConfig(
+                model_sets_path=model_sets_path,
+                test_sets_path=test_sets_path,
+            ),
+            configured_members=(
+                _whole_fleet_target("apple"),
+                _whole_fleet_target("apple"),
+            ),
+            model_sets_path=model_sets_path,
+            test_sets_path=test_sets_path,
+            profile="candidate",
+            expected_commit=expected_commit,
+        )
+
+    with pytest.raises(ValueError, match="battery configuration differs"):
+        _prepare_e2e_resumption_source(
+            resume_from=predecessor_path,
+            repository_root=repository_root,
+            fleet=fleet,
+            current_config=HarnessConfig(
+                generation_timeout_s=1,
+                model_sets_path=model_sets_path,
+                test_sets_path=test_sets_path,
+            ),
+            configured_members=(
+                _whole_fleet_target("apple"),
+                _whole_fleet_target("amd"),
+            ),
+            model_sets_path=model_sets_path,
+            test_sets_path=test_sets_path,
+            profile="candidate",
+            expected_commit=expected_commit,
+        )
+
+    model_sets_path.write_text("model_sets: {changed: true}\n")
+    with pytest.raises(ValueError, match="does not match the current matrix"):
+        _prepare_e2e_resumption_source(
+            resume_from=predecessor_path,
+            repository_root=repository_root,
+            fleet=fleet,
+            current_config=HarnessConfig(
+                model_sets_path=model_sets_path,
+                test_sets_path=test_sets_path,
+            ),
+            configured_members=(
+                _whole_fleet_target("apple"),
+                _whole_fleet_target("amd"),
+            ),
+            model_sets_path=model_sets_path,
+            test_sets_path=test_sets_path,
+            profile="candidate",
+            expected_commit=expected_commit,
+        )
+
+
+def test_e2e_resumption_rejects_any_additional_failed_stage(tmp_path: Path) -> None:
+    """A product or recovery failure may never be hidden by resumption."""
+
+    (
+        predecessor_path,
+        repository_root,
+        fleet,
+        model_sets_path,
+        test_sets_path,
+        expected_commit,
+    ) = _write_resumable_e2e_predecessor(tmp_path)
+    predecessor = FreshInstallQualificationReport.model_validate_json(
+        predecessor_path.read_text()
+    )
+    predecessor.lifecycle.append(
+        FreshInstallLifecycleStage(
+            name="qualify dashboard",
+            status="failed",
+            message="product behavior failed",
+        )
+    )
+    predecessor_path.write_text(predecessor.model_dump_json())
+
+    with pytest.raises(ValueError, match="only after the complete E2E provenance"):
+        _prepare_e2e_resumption_source(
+            resume_from=predecessor_path,
+            repository_root=repository_root,
+            fleet=fleet,
+            current_config=HarnessConfig(
+                model_sets_path=model_sets_path,
+                test_sets_path=test_sets_path,
+            ),
+            configured_members=(
+                _whole_fleet_target("apple"),
+                _whole_fleet_target("amd"),
+            ),
+            model_sets_path=model_sets_path,
+            test_sets_path=test_sets_path,
+            profile="candidate",
+            expected_commit=expected_commit,
+        )
+
+
+def test_e2e_resumption_rejects_dirty_harness_provenance(tmp_path: Path) -> None:
+    """Dirty source may never produce a commit-attributed release verdict."""
+
+    (
+        predecessor_path,
+        repository_root,
+        fleet,
+        model_sets_path,
+        test_sets_path,
+        expected_commit,
+    ) = _write_resumable_e2e_predecessor(tmp_path)
+    report_path = next(
+        (predecessor_path.parent / "complete-e2e" / "runs").glob("*/report.json")
+    )
+    run_report = RunReport.model_validate_json(report_path.read_text())
+    assert run_report.fingerprint is not None
+    references = run_report.fingerprint.source_context.repositories
+    references[0] = references[0].model_copy(update={"dirty": True})
+    report_path.write_text(run_report.model_dump_json())
+
+    with pytest.raises(ValueError, match="dirty harness checkout"):
+        _prepare_e2e_resumption_source(
+            resume_from=predecessor_path,
+            repository_root=repository_root,
+            fleet=fleet,
+            current_config=HarnessConfig(
+                model_sets_path=model_sets_path,
+                test_sets_path=test_sets_path,
+            ),
+            configured_members=(
+                _whole_fleet_target("apple"),
+                _whole_fleet_target("amd"),
+            ),
+            model_sets_path=model_sets_path,
+            test_sets_path=test_sets_path,
+            profile="candidate",
+            expected_commit=expected_commit,
+        )
+
+
+def test_e2e_resumption_resolves_clean_predecessor_after_checkout_advances(
+    tmp_path: Path,
+) -> None:
+    """A clean recorded commit remains valid after the checkout gains the fix."""
+
+    (
+        predecessor_path,
+        repository_root,
+        fleet,
+        model_sets_path,
+        test_sets_path,
+        expected_commit,
+    ) = _write_resumable_e2e_predecessor(tmp_path)
+    correction = repository_root / "correction.py"
+    correction.write_text("CORRECTED = True\n")
+    subprocess.run(["git", "add", "correction.py"], cwd=repository_root, check=True)
+    subprocess.run(
+        ["git", "commit", "--quiet", "-m", "correct harness"],
+        cwd=repository_root,
+        check=True,
+    )
+
+    source = _prepare_e2e_resumption_source(
+        resume_from=predecessor_path,
+        repository_root=repository_root,
+        fleet=fleet,
+        current_config=HarnessConfig(
+            model_sets_path=model_sets_path,
+            test_sets_path=test_sets_path,
+        ),
+        configured_members=(
+            _whole_fleet_target("apple"),
+            _whole_fleet_target("amd"),
+        ),
+        model_sets_path=model_sets_path,
+        test_sets_path=test_sets_path,
+        profile="candidate",
+        expected_commit=expected_commit,
+    )
+
+    assert source.predecessor_harness_commit != source.current_harness_commit
+    assert source.predecessor_harness_tree != source.current_harness_tree
+
+
+def test_e2e_resumption_rejects_changed_battery_commands(tmp_path: Path) -> None:
+    """Identical cell names cannot hide changed battery commands or flags."""
+
+    (
+        predecessor_path,
+        repository_root,
+        fleet,
+        model_sets_path,
+        test_sets_path,
+        expected_commit,
+    ) = _write_resumable_e2e_predecessor(tmp_path)
+    script_path = repository_root / "scripts" / "run_e2e_battery.sh"
+    script_path.write_text("cell model-set test-set --min-nodes 1\n")
+    subprocess.run(
+        ["git", "add", "scripts/run_e2e_battery.sh"],
+        cwd=repository_root,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "commit", "--quiet", "-m", "change battery flags"],
+        cwd=repository_root,
+        check=True,
+    )
+
+    with pytest.raises(ValueError, match="battery script differs"):
+        _prepare_e2e_resumption_source(
+            resume_from=predecessor_path,
+            repository_root=repository_root,
+            fleet=fleet,
+            current_config=HarnessConfig(
+                model_sets_path=model_sets_path,
+                test_sets_path=test_sets_path,
+            ),
+            configured_members=(
+                _whole_fleet_target("apple"),
+                _whole_fleet_target("amd"),
+            ),
+            model_sets_path=model_sets_path,
+            test_sets_path=test_sets_path,
+            profile="candidate",
+            expected_commit=expected_commit,
+        )
 
 
 def test_complete_e2e_uses_private_fresh_config_and_strips_product_overrides(

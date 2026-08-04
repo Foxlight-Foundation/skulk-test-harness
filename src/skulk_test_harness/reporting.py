@@ -351,6 +351,16 @@ def _fresh_install_markdown(report: FreshInstallQualificationReport) -> str:
         )
     else:
         lines.append("- Not run")
+    if report.e2e_resumption is not None:
+        resumption = report.e2e_resumption
+        lines.append(
+            f"- Resumed `{resumption.resumed_stage}` from qualification "
+            f"`{resumption.predecessor_qualification_id}`: sealed cells "
+            f"`{resumption.completed_cell_count}`, passed results "
+            f"`{resumption.passed_result_count}`, manifest "
+            f"`{resumption.completed_cell_manifest_sha256}`, passed "
+            f"`{resumption.passed}`"
+        )
     lines.extend(["", "## Served engines", ""])
     if report.served_engines:
         for evidence in report.served_engines:
@@ -402,11 +412,16 @@ def _release_qualification_markdown(report: ReleaseQualificationReport) -> str:
         "",
     ]
     for leg in report.legs:
+        resumption = (
+            f", resumed from `{leg.e2e_resumption.predecessor_qualification_id}`"
+            if leg.e2e_resumption is not None
+            else ""
+        )
         lines.append(
             f"- `{leg.platform}` / `{leg.hardware_class}`: passed "
             f"`{leg.passed}`, complete E2E `{leg.complete_e2e_passed}`, "
             f"critical recovery `{leg.critical_recovery_required}`, report "
-            f"`{leg.qualification_id}`"
+            f"`{leg.qualification_id}`{resumption}"
         )
     if not report.legs:
         lines.append("- None")

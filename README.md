@@ -125,6 +125,32 @@ uv run skulk-harness fresh-install qualify \
   --config skulk-harness.fresh-install.yaml
 ```
 
+If a run restores cleanly after every physical E2E cell passed but a
+harness-only post-battery provenance gate failed, the corrected harness may
+resume that one failed gate:
+
+```bash
+uv run skulk-harness fresh-install qualify \
+  --profile candidate \
+  --expected-commit <same-40-character-dev-commit> \
+  --resume-from <predecessor-fresh-install-report.json> \
+  --config skulk-harness.fresh-install.yaml
+```
+
+Resumption is fail-closed: the predecessor must prove the same candidate,
+matrices, complete cell sequence, ordered physical platform/hardware/backend
+contract, topology, all-green results, and a clean recorded harness source
+tree. The battery script bytes resolved from that tree
+must exactly match the current script, including cell commands and flags. The
+normalized execution configuration must also match; only the tunneled API and
+run-local artifact/matrix paths are excluded after matrix bytes are verified.
+The corrected harness checkout must also remain clean and unchanged from
+preflight through the resumed gate. The resumed run
+still performs a normal whole-fleet fresh install and acceptance journey, then
+seals and rechecks the predecessor cell evidence before continuing to the
+mandatory clean RunPod leg. It cannot skip a product failure or combine
+unrelated qualification legs.
+
 `fresh-install qualify` is atomic and always runs the complete eligible release
 matrix. It holds one authoritative lease while it fresh-installs the physical
 topology, runs the full E2E battery before restoring that topology, and then
