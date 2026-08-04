@@ -182,7 +182,7 @@ def assert_fresh_runtime_contract(
         mismatched = sorted(
             commit
             for commit in reported_commits
-            if not _commit_matches(expected_commit, commit)
+            if not commit_matches(expected_commit, commit)
         )
         if len(reported_commits) != expected_node_count or mismatched:
             raise RuntimeError(
@@ -301,7 +301,7 @@ def qualify_direct_vision(
 _MINIMUM_ABBREVIATED_COMMIT_LENGTH = 7
 
 
-def _commit_matches(expected: str, resolved: str | None) -> bool:
+def commit_matches(expected: str, resolved: str | None) -> bool:
     """Return whether a runtime commit identifies the pinned candidate build.
 
     A qualification pins a full 40-character SHA, but the node reports
