@@ -55,6 +55,7 @@ from skulk_test_harness.fresh_install import (
     _installer_command,  # pyright: ignore[reportPrivateUsage]
     _llama_server_process_contract,  # pyright: ignore[reportPrivateUsage]
     _PhysicalFleetMemberRuntime,  # pyright: ignore[reportPrivateUsage]
+    _prepare_dashboard_resumption_source,  # pyright: ignore[reportPrivateUsage]
     _prepare_e2e_resumption_source,  # pyright: ignore[reportPrivateUsage]
     _provision_model_over_api,  # pyright: ignore[reportPrivateUsage]
     _qualify_served_engine,  # pyright: ignore[reportPrivateUsage]
@@ -63,6 +64,7 @@ from skulk_test_harness.fresh_install import (
     _runpod_ephemeral_target,  # pyright: ignore[reportPrivateUsage]
     _runtime_start_command,  # pyright: ignore[reportPrivateUsage]
     _seal_and_replay_e2e_resumption,  # pyright: ignore[reportPrivateUsage]
+    _seal_dashboard_cell_resumption,  # pyright: ignore[reportPrivateUsage]
     _self_safe_process_pattern,  # pyright: ignore[reportPrivateUsage]
     _served_engine_envelope,  # pyright: ignore[reportPrivateUsage]
     _summarize_fresh_e2e_battery,  # pyright: ignore[reportPrivateUsage]
@@ -80,6 +82,7 @@ from skulk_test_harness.models import (
     DashboardAudioEvidence,
     DashboardContract,
     DashboardExperienceEvidence,
+    DashboardJourneyOutcome,
     FleetLock,
     FreshInstallConfig,
     FreshInstallE2EBatteryEvidence,
@@ -102,6 +105,7 @@ from skulk_test_harness.models import (
     ServedEngineContract,
     ServedEngineEvidence,
     SourceContext,
+    VisionFixtureEvidence,
 )
 from skulk_test_harness.models import (
     TestResult as _TestResult,
@@ -841,6 +845,366 @@ def test_e2e_resumption_rejects_changed_battery_commands(tmp_path: Path) -> None
             profile="candidate",
             expected_commit=expected_commit,
         )
+
+
+def _write_dashboard_topology_predecessor(
+    tmp_path: Path,
+) -> tuple[Path, FreshInstallQualificationReport, FreshInstallPhysicalFleet]:
+    """Write a restored run whose only failure is the dashboard node count."""
+
+    old_commit = "a" * 40
+    root = tmp_path / "fresh-dashboard-predecessor"
+    playwright_root = root / "playwright"
+    playwright_root.mkdir(parents=True)
+    amd_model = "unsloth/Llama-3.2-1B-Instruct-GGUF"
+    (playwright_root / "unsloth-Llama-3-2-1B-Instruct-GGUF.trace.zip").write_bytes(
+        b"trace"
+    )
+    vision = VisionFixtureEvidence(
+        channel="api",
+        fixture_sha256="1" * 64,
+        code_sha256="2" * 64,
+        expected_shape="circle",
+        expected_color="blue",
+        response_matched_code=True,
+        response_matched_attribute=True,
+        passed=True,
+    )
+    models = ["mlx-community/Qwen3.5-2B-4bit", amd_model]
+    lifecycle = [
+        FreshInstallLifecycleStage(name=f"dashboard fleet journey: {model}", status="passed")
+        for model in models
+    ]
+    lifecycle.extend(
+        FreshInstallLifecycleStage(
+            name=f"direct fleet API parity: {model}", status="passed"
+        )
+        for model in models
+    )
+    lifecycle.extend(
+        [
+            FreshInstallLifecycleStage(
+                name="dashboard release experience",
+                status="failed",
+                message="dashboard release experience failed",
+            ),
+            FreshInstallLifecycleStage(
+                name="stop and remove every temporary installation", status="passed"
+            ),
+            FreshInstallLifecycleStage(
+                name="restore original service on every member", status="passed"
+            ),
+        ]
+    )
+    report = FreshInstallQualificationReport(
+        qualification_id="fresh-candidate-mixed-dashboard-predecessor",
+        profile="candidate",
+        platform="mixed",
+        hardware_class="mixed",
+        started_at=datetime.now(UTC),
+        install=InstallProvenance(
+            mode="fresh_install",
+            environment="fresh_install",
+            profile="candidate",
+            platform="mixed",
+            expected_commit=old_commit,
+            resolved_commit=old_commit[:7],
+            environment_override_names=[],
+        ),
+        lifecycle=lifecycle,
+        browser=[
+            DashboardJourneyOutcome(model_id=model, passed=True) for model in models
+        ],
+        api_vision=[vision],
+        dashboard_experience=DashboardExperienceEvidence(
+            model_id=models[0],
+            settings_opened=True,
+            settings_saved=True,
+            topology_expected_nodes=2,
+            topology_visible_nodes=1,
+            request_failure_visible=True,
+            request_retry_passed=True,
+            webkit_loaded=True,
+            webkit_text_chat_passed=True,
+            passed=False,
+        ),
+        members=[
+            FreshInstallMemberEvidence(
+                ordinal=1,
+                platform="apple",
+                hardware_class="apple-hardware",
+                expected_backends=["mlx"],
+                data_transport="zenoh",
+            ),
+            FreshInstallMemberEvidence(
+                ordinal=2,
+                platform="amd",
+                hardware_class="amd-hardware",
+                expected_backends=["llama_server"],
+                data_transport="zenoh",
+            ),
+        ],
+        restoration_succeeded=True,
+        teardown_succeeded=True,
+    )
+    report_path = root / "fresh-install-report.json"
+    report_path.write_text(report.model_dump_json())
+    fleet = FreshInstallPhysicalFleet(
+        hardware_class="mixed",
+        eligible=True,
+        member_targets=["apple", "amd"],
+        entrypoint_target="apple",
+        qualification_targets=["apple", "amd"],
+        e2e_battery_script=Path("scripts/run_e2e_battery.sh"),
+    )
+    return report_path, report, fleet
+
+
+def test_dashboard_topology_resumption_seals_only_non_primary_model_cells(
+    tmp_path: Path,
+) -> None:
+    """A product-fix run must rerun topology, primary setup, and failed cell."""
+
+    report_path, predecessor, fleet = _write_dashboard_topology_predecessor(tmp_path)
+    new_commit = "b" * 40
+    source = _prepare_dashboard_resumption_source(
+        report_path=report_path,
+        predecessor=predecessor,
+        fleet=fleet,
+        configured_members=(
+            _whole_fleet_target("apple"),
+            _whole_fleet_target("amd"),
+        ),
+        profile="candidate",
+        expected_commit=new_commit,
+    )
+
+    assert source.reused_model_ids == ("unsloth/Llama-3.2-1B-Instruct-GGUF",)
+    assert source.primary_model_id == "mlx-community/Qwen3.5-2B-4bit"
+    artifact_directory = tmp_path / "replacement"
+    artifact_directory.mkdir()
+    evidence = _seal_dashboard_cell_resumption(
+        source=source,
+        expected_commit=new_commit,
+        artifact_directory=artifact_directory,
+    )
+
+    assert evidence.predecessor_expected_commit == "a" * 40
+    assert evidence.current_expected_commit == new_commit
+    assert evidence.reused_model_ids == ["unsloth/Llama-3.2-1B-Instruct-GGUF"]
+    assert evidence.rerun_model_ids == ["mlx-community/Qwen3.5-2B-4bit"]
+    assert evidence.passed
+    manifest = json.loads(
+        (
+            artifact_directory
+            / "dashboard-cell-resumption"
+            / "resumption-manifest.json"
+        ).read_text()
+    )
+    assert manifest["resumed_stage"] == "dashboard_release_experience"
+    assert manifest["current_expected_commit"] == new_commit
+
+
+def test_dashboard_resumption_rejects_a_non_topology_dashboard_failure(
+    tmp_path: Path,
+) -> None:
+    """Resumption must not adapt around another dashboard product failure."""
+
+    report_path, predecessor, fleet = _write_dashboard_topology_predecessor(tmp_path)
+    assert predecessor.dashboard_experience is not None
+    predecessor = predecessor.model_copy(
+        update={
+            "dashboard_experience": predecessor.dashboard_experience.model_copy(
+                update={"settings_saved": False}
+            )
+        }
+    )
+    with pytest.raises(ValueError, match="isolated topology-count failure"):
+        _prepare_dashboard_resumption_source(
+            report_path=report_path,
+            predecessor=predecessor,
+            fleet=fleet,
+            configured_members=(
+                _whole_fleet_target("apple"),
+                _whole_fleet_target("amd"),
+            ),
+            profile="candidate",
+            expected_commit="b" * 40,
+        )
+
+
+def test_dashboard_resumption_reruns_primary_and_failed_cell_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The replacement fresh fleet must not rerun sealed non-primary cells."""
+
+    report_path, predecessor, fleet = _write_dashboard_topology_predecessor(tmp_path)
+    apple = _whole_fleet_target("apple")
+    amd = _whole_fleet_target("amd")
+    new_commit = "b" * 40
+    source = _prepare_dashboard_resumption_source(
+        report_path=report_path,
+        predecessor=predecessor,
+        fleet=fleet,
+        configured_members=(apple, amd),
+        profile="candidate",
+        expected_commit=new_commit,
+    )
+    artifact_directory = tmp_path / "replacement"
+    artifact_directory.mkdir()
+    report = FreshInstallQualificationReport(
+        qualification_id="replacement",
+        profile="candidate",
+        platform="mixed",
+        hardware_class="mixed",
+        started_at=datetime.now(UTC),
+        install=InstallProvenance(
+            mode="fresh_install",
+            environment="fresh_install",
+            expected_commit=new_commit,
+        ),
+    )
+
+    class Journal:
+        def __init__(self) -> None:
+            self.stages: list[str] = []
+
+        def stage(self, name: str) -> nullcontext[None]:
+            self.stages.append(name)
+            return nullcontext()
+
+        def persist(self) -> None:
+            pass
+
+    journal = Journal()
+
+    class Client:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def __enter__(self) -> "Client":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            pass
+
+        def resolved_thinking_toggle_by_model(self) -> dict[str, bool]:
+            return {}
+
+        def resolved_image_input_by_model(self) -> dict[str, bool]:
+            return {"mlx-community/Qwen3.5-2B-4bit": True}
+
+        def find_placements_for_model(self, _model_id: str) -> list[PlacementResult]:
+            return []
+
+    class RuntimeMonitor:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def __enter__(self) -> "RuntimeMonitor":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            pass
+
+        def raise_if_failed(self) -> None:
+            pass
+
+    primary_calls: list[str] = []
+
+    class Dashboard:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def qualify(
+            self, *, model_id: str, vision_contract: str, fixture: object
+        ) -> DashboardJourneyOutcome:
+            del vision_contract, fixture
+            primary_calls.append(model_id)
+            return DashboardJourneyOutcome(model_id=model_id, passed=True)
+
+        def qualify_experience(
+            self, *, model_id: str, expected_node_count: int
+        ) -> DashboardExperienceEvidence:
+            return DashboardExperienceEvidence(
+                model_id=model_id,
+                settings_opened=True,
+                settings_saved=True,
+                topology_expected_nodes=expected_node_count,
+                topology_visible_nodes=expected_node_count,
+                request_failure_visible=True,
+                request_retry_passed=True,
+                webkit_loaded=True,
+                webkit_text_chat_passed=True,
+                passed=True,
+            )
+
+    class Heartbeat:
+        def raise_if_failed(self) -> None:
+            pass
+
+    current_vision = VisionFixtureEvidence(
+        channel="api",
+        fixture_sha256="3" * 64,
+        code_sha256="4" * 64,
+        expected_shape="square",
+        expected_color="green",
+        response_matched_code=True,
+        response_matched_attribute=True,
+        passed=True,
+    )
+    monkeypatch.setattr(fresh_install_module, "SkulkClient", Client)
+    monkeypatch.setattr(fresh_install_module, "_FreshRuntimeMonitor", RuntimeMonitor)
+    monkeypatch.setattr(fresh_install_module, "DashboardQualifier", Dashboard)
+    monkeypatch.setattr(
+        fresh_install_module,
+        "assert_fresh_cluster",
+        lambda *_args, **_kwargs: frozenset({"node-a", "node-b"}),
+    )
+    monkeypatch.setattr(
+        fresh_install_module,
+        "qualify_direct_text",
+        lambda *_args, **_kwargs: SimpleNamespace(passed=True, response="ok"),
+    )
+    monkeypatch.setattr(
+        fresh_install_module,
+        "qualify_direct_vision",
+        lambda *_args, **_kwargs: current_vision,
+    )
+    monkeypatch.setattr(
+        fresh_install_module, "_wait_for_no_placement", lambda *_args, **_kwargs: None
+    )
+
+    qualifier = fresh_install_module.FreshInstallQualifier(
+        HarnessConfig(fresh_install=FreshInstallConfig())
+    )
+    members = cast(
+        list[fresh_install_module._PhysicalFleetMemberRuntime],  # pyright: ignore[reportPrivateUsage]
+        [SimpleNamespace(target=apple), SimpleNamespace(target=amd)],
+    )
+    qualifier._qualify_fleet_models(  # pyright: ignore[reportPrivateUsage]
+        api_base_url="http://127.0.0.1:42000",
+        members=members,
+        contract_members=members,
+        expected_node_ids=frozenset({"node-a", "node-b"}),
+        report=report,
+        journal=cast(fresh_install_module._LifecycleJournal, journal),  # pyright: ignore[reportPrivateUsage]
+        artifact_directory=artifact_directory,
+        heartbeat=cast(AuthoritativeLeaseHeartbeat, Heartbeat()),
+        dashboard_resumption_source=source,
+    )
+
+    assert primary_calls == ["mlx-community/Qwen3.5-2B-4bit"]
+    assert {outcome.model_id for outcome in report.browser} == {
+        "mlx-community/Qwen3.5-2B-4bit",
+        "unsloth/Llama-3.2-1B-Instruct-GGUF",
+    }
+    assert report.dashboard_experience is not None
+    assert report.dashboard_experience.passed
+    assert report.cell_resumption is not None
+    assert report.cell_resumption.passed
+    assert "reuse completed model qualification: unsloth/Llama-3.2-1B-Instruct-GGUF" in journal.stages
 
 
 def test_complete_e2e_uses_private_fresh_config_and_strips_product_overrides(

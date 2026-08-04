@@ -333,6 +333,16 @@ def _fresh_install_markdown(report: FreshInstallQualificationReport) -> str:
         )
     else:
         lines.append("- Audio: not applicable")
+    if report.cell_resumption is not None:
+        resumption = report.cell_resumption
+        lines.append(
+            f"- Resumed `{resumption.resumed_stage}` from qualification "
+            f"`{resumption.predecessor_qualification_id}`: reused models "
+            f"`{', '.join(resumption.reused_model_ids)}`, rerun models "
+            f"`{', '.join(resumption.rerun_model_ids)}`, manifest "
+            f"`{resumption.completed_stage_manifest_sha256}`, passed "
+            f"`{resumption.passed}`"
+        )
     lines.extend(["", "## Complete fresh-fleet E2E battery", ""])
     if report.e2e_battery is not None:
         battery = report.e2e_battery
@@ -412,10 +422,17 @@ def _release_qualification_markdown(report: ReleaseQualificationReport) -> str:
         "",
     ]
     for leg in report.legs:
-        resumption = (
-            f", resumed from `{leg.e2e_resumption.predecessor_qualification_id}`"
+        predecessor_id = (
+            leg.e2e_resumption.predecessor_qualification_id
             if leg.e2e_resumption is not None
-            else ""
+            else (
+                leg.cell_resumption.predecessor_qualification_id
+                if leg.cell_resumption is not None
+                else None
+            )
+        )
+        resumption = (
+            f", resumed from `{predecessor_id}`" if predecessor_id is not None else ""
         )
         lines.append(
             f"- `{leg.platform}` / `{leg.hardware_class}`: passed "
