@@ -111,6 +111,7 @@ class _FreshE2EResumptionSource:
     current_harness_tree: str
     battery_script_relative_path: str
     battery_script_bytes: bytes
+    fleet_contract_sha256: str
 
 
 class QualificationInterruptedError(BaseException):
@@ -410,6 +411,12 @@ class FreshInstallQualifier:
                 resume_from=resume_from,
                 repository_root=repository_root,
                 fleet=physical_fleets[0][1],
+                configured_members=tuple(
+                    target
+                    for _name, target in self.fresh.physical_fleet_targets(
+                        physical_fleets[0][1]
+                    )
+                ),
                 model_sets_path=self.config.model_sets_path,
                 test_sets_path=self.config.test_sets_path,
                 profile=profile,
@@ -3112,6 +3119,7 @@ def _prepare_e2e_resumption_source(
     resume_from: Path,
     repository_root: Path,
     fleet: FreshInstallPhysicalFleet,
+    configured_members: tuple[FreshInstallTarget, ...],
     model_sets_path: Path,
     test_sets_path: Path,
     profile: FreshInstallProfile,
@@ -3177,6 +3185,40 @@ def _prepare_e2e_resumption_source(
     expected_node_ids = next(iter(node_sets))
     if len(expected_node_ids) != len(fleet.member_targets):
         raise ValueError("resumption predecessor topology size does not match the fleet")
+    predecessor_members = sorted(predecessor.members, key=lambda member: member.ordinal)
+    predecessor_contract = [
+        {
+            "ordinal": member.ordinal,
+            "platform": member.platform,
+            "hardware_class": member.hardware_class,
+            "expected_backends": member.expected_backends,
+            "data_transport": member.data_transport,
+        }
+        for member in predecessor_members
+    ]
+    configured_contract = [
+        {
+            "ordinal": ordinal,
+            "platform": member.platform,
+            "hardware_class": member.hardware_class,
+            "expected_backends": member.expected_backends,
+            "data_transport": member.expected_data_transport,
+        }
+        for ordinal, member in enumerate(configured_members, start=1)
+    ]
+    if (
+        len(configured_members) != len(fleet.member_targets)
+        or predecessor_contract != configured_contract
+    ):
+        raise ValueError(
+            "resumption predecessor hardware contract does not match the configured fleet"
+        )
+    fleet_contract_bytes = json.dumps(
+        configured_contract,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    fleet_contract_sha256 = hashlib.sha256(fleet_contract_bytes).hexdigest()
 
     script_path = _qualification_source_path(
         repository_root,
@@ -3305,6 +3347,7 @@ def _prepare_e2e_resumption_source(
         current_harness_tree=current_harness_tree,
         battery_script_relative_path=battery_script_relative_path,
         battery_script_bytes=predecessor_script_bytes,
+        fleet_contract_sha256=fleet_contract_sha256,
     )
 
 
@@ -3400,6 +3443,7 @@ def _seal_and_replay_e2e_resumption(
         "battery_script_sha256": hashlib.sha256(
             source.battery_script_bytes
         ).hexdigest(),
+        "fleet_contract_sha256": source.fleet_contract_sha256,
         "model_sets_sha256": hashlib.sha256(
             (sealed_root / "model-sets.yaml").read_bytes()
         ).hexdigest(),
@@ -3431,6 +3475,7 @@ def _seal_and_replay_e2e_resumption(
         predecessor_harness_tree=source.predecessor_harness_tree,
         current_harness_commit=current_harness_commit,
         current_harness_tree=current_harness_tree,
+        fleet_contract_sha256=source.fleet_contract_sha256,
         completed_cell_manifest_sha256=hashlib.sha256(manifest_bytes).hexdigest(),
         completed_cell_count=evidence.completed_cell_count,
         passed_result_count=evidence.passed_result_count,

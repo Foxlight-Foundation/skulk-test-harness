@@ -495,6 +495,22 @@ def _write_resumable_e2e_predecessor(
                 message="complete E2E result or provenance gate failed",
             )
         ],
+        members=[
+            FreshInstallMemberEvidence(
+                ordinal=1,
+                platform="apple",
+                hardware_class="apple-hardware",
+                expected_backends=["mlx"],
+                data_transport="zenoh",
+            ),
+            FreshInstallMemberEvidence(
+                ordinal=2,
+                platform="amd",
+                hardware_class="amd-hardware",
+                expected_backends=["llama_server"],
+                data_transport="zenoh",
+            ),
+        ],
         restoration_succeeded=True,
         teardown_succeeded=True,
     )
@@ -535,6 +551,10 @@ def test_e2e_resumption_is_fail_closed_and_seals_green_evidence(
         resume_from=predecessor_path,
         repository_root=repository_root,
         fleet=fleet,
+        configured_members=(
+            _whole_fleet_target("apple"),
+            _whole_fleet_target("amd"),
+        ),
         model_sets_path=model_sets_path,
         test_sets_path=test_sets_path,
         profile="candidate",
@@ -559,6 +579,7 @@ def test_e2e_resumption_is_fail_closed_and_seals_green_evidence(
     assert evidence.predecessor_harness_tree == source.predecessor_harness_tree
     assert evidence.current_harness_commit == source.current_harness_commit
     assert evidence.current_harness_tree == source.current_harness_tree
+    assert evidence.fleet_contract_sha256 == source.fleet_contract_sha256
     manifest_path = (
         artifact_directory
         / "complete-e2e-resumption"
@@ -569,12 +590,31 @@ def test_e2e_resumption_is_fail_closed_and_seals_green_evidence(
         evidence.completed_cell_manifest_sha256
     )
 
+    with pytest.raises(ValueError, match="hardware contract"):
+        _prepare_e2e_resumption_source(
+            resume_from=predecessor_path,
+            repository_root=repository_root,
+            fleet=fleet,
+            configured_members=(
+                _whole_fleet_target("apple"),
+                _whole_fleet_target("apple"),
+            ),
+            model_sets_path=model_sets_path,
+            test_sets_path=test_sets_path,
+            profile="candidate",
+            expected_commit=expected_commit,
+        )
+
     model_sets_path.write_text("model_sets: {changed: true}\n")
     with pytest.raises(ValueError, match="does not match the current matrix"):
         _prepare_e2e_resumption_source(
             resume_from=predecessor_path,
             repository_root=repository_root,
             fleet=fleet,
+            configured_members=(
+                _whole_fleet_target("apple"),
+                _whole_fleet_target("amd"),
+            ),
             model_sets_path=model_sets_path,
             test_sets_path=test_sets_path,
             profile="candidate",
@@ -610,6 +650,10 @@ def test_e2e_resumption_rejects_any_additional_failed_stage(tmp_path: Path) -> N
             resume_from=predecessor_path,
             repository_root=repository_root,
             fleet=fleet,
+            configured_members=(
+                _whole_fleet_target("apple"),
+                _whole_fleet_target("amd"),
+            ),
             model_sets_path=model_sets_path,
             test_sets_path=test_sets_path,
             profile="candidate",
@@ -642,6 +686,10 @@ def test_e2e_resumption_rejects_dirty_harness_provenance(tmp_path: Path) -> None
             resume_from=predecessor_path,
             repository_root=repository_root,
             fleet=fleet,
+            configured_members=(
+                _whole_fleet_target("apple"),
+                _whole_fleet_target("amd"),
+            ),
             model_sets_path=model_sets_path,
             test_sets_path=test_sets_path,
             profile="candidate",
@@ -675,6 +723,10 @@ def test_e2e_resumption_resolves_clean_predecessor_after_checkout_advances(
         resume_from=predecessor_path,
         repository_root=repository_root,
         fleet=fleet,
+        configured_members=(
+            _whole_fleet_target("apple"),
+            _whole_fleet_target("amd"),
+        ),
         model_sets_path=model_sets_path,
         test_sets_path=test_sets_path,
         profile="candidate",
@@ -714,6 +766,10 @@ def test_e2e_resumption_rejects_changed_battery_commands(tmp_path: Path) -> None
             resume_from=predecessor_path,
             repository_root=repository_root,
             fleet=fleet,
+            configured_members=(
+                _whole_fleet_target("apple"),
+                _whole_fleet_target("amd"),
+            ),
             model_sets_path=model_sets_path,
             test_sets_path=test_sets_path,
             profile="candidate",

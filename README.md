@@ -138,8 +138,9 @@ uv run skulk-harness fresh-install qualify \
 ```
 
 Resumption is fail-closed: the predecessor must prove the same candidate,
-matrices, complete cell sequence, topology, all-green results, and a clean
-recorded harness source tree. The battery script bytes resolved from that tree
+matrices, complete cell sequence, ordered physical platform/hardware/backend
+contract, topology, all-green results, and a clean recorded harness source
+tree. The battery script bytes resolved from that tree
 must exactly match the current script, including cell commands and flags. The
 corrected harness checkout must also remain clean and unchanged from preflight
 through the resumed gate. The resumed run

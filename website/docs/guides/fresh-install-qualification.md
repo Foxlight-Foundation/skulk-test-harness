@@ -56,7 +56,8 @@ uv run skulk-harness fresh-install qualify \
 This is not a general skip-cells option. Before any fleet mutation, the harness
 requires the predecessor to have exactly one failed lifecycle stage, the same
 candidate commit, successful teardown and restoration, identical matrix bytes
-and cell sequence, one stable complete topology, and all-green result and
+and cell sequence, the same ordered anonymous platform/hardware/backend/
+transport contract, one stable complete topology, and all-green result and
 fresh-install provenance checks. The predecessor report must prove that its
 harness checkout was clean; the immutable recorded commit/tree is resolved even
 if that checkout has since advanced to the fix. Legacy reports that could not

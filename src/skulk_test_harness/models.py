@@ -2098,6 +2098,7 @@ class FreshInstallE2EResumptionEvidence(HarnessBaseModel):
     predecessor_harness_tree: str
     current_harness_commit: str
     current_harness_tree: str
+    fleet_contract_sha256: str
     completed_cell_manifest_sha256: str
     completed_cell_count: int = Field(ge=1)
     passed_result_count: int = Field(ge=1)
