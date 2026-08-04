@@ -3032,6 +3032,41 @@ def _assert_restored_fleet_clean_through_target(
         _terminate_process(tunnel)
 
 
+def _git_output(repository_root: Path, *arguments: str) -> str:
+    """Run one bounded Git identity probe with a private-path-safe error."""
+
+    try:
+        result = subprocess.run(
+            ["git", *arguments],
+            cwd=repository_root,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.CalledProcessError) as exception:
+        raise ValueError(
+            "resumption harness source checkout could not be verified"
+        ) from exception
+    return result.stdout.strip()
+
+
+def _git_commit_identity(
+    repository_root: Path,
+    *,
+    expected_commit: str,
+) -> tuple[str, str]:
+    """Resolve one recorded commit and immutable tree from local Git objects."""
+
+    commit = _git_output(repository_root, "rev-parse", f"{expected_commit}^{{commit}}")
+    if not commit_matches(expected_commit, commit):
+        raise ValueError("resumption harness source commit does not match its report")
+    tree = _git_output(repository_root, "rev-parse", f"{commit}^{{tree}}")
+    if not commit or not tree:
+        raise ValueError("resumption harness source identity is incomplete")
+    return commit, tree
+
+
 def _clean_git_checkout_identity(
     repository_root: Path,
     *,
@@ -3039,31 +3074,12 @@ def _clean_git_checkout_identity(
 ) -> tuple[str, str]:
     """Return commit and tree IDs only for a clean, pinned Git checkout."""
 
-    def git(*arguments: str) -> str:
-        try:
-            result = subprocess.run(
-                ["git", *arguments],
-                cwd=repository_root,
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-        except (OSError, subprocess.CalledProcessError) as exception:
-            raise ValueError(
-                "resumption harness source checkout could not be verified"
-            ) from exception
-        return result.stdout.strip()
-
-    commit = git("rev-parse", "HEAD")
+    commit = _git_output(repository_root, "rev-parse", "HEAD")
     if expected_commit is not None and not commit_matches(expected_commit, commit):
         raise ValueError("resumption harness source commit does not match its report")
-    if git("status", "--porcelain"):
+    if _git_output(repository_root, "status", "--porcelain"):
         raise ValueError("resumption requires a clean harness source checkout")
-    tree = git("rev-parse", "HEAD^{tree}")
-    if not commit or not tree:
-        raise ValueError("resumption harness source identity is incomplete")
-    return commit, tree
+    return _git_commit_identity(repository_root, expected_commit=commit)
 
 
 def _prepare_e2e_resumption_source(
@@ -3200,22 +3216,36 @@ def _prepare_e2e_resumption_source(
         raise ValueError("resumption predecessor has incomplete harness provenance")
     if any(reference.dirty is True for reference in harness_references):
         raise ValueError("resumption predecessor used a dirty harness checkout")
+    harness_dirty_states = {reference.dirty for reference in harness_references}
     harness_commits = {
         reference.commit for reference in harness_references if reference.commit
     }
     harness_paths = {
         reference.path for reference in harness_references if reference.path
     }
-    if len(harness_commits) != 1 or len(harness_paths) != 1:
+    if (
+        len(harness_commits) != 1
+        or len(harness_paths) != 1
+        or len(harness_dirty_states) != 1
+    ):
         raise ValueError("resumption predecessor has ambiguous harness provenance")
     predecessor_harness_root = Path(next(iter(harness_paths))).expanduser().resolve()
     predecessor_harness_commit = next(iter(harness_commits))
-    predecessor_harness_commit, predecessor_harness_tree = (
-        _clean_git_checkout_identity(
+    if next(iter(harness_dirty_states)) is False:
+        predecessor_harness_commit, predecessor_harness_tree = _git_commit_identity(
             predecessor_harness_root,
             expected_commit=predecessor_harness_commit,
         )
-    )
+    else:
+        # Schema 2.3 historically encoded a clean status as ``None``. Those
+        # legacy reports need a still-clean checkout at the recorded commit;
+        # newer ``dirty=False`` reports can rely on the captured immutable tree.
+        predecessor_harness_commit, predecessor_harness_tree = (
+            _clean_git_checkout_identity(
+                predecessor_harness_root,
+                expected_commit=predecessor_harness_commit,
+            )
+        )
     current_harness_commit, current_harness_tree = _clean_git_checkout_identity(
         repository_root
     )
@@ -3287,7 +3317,7 @@ def _seal_and_replay_e2e_resumption(
             }
         )
 
-    predecessor_identity = _clean_git_checkout_identity(
+    predecessor_identity = _git_commit_identity(
         source.predecessor_harness_root,
         expected_commit=source.predecessor_harness_commit,
     )

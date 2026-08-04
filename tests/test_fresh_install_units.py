@@ -649,6 +649,42 @@ def test_e2e_resumption_rejects_dirty_harness_provenance(tmp_path: Path) -> None
         )
 
 
+def test_e2e_resumption_resolves_clean_predecessor_after_checkout_advances(
+    tmp_path: Path,
+) -> None:
+    """A clean recorded commit remains valid after the checkout gains the fix."""
+
+    (
+        predecessor_path,
+        repository_root,
+        fleet,
+        model_sets_path,
+        test_sets_path,
+        expected_commit,
+    ) = _write_resumable_e2e_predecessor(tmp_path)
+    correction = repository_root / "correction.py"
+    correction.write_text("CORRECTED = True\n")
+    subprocess.run(["git", "add", "correction.py"], cwd=repository_root, check=True)
+    subprocess.run(
+        ["git", "commit", "--quiet", "-m", "correct harness"],
+        cwd=repository_root,
+        check=True,
+    )
+
+    source = _prepare_e2e_resumption_source(
+        resume_from=predecessor_path,
+        repository_root=repository_root,
+        fleet=fleet,
+        model_sets_path=model_sets_path,
+        test_sets_path=test_sets_path,
+        profile="candidate",
+        expected_commit=expected_commit,
+    )
+
+    assert source.predecessor_harness_commit != source.current_harness_commit
+    assert source.predecessor_harness_tree != source.current_harness_tree
+
+
 def test_complete_e2e_uses_private_fresh_config_and_strips_product_overrides(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
