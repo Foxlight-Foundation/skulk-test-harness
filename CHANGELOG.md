@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Documented the handoff from an all-green automated candidate matrix to human
+  first-install acceptance. Human testing supplements the physical-fleet and
+  clean RunPod verdict; it cannot replace either leg, and a product/default/
+  installer/dashboard/model-card fix creates a new candidate that must repeat
+  fresh-install qualification.
+
 - Physical fresh-install release qualification now installs every explicitly
   declared fleet member together with normal networking, requires the exact
   topology and all-member commit/backend/transport contracts throughout model

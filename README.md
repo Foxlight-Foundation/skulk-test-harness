@@ -194,6 +194,15 @@ The browser gate also covers Settings save, topology rendering, persisted
 conversations and attachments, a failed-request recovery, WebKit text chat,
 and any explicitly configured dashboard TTS/STT contract.
 
+After an automated candidate matrix passes, human acceptance exercises that
+same exact commit as a first-time user. It supplements the automated verdict;
+it cannot replace a failed physical-fleet cell, clean RunPod leg, restoration,
+or provenance check. Follow Skulk's public
+[human release qualification guide](https://foxlight-foundation.github.io/Skulk/next/human-release-qualification/).
+If human testing leads to a product, installer, shipped-default, dashboard, or
+model-card fix, the resulting commit is a new candidate and must repeat the
+automated fresh-install matrix before promotion.
+
 ## Where the results go
 
 Every run writes a directory under `runs/`:
