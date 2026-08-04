@@ -178,6 +178,22 @@ retains its attachment, and the captured request data URL decodes to the exact
 fixture digest. Reloading the page must retain the active user/assistant turn
 and image attachment.
 
+## Human acceptance handoff
+
+After the complete candidate command returns a green composite verdict, give a
+human tester the exact same 40-character commit and Skulk's public
+[Human Release Qualification](https://github.com/Foxlight-Foundation/Skulk/blob/de74deb9b5cbb6cc31e4d91aaa71da5514d93192/website/docs/human-release-qualification.md)
+guide. Human acceptance judges the first-install usability and truthfulness of
+the product; it supplements this automated matrix and cannot substitute for a
+failed or omitted platform, recovery, teardown, or provenance check.
+
+If that pass produces a change to Skulk code, installer behavior, shipped
+defaults, dashboard behavior, or a model card, the old report does not qualify
+the new commit. Merge the fix to `dev` and run a new candidate qualification
+before repeating the affected human journey. A documentation clarification
+that changes neither commands nor runtime contract does not invalidate the
+candidate.
+
 ## Artifacts
 
 Fresh reports are private operational records. They retain installer and
