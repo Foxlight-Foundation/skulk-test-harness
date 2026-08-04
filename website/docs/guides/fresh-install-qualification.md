@@ -182,7 +182,7 @@ and image attachment.
 
 After the complete candidate command returns a green composite verdict, give a
 human tester the exact same 40-character commit and Skulk's public
-[Human Release Qualification](https://foxlight-foundation.github.io/Skulk/next/human-release-qualification/)
+[Human Release Qualification](https://github.com/Foxlight-Foundation/Skulk/blob/de74deb9b5cbb6cc31e4d91aaa71da5514d93192/website/docs/human-release-qualification.md)
 guide. Human acceptance judges the first-install usability and truthfulness of
 the product; it supplements this automated matrix and cannot substitute for a
 failed or omitted platform, recovery, teardown, or provenance check.

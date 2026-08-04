@@ -198,7 +198,7 @@ After an automated candidate matrix passes, human acceptance exercises that
 same exact commit as a first-time user. It supplements the automated verdict;
 it cannot replace a failed physical-fleet cell, clean RunPod leg, restoration,
 or provenance check. Follow Skulk's public
-[human release qualification guide](https://foxlight-foundation.github.io/Skulk/next/human-release-qualification/).
+[human release qualification guide](https://github.com/Foxlight-Foundation/Skulk/blob/de74deb9b5cbb6cc31e4d91aaa71da5514d93192/website/docs/human-release-qualification.md).
 If human testing leads to a product, installer, shipped-default, dashboard, or
 model-card fix, the resulting commit is a new candidate and must repeat the
 automated fresh-install matrix before promotion.
