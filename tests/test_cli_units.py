@@ -302,9 +302,11 @@ def _fresh_cli_config(tmp_path: Path) -> HarnessConfig:
 
 class _StubFreshQualifier:
     calls: list[tuple[str, str]]
+    release_kwargs: dict[str, object]
 
     def __init__(self, config: HarnessConfig) -> None:
         self.calls = []
+        self.release_kwargs = {}
         self.writer = SimpleNamespace(run_dir=lambda qualification_id: Path(qualification_id))
         _fresh_qualifiers.append(self)
 
@@ -330,8 +332,9 @@ class _StubFreshQualifier:
         self.calls.append(("target", target_name))
         return self._report("nvidia")
 
-    def qualify_release_matrix(self, **_kwargs: object) -> ReleaseQualificationReport:
+    def qualify_release_matrix(self, **kwargs: object) -> ReleaseQualificationReport:
         self.calls.append(("release", "matrix"))
+        self.release_kwargs = kwargs
         return ReleaseQualificationReport(
             qualification_id="release-candidate-test",
             profile="candidate",
@@ -413,11 +416,18 @@ def test_fresh_cli_qualify_runs_only_the_atomic_release_matrix(
             "candidate",
             "--expected-commit",
             "a" * 40,
+            "--resume-from",
+            str(tmp_path / "predecessor"),
         ],
     )
 
     assert result.exit_code == 0
     assert _fresh_qualifiers[-1].calls == [("release", "matrix")]
+    assert _fresh_qualifiers[-1].release_kwargs == {
+        "profile": "candidate",
+        "expected_commit": "a" * 40,
+        "resume_from": tmp_path / "predecessor",
+    }
 
 
 def test_eligible_fleet_ignores_incidental_transport() -> None:

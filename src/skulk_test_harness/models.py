@@ -2089,10 +2089,26 @@ class FreshInstallE2EBatteryEvidence(HarnessBaseModel):
     passed: bool
 
 
+class FreshInstallE2EResumptionEvidence(HarnessBaseModel):
+    """Provenance for reusing completed green cells after a harness-only failure."""
+
+    predecessor_qualification_id: str
+    predecessor_expected_commit: str
+    predecessor_harness_commit: str
+    current_harness_commit: str
+    completed_cell_manifest_sha256: str
+    completed_cell_count: int = Field(ge=1)
+    passed_result_count: int = Field(ge=1)
+    resumed_stage: Literal["complete_e2e_provenance_gate"] = (
+        "complete_e2e_provenance_gate"
+    )
+    passed: bool
+
+
 class FreshInstallQualificationReport(HarnessBaseModel):
     """Complete private report for one clean-install target leg."""
 
-    schema_version: str = "1.3"
+    schema_version: str = "1.4"
     qualification_id: str
     profile: FreshInstallProfile
     platform: FreshInstallPlatform
@@ -2109,6 +2125,7 @@ class FreshInstallQualificationReport(HarnessBaseModel):
     dashboard_audio: DashboardAudioEvidence | None = None
     served_engines: list[ServedEngineEvidence] = Field(default_factory=list)
     e2e_battery: FreshInstallE2EBatteryEvidence | None = None
+    e2e_resumption: FreshInstallE2EResumptionEvidence | None = None
     members: list[FreshInstallMemberEvidence] = Field(default_factory=list)
     snapshot_target_sha256: str | None = None
     snapshot_controller_sha256: str | None = None
@@ -2139,12 +2156,13 @@ class ReleaseQualificationLegEvidence(HarnessBaseModel):
     passed: bool
     critical_recovery_required: bool
     complete_e2e_passed: bool | None = None
+    e2e_resumption: FreshInstallE2EResumptionEvidence | None = None
 
 
 class ReleaseQualificationReport(HarnessBaseModel):
     """Atomic release verdict spanning fresh physical E2E and RunPod NVIDIA."""
 
-    schema_version: str = "1.0"
+    schema_version: str = "1.1"
     qualification_id: str
     profile: FreshInstallProfile
     expected_commit: str
