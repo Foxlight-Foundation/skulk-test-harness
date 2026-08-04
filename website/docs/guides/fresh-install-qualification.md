@@ -63,7 +63,8 @@ if that checkout has since advanced to the fix. Legacy reports that could not
 distinguish clean from unknown require a still-clean checkout at the recorded
 commit. The corrected checkout must remain clean at the same commit/tree from
 preflight through the resumed gate. The harness seals checksummed copies of the
-reports and records both source identities in the new report.
+reports, requires the predecessor-commit battery script bytes to match the
+current script exactly, and records both source identities in the new report.
 
 The resumed qualification still begins with a normal whole-fleet fresh install
 and repeats its installer, topology, backend, dashboard, API, vision, audio,

@@ -685,6 +685,42 @@ def test_e2e_resumption_resolves_clean_predecessor_after_checkout_advances(
     assert source.predecessor_harness_tree != source.current_harness_tree
 
 
+def test_e2e_resumption_rejects_changed_battery_commands(tmp_path: Path) -> None:
+    """Identical cell names cannot hide changed battery commands or flags."""
+
+    (
+        predecessor_path,
+        repository_root,
+        fleet,
+        model_sets_path,
+        test_sets_path,
+        expected_commit,
+    ) = _write_resumable_e2e_predecessor(tmp_path)
+    script_path = repository_root / "scripts" / "run_e2e_battery.sh"
+    script_path.write_text("cell model-set test-set --min-nodes 1\n")
+    subprocess.run(
+        ["git", "add", "scripts/run_e2e_battery.sh"],
+        cwd=repository_root,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "commit", "--quiet", "-m", "change battery flags"],
+        cwd=repository_root,
+        check=True,
+    )
+
+    with pytest.raises(ValueError, match="battery script differs"):
+        _prepare_e2e_resumption_source(
+            resume_from=predecessor_path,
+            repository_root=repository_root,
+            fleet=fleet,
+            model_sets_path=model_sets_path,
+            test_sets_path=test_sets_path,
+            profile="candidate",
+            expected_commit=expected_commit,
+        )
+
+
 def test_complete_e2e_uses_private_fresh_config_and_strips_product_overrides(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

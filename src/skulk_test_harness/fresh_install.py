@@ -109,6 +109,8 @@ class _FreshE2EResumptionSource:
     predecessor_harness_tree: str
     current_harness_commit: str
     current_harness_tree: str
+    battery_script_relative_path: str
+    battery_script_bytes: bytes
 
 
 class QualificationInterruptedError(BaseException):
@@ -3051,6 +3053,29 @@ def _git_output(repository_root: Path, *arguments: str) -> str:
     return result.stdout.strip()
 
 
+def _git_blob_bytes(
+    repository_root: Path,
+    *,
+    commit: str,
+    relative_path: str,
+) -> bytes:
+    """Read exact file bytes from one recorded Git commit."""
+
+    try:
+        result = subprocess.run(
+            ["git", "show", f"{commit}:{relative_path}"],
+            cwd=repository_root,
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.CalledProcessError) as exception:
+        raise ValueError(
+            "resumption predecessor battery script could not be verified"
+        ) from exception
+    return result.stdout
+
+
 def _git_commit_identity(
     repository_root: Path,
     *,
@@ -3249,6 +3274,23 @@ def _prepare_e2e_resumption_source(
     current_harness_commit, current_harness_tree = _clean_git_checkout_identity(
         repository_root
     )
+    try:
+        battery_script_relative_path = script_path.relative_to(
+            repository_root.resolve()
+        ).as_posix()
+    except ValueError as exception:
+        raise ValueError(
+            "resumption battery script must be inside the harness checkout"
+        ) from exception
+    predecessor_script_bytes = _git_blob_bytes(
+        predecessor_harness_root,
+        commit=predecessor_harness_commit,
+        relative_path=battery_script_relative_path,
+    )
+    if predecessor_script_bytes != script_path.read_bytes():
+        raise ValueError(
+            "resumption predecessor battery script differs from the current battery"
+        )
     return _FreshE2EResumptionSource(
         report=predecessor,
         root=e2e_root,
@@ -3261,6 +3303,8 @@ def _prepare_e2e_resumption_source(
         predecessor_harness_tree=predecessor_harness_tree,
         current_harness_commit=current_harness_commit,
         current_harness_tree=current_harness_tree,
+        battery_script_relative_path=battery_script_relative_path,
+        battery_script_bytes=predecessor_script_bytes,
     )
 
 
@@ -3290,11 +3334,13 @@ def _seal_and_replay_e2e_resumption(
         (source.battery_log, "battery.log"),
         (source.root / "model-sets.yaml", "model-sets.yaml"),
         (source.root / "test-sets.yaml", "test-sets.yaml"),
-        (script_path, "run_e2e_battery.sh"),
     ):
         target_path = sealed_root / target_name
         shutil.copy2(source_path, target_path)
         target_path.chmod(0o600)
+    sealed_script_path = sealed_root / "run_e2e_battery.sh"
+    sealed_script_path.write_bytes(source.battery_script_bytes)
+    sealed_script_path.chmod(0o600)
 
     cells: list[dict[str, object]] = []
     for ordinal, (source_path, report) in enumerate(
@@ -3326,6 +3372,13 @@ def _seal_and_replay_e2e_resumption(
         source.predecessor_harness_tree,
     ):
         raise RuntimeError("predecessor harness source changed during resumption")
+    predecessor_script_bytes = _git_blob_bytes(
+        source.predecessor_harness_root,
+        commit=source.predecessor_harness_commit,
+        relative_path=source.battery_script_relative_path,
+    )
+    if predecessor_script_bytes != source.battery_script_bytes:
+        raise RuntimeError("predecessor battery script changed during resumption")
     current_identity = _clean_git_checkout_identity(
         repository_root,
         expected_commit=source.current_harness_commit,
@@ -3344,7 +3397,9 @@ def _seal_and_replay_e2e_resumption(
         "predecessor_harness_tree": source.predecessor_harness_tree,
         "current_harness_commit": current_harness_commit,
         "current_harness_tree": current_harness_tree,
-        "battery_script_sha256": hashlib.sha256(script_path.read_bytes()).hexdigest(),
+        "battery_script_sha256": hashlib.sha256(
+            source.battery_script_bytes
+        ).hexdigest(),
         "model_sets_sha256": hashlib.sha256(
             (sealed_root / "model-sets.yaml").read_bytes()
         ).hexdigest(),
