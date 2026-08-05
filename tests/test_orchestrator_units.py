@@ -1182,7 +1182,29 @@ def test_foxlight_voice_suite_requires_managed_reference_contract() -> None:
     assert synthesis.speech_voice == "angus"
     assert synthesis.speech_lang_code == "English"
     translation = test_sets["speech-translation"].tests[0]
-    assert translation.speech_lang_code == "French"
+    assert model_sets["speech-translation-stt"].models == [
+        "CogniSoftOrg/canary-1b-v2-mlx-bf16"
+    ]
+    assert translation.kind == "audio_translation"
+    assert translation.input_audio_path == Path(
+        "src/skulk_test_harness/fixtures/french-translation-release.wav"
+    )
+    assert translation.input_audio_path is not None
+    assert translation.transcription_language == "fr"
+    assert translation.speech_lang_code is None
+    assert translation.transcription_model_id is None
+    fixture_path = root / translation.input_audio_path
+    assert hashlib.sha256(fixture_path.read_bytes()).hexdigest() == (
+        "ac4dfe702825efd2c823c37407b364fd1d59260ae3b1558d54b477faa25be6f9"
+    )
+    with wave.open(str(fixture_path), "rb") as fixture:
+        assert fixture.getnchannels() == 1
+        assert fixture.getsampwidth() == 2
+        assert fixture.getframerate() == 16_000
+    transcript_path = fixture_path.with_suffix(".txt")
+    assert transcript_path.read_text().strip() == (
+        "Bonjour. Le projet Skulk transforme la parole en texte anglais."
+    )
 
 
 def test_foxlight_realtime_suite_requires_local_remote_provider_evidence() -> None:
@@ -2892,6 +2914,38 @@ def test_run_test_dispatches_audio_transcription(tmp_path: Path) -> None:
     assert result.passed is True
     assert result.output_text == "hello world"
     assert client.transcription_requests[0]["filename"] == "sample.wav"
+
+
+def test_run_test_dispatches_audio_translation_fixture(tmp_path: Path) -> None:
+    audio_path = tmp_path / "french.wav"
+    audio_path.write_bytes(b"RIFF\x24\x00\x00\x00WAVEfmt " + (b"\x00" * 32))
+    client = _FakeClient()
+    runner = _runner()
+    test = PromptTest(
+        name="translation",
+        kind="audio_translation",
+        prompt="",
+        input_audio_path=audio_path,
+        transcription_language="fr",
+        success=SuccessCriteria(
+            min_chars=5,
+            required_substrings=["hello", "project"],
+        ),
+    )
+
+    result = runner._run_test(
+        client,  # type: ignore[arg-type]
+        model_id="org/Translation",
+        test=test,
+        repetition=1,
+        artifact_dir=tmp_path,
+    )
+
+    assert result.passed is True
+    assert result.output_text == "hello project"
+    assert client.speech_requests == []
+    assert client.translation_requests[0]["filename"] == "french.wav"
+    assert client.translation_requests[0]["language"] == "fr"
 
 
 def test_audio_transcription_infers_fixture_media_type(tmp_path: Path) -> None:

@@ -42,6 +42,7 @@ Each map key must match the test set's `name`.
 | `audio_speech_pressure` | Concurrent streaming TTS across discovered API owners, with deterministic local/remote routing, DATA diagnostics, optional chat workers, and one audio/timing artifact per speech request |
 | `audio_voices` | Static voice-catalog behavior for a mounted TTS model |
 | `audio_transcription` | Speech-to-text endpoint behavior with an audio fixture |
+| `audio_translation` | Speech-to-English translation behavior with a fixed uploaded audio fixture; it does not exercise or imply multilingual TTS support |
 | `audio_transcription_streaming` | Uploaded-audio SSE transcript deltas, terminal lifecycle, early-close cancellation, and saved input/timeline artifacts |
 | `realtime_transcription` | Semantic TTS-to-realtime-STT WebSocket roundtrip, disconnect recovery, local/remote ownership, and provider diagnostics |
 | `realtime_conversation` | Persistent server-VAD voice loop with automatic commits, multiple turns, assistant text/audio, optional barge-in, local/remote ownership, and saved event evidence |

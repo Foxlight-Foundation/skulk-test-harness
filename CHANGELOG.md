@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Exercise speech-to-English translation with a fixed French WAV uploaded
+  directly to the mounted translation model, rather than synthesizing the
+  fixture through an unsupported multilingual TTS/voice path.
+
 - Align Foxlight speech qualification with Skulk's managed-reference voice
   catalog and Qwen Base 6-bit card, including typed voice metadata, TTS language
   propagation, and dashboard assertions that pin voice and language across

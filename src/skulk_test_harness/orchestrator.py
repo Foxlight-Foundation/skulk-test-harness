@@ -1157,7 +1157,7 @@ class HarnessRunner:
                 report=report,
                 writer=writer,
             )
-        if test.kind == "audio_transcription":
+        if test.kind in {"audio_transcription", "audio_translation"}:
             return self._run_audio_transcription_test(
                 client, model_id=model_id, test=test, repetition=repetition
             )
@@ -3211,7 +3211,7 @@ class HarnessRunner:
         test: PromptTest,
         repetition: int,
     ) -> TestResult:
-        """Run an STT request against a configured local audio fixture."""
+        """Transcribe or translate a configured local audio fixture."""
 
         issues: list[Issue] = []
         output = ""
@@ -3222,14 +3222,19 @@ class HarnessRunner:
                     severity="error",
                     model_id=model_id,
                     test_name=test.name,
-                    message="audio_transcription test requires input_audio_path",
+                    message=f"{test.kind} test requires input_audio_path",
                 )
             )
         else:
             audio_path = _resolve_audio_input_path(test.input_audio_path)
             try:
                 audio = audio_path.read_bytes()
-                execution = client.audio_transcription(
+                transcription_method = (
+                    client.audio_translation
+                    if test.kind == "audio_translation"
+                    else client.audio_transcription
+                )
+                execution = transcription_method(
                     model_id=model_id,
                     audio=audio,
                     filename=audio_path.name,
@@ -3247,7 +3252,11 @@ class HarnessRunner:
                         severity="error",
                         model_id=model_id,
                         test_name=test.name,
-                        message="Audio transcription request failed",
+                        message=(
+                            "Audio translation request failed"
+                            if test.kind == "audio_translation"
+                            else "Audio transcription request failed"
+                        ),
                         evidence={"error": str(exc)},
                     )
                 )
