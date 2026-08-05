@@ -20,6 +20,7 @@ from playwright.sync_api import (
     Locator,
     Page,
     Request,
+    Response,
     Route,
     sync_playwright,
 )
@@ -574,11 +575,7 @@ class DashboardQualifier:
                         "dashboard Speak draft control did not become enabled"
                     )
                 with page.expect_response(
-                    lambda response: (
-                        response.request.method == "POST"
-                        and response.url.endswith("/v1/audio/speech")
-                        and response.ok
-                    ),
+                    _is_speech_response,
                     timeout=self.model_ready_timeout_s * 1000,
                 ) as response_info:
                     speak.click()
@@ -1402,6 +1399,14 @@ def _registry_contains(registry: dict[str, object], model_id: str) -> bool:
             ):
                 return True
     return False
+
+
+def _is_speech_response(response: Response) -> bool:
+    """Match the speech request regardless of HTTP status for immediate failure."""
+
+    return response.request.method == "POST" and response.url.endswith(
+        "/v1/audio/speech"
+    )
 
 
 def _captured_speech_request_body(capture: object) -> dict[str, object]:

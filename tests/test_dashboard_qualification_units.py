@@ -1,17 +1,33 @@
 import io
 import wave
+from dataclasses import dataclass
+from typing import cast
 
 import pytest
+from playwright.sync_api import Response
 
 from skulk_test_harness.dashboard_qualification import (
     _assert_dashboard_speech_request,
     _assert_pinned_segment_requests,
     _captured_pcm_sample_rate,
     _captured_speech_request_body,
+    _is_speech_response,
     _pcm16_wav_bytes,
     _pcm_wav_duration_and_rms,
     _raw_pcm16_duration_and_rms,
 )
+
+
+@dataclass
+class _RequestCapture:
+    method: str
+
+
+@dataclass
+class _ResponseCapture:
+    request: _RequestCapture
+    url: str
+    ok: bool
 
 
 def _capture(*, text: str, voice: str = "angus") -> dict[str, object]:
@@ -25,6 +41,16 @@ def _capture(*, text: str, voice: str = "angus") -> dict[str, object]:
             "lang_code": "English",
         }
     }
+
+
+def test_speech_response_matcher_does_not_hide_http_failures() -> None:
+    failed_response = _ResponseCapture(
+        request=_RequestCapture(method="POST"),
+        url="http://skulk.test/v1/audio/speech",
+        ok=False,
+    )
+
+    assert _is_speech_response(cast(Response, failed_response)) is True
 
 
 def test_captured_dashboard_request_requires_model_voice_and_language() -> None:
