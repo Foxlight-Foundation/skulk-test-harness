@@ -22,6 +22,7 @@ import httpx
 
 from skulk_test_harness.client import (
     AudioSpeechExecution,
+    AudioVoiceMetadata,
     ChatExecution,
     ClusterApiOwner,
     DataPlaneDiagnosticsSnapshot,
@@ -83,6 +84,7 @@ class _SpeechGenerationKwargs(TypedDict):
     temperature: float | None
     top_p: float | None
     max_tokens: int | None
+    lang_code: str | None
 
 
 class HarnessRunner:
@@ -2513,11 +2515,12 @@ class HarnessRunner:
         """Require a mounted model's static voice catalog to match expectations."""
 
         issues: list[Issue] = []
-        voices: list[str] = []
+        voices: list[AudioVoiceMetadata] = []
         started_at = time.monotonic()
         try:
             voices = client.audio_voices(model_id)
-            missing = sorted(set(test.expected_voice_ids) - set(voices))
+            voice_ids = [voice.id for voice in voices]
+            missing = sorted(set(test.expected_voice_ids) - set(voice_ids))
             if missing:
                 issues.append(
                     Issue(
@@ -2525,9 +2528,59 @@ class HarnessRunner:
                         model_id=model_id,
                         test_name=test.name,
                         message="Voice catalog omitted required identifiers",
-                        evidence={"missing": missing, "actual": voices},
+                        evidence={"missing": missing, "actual": voice_ids},
                     )
                 )
+            if test.require_exact_voice_ids:
+                unexpected = sorted(set(voice_ids) - set(test.expected_voice_ids))
+                if unexpected:
+                    issues.append(
+                        Issue(
+                            severity="error",
+                            model_id=model_id,
+                            test_name=test.name,
+                            message="Voice catalog included unexpected identifiers",
+                            evidence={"unexpected": unexpected, "actual": voice_ids},
+                        )
+                    )
+            if test.expected_voice_kind is not None:
+                wrong_kind = [
+                    voice.id
+                    for voice in voices
+                    if voice.kind != test.expected_voice_kind
+                ]
+                if wrong_kind:
+                    issues.append(
+                        Issue(
+                            severity="error",
+                            model_id=model_id,
+                            test_name=test.name,
+                            message="Voice catalog reported an unexpected source kind",
+                            evidence={
+                                "expected_kind": test.expected_voice_kind,
+                                "voice_ids": wrong_kind,
+                            },
+                        )
+                    )
+            if test.expected_voice_language is not None:
+                wrong_language = [
+                    voice.id
+                    for voice in voices
+                    if test.expected_voice_language not in voice.preferred_languages
+                ]
+                if wrong_language:
+                    issues.append(
+                        Issue(
+                            severity="error",
+                            model_id=model_id,
+                            test_name=test.name,
+                            message="Voice catalog omitted the required language tag",
+                            evidence={
+                                "expected_language": test.expected_voice_language,
+                                "voice_ids": wrong_language,
+                            },
+                        )
+                    )
             if not voices:
                 issues.append(
                     Issue(
@@ -2547,7 +2600,7 @@ class HarnessRunner:
                     evidence={"error": str(exc)},
                 )
             )
-        output = f"voices={voices}"
+        output = f"voices={[asdict(voice) for voice in voices]}"
         return TestResult(
             model_id=model_id,
             test_name=test.name,
@@ -4754,6 +4807,7 @@ def _speech_generation_kwargs(test: PromptTest) -> _SpeechGenerationKwargs:
         "temperature": test.temperature if "temperature" in configured else None,
         "top_p": test.top_p if "top_p" in configured else None,
         "max_tokens": tts_max_tokens,
+        "lang_code": test.speech_lang_code,
     }
 
 

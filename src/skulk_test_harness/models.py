@@ -193,6 +193,21 @@ class DashboardAudioContract(HarnessBaseModel):
             "dashboard's browser-recording control."
         ),
     )
+    expected_voice: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "Stable voice identifier that every dashboard TTS segment must send."
+        ),
+    )
+    expected_language: str = Field(
+        default="English",
+        min_length=1,
+        description=(
+            "Model-language value derived from the dashboard locale and required "
+            "on every dashboard TTS request."
+        ),
+    )
 
 
 class FreshInstallTarget(HarnessBaseModel):
@@ -1195,6 +1210,14 @@ class PromptTest(HarnessBaseModel):
         default=None,
         description="Optional TTS voice name passed to `/v1/audio/speech`.",
     )
+    speech_lang_code: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "Optional model-language name or code passed as `lang_code` to "
+            "`/v1/audio/speech`."
+        ),
+    )
     speech_speed: float | None = Field(
         default=None,
         gt=0,
@@ -1219,6 +1242,25 @@ class PromptTest(HarnessBaseModel):
         description=(
             "Voice identifiers required from `GET /v1/audio/voices` for "
             "`kind: audio_voices`."
+        ),
+    )
+    require_exact_voice_ids: bool = Field(
+        default=False,
+        description=(
+            "For `kind: audio_voices`, reject unlisted voice identifiers in "
+            "addition to requiring every expected identifier."
+        ),
+    )
+    expected_voice_kind: Literal["builtin", "reference"] | None = Field(
+        default=None,
+        description=("For `kind: audio_voices`, required source kind for every voice."),
+    )
+    expected_voice_language: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "For `kind: audio_voices`, language tag required in every voice's "
+            "preferred language inventory."
         ),
     )
     speech_streaming_interval: float | None = Field(
@@ -2024,7 +2066,14 @@ class DashboardAudioEvidence(HarnessBaseModel):
     transcription_downloaded: bool = False
     transcription_launched: bool = False
     synthesis_request_observed: bool = False
+    synthesis_request_model: str | None = None
+    synthesis_request_voice: str | None = None
+    synthesis_request_language: str | None = None
+    multi_sentence_request_count: int = Field(default=0, ge=0)
+    multi_sentence_voice_pinned: bool = False
+    multi_sentence_language_matched: bool = False
     synthesis_media_type: str | None = None
+    synthesis_sample_rate: int | None = Field(default=None, ge=1)
     synthesis_audio_bytes: int = Field(default=0, ge=0)
     synthesis_audio_sha256: str | None = None
     synthesis_duration_s: float | None = Field(default=None, ge=0)

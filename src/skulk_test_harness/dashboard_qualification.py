@@ -8,7 +8,7 @@ import re
 import sys
 import time
 import wave
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -39,10 +39,28 @@ _CAPTURE_AUDIO_FETCH_SCRIPT = """
   const nativeFetch = window.fetch.bind(window);
   window.__skulkQualificationAudio = [];
   window.fetch = async (...args) => {
-    const response = await nativeFetch(...args);
     const input = args[0];
     const rawUrl = typeof input === "string" ? input : input.url;
     const url = new URL(rawUrl, window.location.href);
+    let requestBody = null;
+    if (url.pathname === "/v1/audio/speech") {
+      const body = args[1]?.body;
+      if (typeof body === "string") {
+        try {
+          requestBody = JSON.parse(body);
+        } catch (_error) {
+          requestBody = null;
+        }
+      } else if (body instanceof FormData) {
+        requestBody = {};
+        for (const [key, value] of body.entries()) {
+          requestBody[key] = typeof value === "string"
+            ? value
+            : { name: value.name, size: value.size, type: value.type };
+        }
+      }
+    }
+    const response = await nativeFetch(...args);
     if (url.pathname === "/v1/audio/speech") {
       const copy = response.clone();
       void copy.arrayBuffer().then((buffer) => {
@@ -55,6 +73,12 @@ _CAPTURE_AUDIO_FETCH_SCRIPT = """
         window.__skulkQualificationAudio.push({
           size: bytes.length,
           bodyBase64: btoa(binary),
+          requestBody,
+          status: response.status,
+          mediaType: response.headers.get("Content-Type"),
+          sampleRate: response.headers.get("X-Audio-Sample-Rate"),
+          channels: response.headers.get("X-Audio-Channels"),
+          sampleFormat: response.headers.get("X-Audio-Sample-Format"),
         });
       }).catch((error) => {
         window.__skulkQualificationAudio.push({ error: String(error) });
@@ -471,8 +495,10 @@ class DashboardQualifier:
         chat_model_id: str,
         speech_synthesis_model: str,
         transcription_model: str,
+        expected_voice: str | None = None,
+        expected_language: str = "English",
     ) -> DashboardAudioEvidence:
-        """Drive real dashboard TTS and fake-device microphone STT end to end."""
+        """Drive dashboard TTS, pinned multi-segment speech, and microphone STT."""
 
         synthesis_found = False
         synthesis_downloaded = False
@@ -481,7 +507,14 @@ class DashboardQualifier:
         transcription_downloaded = False
         transcription_launched = False
         synthesis_request_observed = False
+        synthesis_request_model: str | None = None
+        synthesis_request_voice: str | None = None
+        synthesis_request_language: str | None = None
+        multi_sentence_request_count = 0
+        multi_sentence_voice_pinned = False
+        multi_sentence_language_matched = False
         synthesis_media_type: str | None = None
+        synthesis_sample_rate: int | None = None
         synthesis_audio_bytes = 0
         synthesis_audio_sha256: str | None = None
         transcription_request_observed = False
@@ -544,6 +577,7 @@ class DashboardQualifier:
                     lambda response: (
                         response.request.method == "POST"
                         and response.url.endswith("/v1/audio/speech")
+                        and response.ok
                     ),
                     timeout=self.model_ready_timeout_s * 1000,
                 ) as response_info:
@@ -570,7 +604,9 @@ class DashboardQualifier:
                 captured_audio: object = None
                 while time.monotonic() < deadline:
                     captured_audio = page.evaluate(
-                        "() => window.__skulkQualificationAudio?.at(-1) ?? null"
+                        "() => window.__skulkQualificationAudio"
+                        "?.filter((item) => item.status >= 200 && item.status < 300)"
+                        "?.at(-1) ?? null"
                     )
                     if isinstance(captured_audio, dict):
                         break
@@ -593,22 +629,100 @@ class DashboardQualifier:
                     )
                 synthesis_audio_bytes = len(audio_body)
                 synthesis_audio_sha256 = sha256(audio_body).hexdigest()
+                request_body = _captured_speech_request_body(captured_audio)
+                synthesis_request_model = _required_request_string(
+                    request_body, "model"
+                )
+                synthesis_request_voice = _optional_request_string(
+                    request_body, "voice"
+                )
+                synthesis_request_language = _required_request_string(
+                    request_body, "lang_code"
+                )
+                _assert_dashboard_speech_request(
+                    request_body,
+                    model_id=speech_synthesis_model,
+                    expected_voice=expected_voice,
+                    expected_language=expected_language,
+                )
                 if synthesis_audio_bytes < 1024:
                     raise RuntimeError(
                         "dashboard speech response was implausibly short: "
                         f"{synthesis_audio_bytes} bytes"
                     )
-                (
-                    synthesis_duration_s,
-                    synthesis_rms,
-                ) = _pcm_wav_duration_and_rms(audio_body)
+                artifact_audio = audio_body
+                if synthesis_media_type == "audio/pcm":
+                    synthesis_sample_rate = _captured_pcm_sample_rate(captured_audio)
+                    synthesis_duration_s, synthesis_rms = _raw_pcm16_duration_and_rms(
+                        audio_body, synthesis_sample_rate
+                    )
+                    artifact_audio = _pcm16_wav_bytes(audio_body, synthesis_sample_rate)
+                else:
+                    synthesis_duration_s, synthesis_rms = _pcm_wav_duration_and_rms(
+                        audio_body
+                    )
                 if synthesis_duration_s < 0.5 or synthesis_rms < 50:
                     raise RuntimeError(
                         "dashboard speech response was silent or implausibly short: "
                         f"duration={synthesis_duration_s:.3f}s rms={synthesis_rms:.1f}"
                     )
                 (self.artifact_directory / "dashboard-tts-output.wav").write_bytes(
-                    audio_body
+                    artifact_audio
+                )
+
+                # The shipped dashboard speaks streamed assistant sentences as
+                # separate requests. Exercise that real queue and require every
+                # segment to retain the same catalog voice and locale-derived
+                # language instead of accepting audible voice drift between
+                # paragraphs.
+                raw_initial_capture_count = page.evaluate(
+                    "() => window.__skulkQualificationAudio?.length ?? 0"
+                )
+                if not isinstance(raw_initial_capture_count, int):
+                    raise RuntimeError(
+                        "dashboard speech capture did not report its request count"
+                    )
+                initial_capture_count = raw_initial_capture_count
+                speak.wait_for(
+                    state="visible", timeout=self.model_ready_timeout_s * 1000
+                )
+                auto_speak = page.get_by_role("button", name="Auto", exact=True)
+                if auto_speak.get_attribute("aria-pressed") != "true":
+                    auto_speak.click()
+                draft.fill(
+                    "Reply with exactly these two sentences and nothing else: "
+                    "Skulk pins this voice. Every segment remains consistent."
+                )
+                page.get_by_role("button", name="Send message", exact=True).click()
+                deadline = time.monotonic() + self.model_ready_timeout_s
+                captured_segments: list[object] = []
+                while time.monotonic() < deadline:
+                    raw_captures = page.evaluate(
+                        "(start) => (window.__skulkQualificationAudio ?? [])"
+                        ".slice(start)"
+                        ".filter((item) => item.status >= 200 && item.status < 300)",
+                        initial_capture_count,
+                    )
+                    if isinstance(raw_captures, list):
+                        captured_segments = raw_captures
+                    if len(captured_segments) >= 2:
+                        break
+                    self._check_abort()
+                    page.wait_for_timeout(250)
+                if len(captured_segments) < 2:
+                    raise RuntimeError(
+                        "dashboard did not issue separate speech requests for "
+                        "two streamed assistant sentences"
+                    )
+                (
+                    multi_sentence_request_count,
+                    multi_sentence_voice_pinned,
+                    multi_sentence_language_matched,
+                ) = _assert_pinned_segment_requests(
+                    captured_segments,
+                    model_id=speech_synthesis_model,
+                    expected_voice=expected_voice,
+                    expected_language=expected_language,
                 )
                 self._check_abort()
             except Exception as exception:  # noqa: BLE001 - browser report boundary
@@ -652,6 +766,12 @@ class DashboardQualifier:
             and transcription_downloaded
             and transcription_launched
             and synthesis_request_observed
+            and synthesis_request_model == speech_synthesis_model
+            and (expected_voice is None or synthesis_request_voice == expected_voice)
+            and synthesis_request_language == expected_language
+            and multi_sentence_request_count >= 2
+            and multi_sentence_voice_pinned
+            and multi_sentence_language_matched
             and synthesis_audio_bytes >= 1024
             and synthesis_duration_s is not None
             and synthesis_duration_s >= 0.5
@@ -670,7 +790,14 @@ class DashboardQualifier:
             transcription_downloaded=transcription_downloaded,
             transcription_launched=transcription_launched,
             synthesis_request_observed=synthesis_request_observed,
+            synthesis_request_model=synthesis_request_model,
+            synthesis_request_voice=synthesis_request_voice,
+            synthesis_request_language=synthesis_request_language,
+            multi_sentence_request_count=multi_sentence_request_count,
+            multi_sentence_voice_pinned=multi_sentence_voice_pinned,
+            multi_sentence_language_matched=multi_sentence_language_matched,
             synthesis_media_type=synthesis_media_type,
+            synthesis_sample_rate=synthesis_sample_rate,
             synthesis_audio_bytes=synthesis_audio_bytes,
             synthesis_audio_sha256=synthesis_audio_sha256,
             synthesis_duration_s=synthesis_duration_s,
@@ -1275,6 +1402,155 @@ def _registry_contains(registry: dict[str, object], model_id: str) -> bool:
             ):
                 return True
     return False
+
+
+def _captured_speech_request_body(capture: object) -> dict[str, object]:
+    """Return one browser-captured speech request body with string keys."""
+
+    if not isinstance(capture, dict):
+        raise TypeError("dashboard speech capture must be an object")
+    body = capture.get("requestBody")
+    if not isinstance(body, dict):
+        raise TypeError("dashboard speech capture omitted its request body")
+    return {str(key): value for key, value in body.items()}
+
+
+def _required_request_string(body: dict[str, object], key: str) -> str:
+    """Read one required non-empty string from a captured dashboard request."""
+
+    value = body.get(key)
+    if not isinstance(value, str) or not value:
+        raise TypeError(f"dashboard speech request omitted string field {key!r}")
+    return value
+
+
+def _optional_request_string(body: dict[str, object], key: str) -> str | None:
+    """Read one optional non-empty string from a captured dashboard request."""
+
+    value = body.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise TypeError(f"dashboard speech request field {key!r} must be a string")
+    return value
+
+
+def _assert_dashboard_speech_request(
+    body: dict[str, object],
+    *,
+    model_id: str,
+    expected_voice: str | None,
+    expected_language: str,
+) -> None:
+    """Require one dashboard TTS request to match the shipped speech contract."""
+
+    actual_model = _required_request_string(body, "model")
+    actual_voice = _optional_request_string(body, "voice")
+    actual_language = _required_request_string(body, "lang_code")
+    if actual_model != model_id:
+        raise ValueError(
+            "dashboard speech request used the wrong model: "
+            f"expected {model_id!r}, got {actual_model!r}"
+        )
+    if expected_voice is not None and actual_voice != expected_voice:
+        raise ValueError(
+            "dashboard speech request used the wrong voice: "
+            f"expected {expected_voice!r}, got {actual_voice!r}"
+        )
+    if actual_language != expected_language:
+        raise ValueError(
+            "dashboard speech request used the wrong language: "
+            f"expected {expected_language!r}, got {actual_language!r}"
+        )
+
+
+def _captured_pcm_sample_rate(capture: Mapping[str, object]) -> int:
+    """Validate browser-captured raw PCM headers and return the sample rate."""
+
+    sample_rate = capture.get("sampleRate")
+    channels = capture.get("channels")
+    sample_format = capture.get("sampleFormat")
+    if not isinstance(sample_rate, str) or not sample_rate.isdecimal():
+        raise ValueError("dashboard PCM response omitted a valid sample rate")
+    if channels != "1" or sample_format != "s16le":
+        raise ValueError("dashboard PCM response was not mono little-endian PCM16")
+    parsed = int(sample_rate)
+    if parsed <= 0:
+        raise ValueError("dashboard PCM response sample rate must be positive")
+    return parsed
+
+
+def _assert_pinned_segment_requests(
+    captures: list[object],
+    *,
+    model_id: str,
+    expected_voice: str | None,
+    expected_language: str,
+) -> tuple[int, bool, bool]:
+    """Require distinct dashboard speech segments to retain voice and language."""
+
+    segment_bodies = [_captured_speech_request_body(capture) for capture in captures]
+    if len(segment_bodies) < 2:
+        raise RuntimeError(
+            "dashboard multi-sentence speech captures lacked request bodies"
+        )
+    for body in segment_bodies:
+        _assert_dashboard_speech_request(
+            body,
+            model_id=model_id,
+            expected_voice=expected_voice,
+            expected_language=expected_language,
+        )
+    segment_inputs = {
+        _required_request_string(body, "input") for body in segment_bodies
+    }
+    if len(segment_inputs) < 2:
+        raise RuntimeError("dashboard did not preserve distinct sentence segments")
+    segment_voices = {
+        _optional_request_string(body, "voice") for body in segment_bodies
+    }
+    segment_languages = {
+        _required_request_string(body, "lang_code") for body in segment_bodies
+    }
+    voice_pinned = len(segment_voices) == 1 and (
+        expected_voice is None or segment_voices == {expected_voice}
+    )
+    language_matched = segment_languages == {expected_language}
+    if not voice_pinned:
+        raise RuntimeError("dashboard changed voices between assistant speech segments")
+    if not language_matched:
+        raise RuntimeError(
+            "dashboard changed or omitted language between speech segments"
+        )
+    return len(segment_bodies), voice_pinned, language_matched
+
+
+def _raw_pcm16_duration_and_rms(audio: bytes, sample_rate: int) -> tuple[float, float]:
+    """Return duration and RMS for non-empty mono little-endian PCM16 bytes."""
+
+    if not audio or len(audio) % 2 != 0 or sample_rate <= 0:
+        raise ValueError(
+            "dashboard raw PCM response must contain complete PCM16 samples"
+        )
+    sum_of_squares = 0
+    sample_count = len(audio) // 2
+    for offset in range(0, len(audio), 2):
+        sample = int.from_bytes(audio[offset : offset + 2], "little", signed=True)
+        sum_of_squares += sample * sample
+    return sample_count / sample_rate, (sum_of_squares / sample_count) ** 0.5
+
+
+def _pcm16_wav_bytes(audio: bytes, sample_rate: int) -> bytes:
+    """Wrap raw mono little-endian PCM16 bytes in a playable WAV container."""
+
+    _raw_pcm16_duration_and_rms(audio, sample_rate)
+    output = io.BytesIO()
+    with wave.open(output, "wb") as writer:
+        writer.setnchannels(1)
+        writer.setsampwidth(2)
+        writer.setframerate(sample_rate)
+        writer.writeframes(audio)
+    return output.getvalue()
 
 
 def _pcm_wav_duration_and_rms(audio: bytes) -> tuple[float, float]:

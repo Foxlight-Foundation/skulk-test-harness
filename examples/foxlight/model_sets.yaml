@@ -92,7 +92,7 @@ model_sets:
       model families that are not part of the production fleet profile.
     models:
       - mlx-community/fish-audio-s2-pro-8bit
-      - mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-4bit
+      - mlx-community/Qwen3-TTS-12Hz-0.6B-Base-6bit
 
   speech-tts-candidates:
     name: speech-tts-candidates
@@ -156,13 +156,15 @@ model_sets:
     description: >-
       Reference-conditioning TTS target validated with a generated donor clip.
     models:
-      - mlx-community/Qwen3-TTS-12Hz-0.6B-Base-4bit
+      - mlx-community/Qwen3-TTS-12Hz-0.6B-Base-6bit
 
   speech-voice-catalog-tts:
     name: speech-voice-catalog-tts
-    description: TTS target with a qualified static built-in voice inventory.
+    description: TTS targets with the shared qualified managed-reference inventory.
     models:
-      - mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-4bit
+      - mlx-community/LongCat-AudioDiT-1B-4bit
+      - mlx-community/Qwen3-TTS-12Hz-0.6B-Base-6bit
+      - mlx-community/fish-audio-s2-pro-8bit
 
   vision:
     name: vision

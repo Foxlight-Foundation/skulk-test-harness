@@ -147,8 +147,10 @@ fresh_install:
         - mlx-community/Qwen3.5-2B-4bit
         - mlx-community/Qwen3-VL-4B-Instruct-4bit
       dashboard_audio:
-        speech_synthesis_model: mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-4bit
+        speech_synthesis_model: mlx-community/Qwen3-TTS-12Hz-0.6B-Base-6bit
         transcription_model: mlx-community/parakeet-tdt-0.6b-v3
+        expected_voice: angus
+        expected_language: English
     apple-2:
       <<: *apple-member
       ssh_host: replace-apple-2
@@ -219,7 +221,10 @@ never include a network volume.
 `dashboard_audio` is optional and valid only on a dashboard-serving target that
 expects the `mlx_audio` backend. Both model IDs are release contracts: the
 harness discovers, downloads, launches, and exercises them through the shipped
-dashboard rather than treating missing speech capability as a skip.
+dashboard rather than treating missing speech capability as a skip. The
+qualification captures the browser's TTS request and requires `expected_voice`
+and `expected_language` on the draft request and on every separately synthesized
+assistant sentence. Raw streaming PCM is retained as a playable WAV artifact.
 
 Targets referenced by `physical_fleets` set `whole_fleet_member: true` and
 provide no isolation commands or runtime wrapper. The harness stops every

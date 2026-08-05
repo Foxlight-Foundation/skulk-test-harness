@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Align Foxlight speech qualification with Skulk's managed-reference voice
+  catalog and Qwen Base 6-bit card, including typed voice metadata, TTS language
+  propagation, and dashboard assertions that pin voice and language across
+  separately synthesized assistant sentences.
+
 - Documented the handoff from an all-green automated candidate matrix to human
   first-install acceptance. Human testing supplements the physical-fleet and
   clean RunPod verdict; it cannot replace either leg, and a product/default/
