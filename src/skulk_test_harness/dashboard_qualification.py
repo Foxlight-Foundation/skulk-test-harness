@@ -8,7 +8,7 @@ import re
 import sys
 import time
 import wave
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -514,6 +514,10 @@ class DashboardQualifier:
         multi_sentence_request_count = 0
         multi_sentence_voice_pinned = False
         multi_sentence_language_matched = False
+        replay_request_count = 0
+        replay_voice_pinned = False
+        replay_language_matched = False
+        replay_inputs_matched = False
         synthesis_media_type: str | None = None
         synthesis_sample_rate: int | None = None
         synthesis_audio_bytes = 0
@@ -721,6 +725,62 @@ class DashboardQualifier:
                     expected_voice=expected_voice,
                     expected_language=expected_language,
                 )
+
+                # Replay must use the same sentence pipeline as live auto-speech.
+                # Waiting for the message's Speak control also proves the first
+                # playback reached idle before the second journey begins.
+                replay_speak = page.get_by_role(
+                    "button", name="Speak message", exact=True
+                ).last
+                replay_speak.wait_for(
+                    state="visible", timeout=self.model_ready_timeout_s * 1000
+                )
+                raw_replay_capture_start = page.evaluate(
+                    "() => window.__skulkQualificationAudio?.length ?? 0"
+                )
+                if not isinstance(raw_replay_capture_start, int):
+                    raise RuntimeError(
+                        "dashboard speech capture did not report its replay boundary"
+                    )
+                replay_capture_start = raw_replay_capture_start
+                original_captures = page.evaluate(
+                    "([start, end]) => (window.__skulkQualificationAudio ?? [])"
+                    ".slice(start, end)"
+                    ".filter((item) => item.status >= 200 && item.status < 300)",
+                    [initial_capture_count, replay_capture_start],
+                )
+                if not isinstance(original_captures, list):
+                    raise RuntimeError(
+                        "dashboard speech capture did not retain live sentence requests"
+                    )
+                replay_speak.click()
+                replay_captures: list[object] = []
+                deadline = time.monotonic() + self.model_ready_timeout_s
+                while time.monotonic() < deadline:
+                    raw_replay_captures = page.evaluate(
+                        "(start) => (window.__skulkQualificationAudio ?? [])"
+                        ".slice(start)"
+                        ".filter((item) => item.status >= 200 && item.status < 300)",
+                        replay_capture_start,
+                    )
+                    if isinstance(raw_replay_captures, list):
+                        replay_captures = raw_replay_captures
+                    if len(replay_captures) >= len(original_captures):
+                        break
+                    self._check_abort()
+                    page.wait_for_timeout(250)
+                (
+                    replay_request_count,
+                    replay_voice_pinned,
+                    replay_language_matched,
+                    replay_inputs_matched,
+                ) = _assert_replayed_segment_requests(
+                    original_captures,
+                    replay_captures,
+                    model_id=speech_synthesis_model,
+                    expected_voice=expected_voice,
+                    expected_language=expected_language,
+                )
                 self._check_abort()
             except Exception as exception:  # noqa: BLE001 - browser report boundary
                 message = str(exception)
@@ -769,6 +829,10 @@ class DashboardQualifier:
             and multi_sentence_request_count >= 2
             and multi_sentence_voice_pinned
             and multi_sentence_language_matched
+            and replay_request_count == multi_sentence_request_count
+            and replay_voice_pinned
+            and replay_language_matched
+            and replay_inputs_matched
             and synthesis_audio_bytes >= 1024
             and synthesis_duration_s is not None
             and synthesis_duration_s >= 0.5
@@ -793,6 +857,10 @@ class DashboardQualifier:
             multi_sentence_request_count=multi_sentence_request_count,
             multi_sentence_voice_pinned=multi_sentence_voice_pinned,
             multi_sentence_language_matched=multi_sentence_language_matched,
+            replay_request_count=replay_request_count,
+            replay_voice_pinned=replay_voice_pinned,
+            replay_language_matched=replay_language_matched,
+            replay_inputs_matched=replay_inputs_matched,
             synthesis_media_type=synthesis_media_type,
             synthesis_sample_rate=synthesis_sample_rate,
             synthesis_audio_bytes=synthesis_audio_bytes,
@@ -1486,7 +1554,7 @@ def _captured_pcm_sample_rate(capture: Mapping[str, object]) -> int:
 
 
 def _assert_pinned_segment_requests(
-    captures: list[object],
+    captures: Sequence[object],
     *,
     model_id: str,
     expected_voice: str | None,
@@ -1528,6 +1596,44 @@ def _assert_pinned_segment_requests(
             "dashboard changed or omitted language between speech segments"
         )
     return len(segment_bodies), voice_pinned, language_matched
+
+
+def _assert_replayed_segment_requests(
+    original_captures: Sequence[object],
+    replay_captures: Sequence[object],
+    *,
+    model_id: str,
+    expected_voice: str | None,
+    expected_language: str,
+) -> tuple[int, bool, bool, bool]:
+    """Require completed-message replay to preserve live sentence boundaries."""
+
+    if len(original_captures) < 2:
+        raise RuntimeError("dashboard live speech did not retain sentence requests")
+    if len(replay_captures) != len(original_captures):
+        raise RuntimeError(
+            "dashboard completed-message replay changed live sentence boundaries"
+        )
+    request_count, voice_pinned, language_matched = _assert_pinned_segment_requests(
+        replay_captures,
+        model_id=model_id,
+        expected_voice=expected_voice,
+        expected_language=expected_language,
+    )
+    original_inputs = [
+        _required_request_string(_captured_speech_request_body(capture), "input")
+        for capture in original_captures
+    ]
+    replay_inputs = [
+        _required_request_string(_captured_speech_request_body(capture), "input")
+        for capture in replay_captures
+    ]
+    inputs_matched = replay_inputs == original_inputs
+    if not inputs_matched:
+        raise RuntimeError(
+            "dashboard completed-message replay changed live sentence boundaries"
+        )
+    return request_count, voice_pinned, language_matched, inputs_matched
 
 
 def _raw_pcm16_duration_and_rms(audio: bytes, sample_rate: int) -> tuple[float, float]:

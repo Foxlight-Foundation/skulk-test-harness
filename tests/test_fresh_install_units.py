@@ -2623,6 +2623,10 @@ def test_fresh_summary_includes_dashboard_release_and_audio_evidence() -> None:
                 speech_synthesis_model="org/tts",
                 transcription_model="org/stt",
                 synthesis_audio_bytes=4096,
+                replay_request_count=2,
+                replay_voice_pinned=True,
+                replay_language_matched=True,
+                replay_inputs_matched=True,
                 transcription_request_observed=True,
                 transcript_matched=True,
                 passed=True,
@@ -2637,6 +2641,8 @@ def test_fresh_summary_includes_dashboard_release_and_audio_evidence() -> None:
     assert "WebKit load/chat `True/True`" in summary
     assert "Audio `org/tts` -> `org/stt`" in summary
     assert "TTS bytes `4096`" in summary
+    assert "replay requests `2`" in summary
+    assert "replay voice/language/inputs `True/True/True`" in summary
 
 
 def test_heartbeat_must_not_exceed_one_third_of_ttl() -> None:
