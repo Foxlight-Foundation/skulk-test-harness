@@ -9,6 +9,7 @@ from playwright.sync_api import Response
 from skulk_test_harness.dashboard_qualification import (
     _assert_dashboard_speech_request,
     _assert_pinned_segment_requests,
+    _assert_replayed_segment_requests,
     _captured_pcm_sample_rate,
     _captured_speech_request_body,
     _is_speech_response,
@@ -100,6 +101,33 @@ def test_pinned_segments_require_distinct_inputs_and_one_voice() -> None:
             ],
             model_id="org/TTS",
             expected_voice=None,
+            expected_language="English",
+        )
+
+
+def test_replayed_segments_must_match_live_sentence_boundaries() -> None:
+    original = [
+        _capture(text="First sentence."),
+        _capture(text="Second sentence."),
+    ]
+
+    assert _assert_replayed_segment_requests(
+        original,
+        [
+            _capture(text="First sentence."),
+            _capture(text="Second sentence."),
+        ],
+        model_id="org/TTS",
+        expected_voice="angus",
+        expected_language="English",
+    ) == (2, True, True, True)
+
+    with pytest.raises(RuntimeError, match="changed live sentence boundaries"):
+        _assert_replayed_segment_requests(
+            original,
+            [_capture(text="First sentence. Second sentence.")],
+            model_id="org/TTS",
+            expected_voice="angus",
             expected_language="English",
         )
 

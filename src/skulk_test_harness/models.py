@@ -2073,6 +2073,10 @@ class DashboardAudioEvidence(HarnessBaseModel):
     multi_sentence_request_count: int = Field(default=0, ge=0)
     multi_sentence_voice_pinned: bool = False
     multi_sentence_language_matched: bool = False
+    replay_request_count: int = Field(default=0, ge=0)
+    replay_voice_pinned: bool = False
+    replay_language_matched: bool = False
+    replay_inputs_matched: bool = False
     synthesis_media_type: str | None = None
     synthesis_sample_rate: int | None = Field(default=None, ge=1)
     synthesis_audio_bytes: int = Field(default=0, ge=0)
