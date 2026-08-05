@@ -9,7 +9,7 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from threading import Event, Lock, Thread
-from typing import cast
+from typing import Literal, cast
 from urllib.parse import quote, urlsplit, urlunsplit
 
 import httpx
@@ -145,6 +145,17 @@ class AudioSpeechExecution:
     chunk_sizes: list[int] = field(default_factory=list)
     chunk_arrival_s: list[float] = field(default_factory=list)
     streaming: bool = False
+
+
+@dataclass(frozen=True)
+class AudioVoiceMetadata:
+    """One voice returned by Skulk's mounted-model voice catalog."""
+
+    id: str
+    name: str
+    model: str
+    preferred_languages: tuple[str, ...]
+    kind: Literal["builtin", "reference"]
 
 
 @dataclass(frozen=True)
@@ -1338,8 +1349,8 @@ class SkulkClient:
         )
         return payload if isinstance(payload, dict) else None
 
-    def audio_voices(self, model_id: str) -> list[str]:
-        """Return stable built-in voice identifiers for a mounted TTS model."""
+    def audio_voices(self, model_id: str) -> list[AudioVoiceMetadata]:
+        """Return the complete stable voice catalog for a mounted TTS model."""
 
         payload = self._request_json(
             "GET", "/v1/audio/voices", params={"model": model_id}
@@ -1349,11 +1360,41 @@ class SkulkClient:
         data = payload.get("data")
         if not isinstance(data, list):
             raise TypeError("Expected /v1/audio/voices data to be a list")
-        voices: list[str] = []
+        voices: list[AudioVoiceMetadata] = []
         for item in data:
-            if not isinstance(item, dict) or not isinstance(item.get("id"), str):
+            if not isinstance(item, dict):
+                raise TypeError("Expected every audio voice to be an object")
+            voice_id = item.get("id")
+            name = item.get("name")
+            response_model = item.get("model")
+            preferred_languages = item.get("preferred_languages")
+            kind = item.get("kind")
+            if not isinstance(voice_id, str) or not voice_id:
                 raise TypeError("Expected every audio voice to have a string id")
-            voices.append(item["id"])
+            if not isinstance(name, str) or not name:
+                raise TypeError("Expected every audio voice to have a string name")
+            if not isinstance(response_model, str) or response_model != model_id:
+                raise TypeError("Expected every audio voice to name the requested model")
+            if not isinstance(preferred_languages, list) or not all(
+                isinstance(language, str) and language
+                for language in preferred_languages
+            ):
+                raise TypeError(
+                    "Expected every audio voice to have preferred language strings"
+                )
+            if kind not in {"builtin", "reference"}:
+                raise TypeError(
+                    "Expected every audio voice kind to be builtin or reference"
+                )
+            voices.append(
+                AudioVoiceMetadata(
+                    id=voice_id,
+                    name=name,
+                    model=response_model,
+                    preferred_languages=tuple(preferred_languages),
+                    kind=cast(Literal["builtin", "reference"], kind),
+                )
+            )
         return voices
 
     def get_placement_previews(
@@ -1637,6 +1678,7 @@ class SkulkClient:
         input_text: str,
         response_format: str = "wav",
         voice: str | None = None,
+        lang_code: str | None = None,
         speed: float | None = None,
         temperature: float | None = None,
         top_p: float | None = None,
@@ -1668,6 +1710,8 @@ class SkulkClient:
             payload["streaming_interval"] = streaming_interval
         if voice is not None:
             payload["voice"] = voice
+        if lang_code is not None:
+            payload["lang_code"] = lang_code
         if speed is not None:
             payload["speed"] = speed
         if temperature is not None:

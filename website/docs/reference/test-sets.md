@@ -85,10 +85,14 @@ Each map key must match the test set's `name`.
 | `min_embedding_norm` | Minimum L2 norm for embedding vectors |
 | `audio_response_format` | TTS audio response format, such as `wav` |
 | `speech_voice` | Optional voice name for TTS |
+| `speech_lang_code` | Optional model-language value sent as `lang_code` for TTS |
 | `speech_speed` | Optional speech speed multiplier for TTS |
 | `reference_model_id` | Donor TTS model for `kind: speech_reference_roundtrip` |
 | `reference_text` | Transcript spoken in the generated reference clip; defaults to `prompt` |
 | `expected_voice_ids` | Voice identifiers required for `kind: audio_voices` |
+| `require_exact_voice_ids` | Reject voice identifiers not listed in `expected_voice_ids` |
+| `expected_voice_kind` | Require every listed voice to be `builtin` or `reference` |
+| `expected_voice_language` | Require every listed voice to advertise this preferred language tag |
 | `speech_streaming_interval` | Optional `streaming_interval` hint for `kind: audio_speech_streaming` |
 | `speech_concurrency` | Concurrent workers for `kind: audio_speech_pressure` |
 | `speech_requests_per_worker` | Sequential requests issued by each pressure worker |

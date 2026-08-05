@@ -2091,6 +2091,8 @@ class FreshInstallQualifier:
                         chat_model_id=primary_chat_model,
                         speech_synthesis_model=(audio_contract.speech_synthesis_model),
                         transcription_model=audio_contract.transcription_model,
+                        expected_voice=audio_contract.expected_voice,
+                        expected_language=audio_contract.expected_language,
                     )
                     report.dashboard_audio = audio_evidence
                     journal.persist()
@@ -2766,6 +2768,8 @@ class FreshInstallQualifier:
                             transcription_model=(
                                 target.dashboard_audio.transcription_model
                             ),
+                            expected_voice=target.dashboard_audio.expected_voice,
+                            expected_language=target.dashboard_audio.expected_language,
                         )
                         report.dashboard_audio = audio_evidence
                         journal.persist()

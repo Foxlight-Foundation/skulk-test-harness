@@ -109,8 +109,11 @@ harness:
    smoke test with Playwright WebKit;
 10. on a target declaring `dashboard_audio`, finds, downloads, and launches its
     TTS and STT models through the dashboard, requires real audio bytes from
-    **Speak draft** plus a non-silent PCM duration, retains those exact bytes,
-    then feeds the harness's known-speech WAV through Chromium's fake
+    **Speak draft** plus a non-silent PCM duration, verifies the exact model,
+    managed voice, and locale-derived language in the browser request, then
+    exercises two separately synthesized assistant sentences and requires the
+    same voice and language on both. It retains a playable WAV artifact, then
+    feeds the harness's known-speech WAV through Chromium's fake
     microphone and requires the transcript in the chat composer. TTS and STT
     use separate fixtures so a failure names the broken user journey instead
     of making one model's output the other model's input;

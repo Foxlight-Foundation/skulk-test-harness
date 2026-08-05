@@ -578,6 +578,7 @@ test_sets:
       - name: tts-wav-audio-bytes
         kind: audio_speech
         prompt: Hello world from the Skulk speech battery.
+        speech_lang_code: English
         audio_response_format: wav
         temperature: 0
         success:
@@ -594,6 +595,7 @@ test_sets:
       - name: tts-wav-semantic-roundtrip
         kind: speech_roundtrip
         prompt: The quick brown fox jumps over the lazy dog.
+        speech_lang_code: English
         audio_response_format: wav
         transcription_model_id: CogniSoftOrg/canary-1b-v2-mlx-bf16
         transcription_response_format: json
@@ -607,6 +609,7 @@ test_sets:
       - name: tts-wav-library-roundtrip
         kind: speech_roundtrip
         prompt: Please carry the red package to the quiet library.
+        speech_lang_code: English
         audio_response_format: wav
         transcription_model_id: CogniSoftOrg/canary-1b-v2-mlx-bf16
         transcription_response_format: json
@@ -620,6 +623,7 @@ test_sets:
       - name: tts-wav-brand-roundtrip
         kind: speech_roundtrip
         prompt: Hello world from the Skulk speech battery.
+        speech_lang_code: English
         audio_response_format: wav
         transcription_model_id: CogniSoftOrg/canary-1b-v2-mlx-bf16
         transcription_response_format: json
@@ -643,6 +647,7 @@ test_sets:
         prompt: >
           Hello world from the Skulk streaming speech battery. This sentence is
           intentionally long enough to encourage more than one speech segment.
+        speech_lang_code: English
         audio_response_format: mp3
         speech_streaming_interval: 0.25
         temperature: 0
@@ -665,6 +670,7 @@ test_sets:
         prompt: >
           Skulk concurrent speech pressure validates progressive audio delivery
           without cross-command stalls.
+        speech_lang_code: English
         audio_response_format: mp3
         speech_streaming_interval: 0.25
         speech_concurrency: 4
@@ -681,6 +687,7 @@ test_sets:
         prompt: >
           Skulk multi-owner speech pressure validates that a slow reader cannot
           collapse unrelated speech streams into a late burst.
+        speech_lang_code: English
         audio_response_format: mp3
         speech_streaming_interval: 0.25
         speech_concurrency: 6
@@ -700,6 +707,7 @@ test_sets:
         prompt: >
           Skulk mixed DATA pressure keeps progressive speech independent while
           text generation streams concurrently through the same fabric.
+        speech_lang_code: English
         audio_response_format: mp3
         speech_streaming_interval: 0.25
         speech_concurrency: 4
@@ -731,6 +739,7 @@ test_sets:
       - name: tts-to-stt-hello-world
         kind: speech_roundtrip
         prompt: Hello world from the Skulk speech battery.
+        speech_lang_code: English
         audio_response_format: wav
         transcription_model_id: mlx-community/parakeet-tdt-0.6b-v3
         transcription_response_format: json
@@ -784,7 +793,7 @@ test_sets:
         input_audio_path: src/skulk_test_harness/fixtures/dashboard-stt-release.wav
         audio_response_format: wav
         realtime_response_model_id: mlx-community/Llama-3.2-1B-Instruct-4bit
-        realtime_response_tts_model_id: mlx-community/Qwen3-TTS-12Hz-0.6B-Base-4bit
+        realtime_response_tts_model_id: mlx-community/Qwen3-TTS-12Hz-0.6B-Base-6bit
         speech_owner_count: 1
         realtime_frame_duration_ms: 100
         realtime_pace_audio: true
@@ -809,6 +818,7 @@ test_sets:
       - name: french-to-english-roundtrip
         kind: speech_translation_roundtrip
         prompt: Bonjour. Le projet Skulk transforme la parole en texte anglais.
+        speech_lang_code: French
         audio_response_format: wav
         transcription_model_id: CogniSoftOrg/canary-1b-v2-mlx-bf16
         transcription_response_format: json
@@ -833,6 +843,7 @@ test_sets:
       - name: generated-reference-voice
         kind: speech_reference_roundtrip
         prompt: The reference voice reads this clear sentence for the speech test.
+        speech_lang_code: English
         reference_model_id: mlx-community/fish-audio-s2-pro-8bit
         reference_text: This is the reference voice used by the Skulk speech test.
         audio_response_format: wav
@@ -849,25 +860,30 @@ test_sets:
     name: speech-voice-catalog
     description: Lists static voices and synthesizes audio with a named voice.
     tests:
-      - name: qwen-custom-voice-inventory
+      - name: managed-reference-voice-inventory
         kind: audio_voices
         prompt: ""
         expected_voice_ids:
-          - serena
-          - vivian
-          - uncle_fu
-          - ryan
-          - aiden
-          - ono_anna
-          - sohee
-          - eric
-          - dylan
+          - angus
+          - ember
+          - hannah
+          - ian
+          - jake
+          - kite
+          - rufus
+          - samson
+          - sydney
+          - sylvie
+        require_exact_voice_ids: true
+        expected_voice_kind: reference
+        expected_voice_language: en
         success:
           min_chars: 0
-      - name: qwen-named-voice-synthesis
+      - name: managed-reference-voice-synthesis
         kind: audio_speech
         prompt: Skulk validates named voice synthesis through the mounted model.
-        speech_voice: ryan
+        speech_voice: angus
+        speech_lang_code: English
         audio_response_format: wav
         success:
           min_chars: 0
@@ -910,7 +926,7 @@ test_sets:
         input_audio_path: src/skulk_test_harness/fixtures/dashboard-stt-release.wav
         audio_response_format: wav
         realtime_response_model_id: mlx-community/Qwen3.5-9B-MLX-4bit
-        realtime_response_tts_model_id: mlx-community/Qwen3-TTS-12Hz-0.6B-Base-4bit
+        realtime_response_tts_model_id: mlx-community/Qwen3-TTS-12Hz-0.6B-Base-6bit
         max_tokens: 96
         enable_thinking: false
         speech_owner_count: 2

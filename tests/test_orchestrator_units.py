@@ -16,6 +16,7 @@ import pytest
 from skulk_test_harness.client import (
     AudioSpeechExecution,
     AudioTranscriptionExecution,
+    AudioVoiceMetadata,
     ChatExecution,
     ClusterApiOwner,
     DataPlaneDiagnosticsSnapshot,
@@ -110,14 +111,17 @@ def test_public_and_foxlight_example_configs_load() -> None:
     root = Path(__file__).parents[1]
     public_path = root / "skulk-harness.example.yaml"
     foxlight_path = root / "examples/foxlight/skulk-harness.yaml"
+    fresh_install_path = root / "examples/foxlight/fresh-install.example.yaml"
     stability_path = root / "examples/foxlight/skulk-harness.stability.example.yaml"
 
     assert public_path.exists()
     assert foxlight_path.exists()
+    assert fresh_install_path.exists()
     assert stability_path.exists()
 
     public_config = load_config(public_path)
     foxlight_config = load_config(foxlight_path)
+    fresh_install_config = load_config(fresh_install_path)
     stability_config = load_config(stability_path)
 
     assert public_config.api_base_url == "http://localhost:52415"
@@ -129,6 +133,16 @@ def test_public_and_foxlight_example_configs_load() -> None:
     assert foxlight_config.test_sets_path == Path("examples/foxlight/test_sets.yaml")
     assert foxlight_config.required_data_transport == "zenoh"
     assert foxlight_config.cluster_nodes == {}
+    fresh_install = fresh_install_config.fresh_install
+    assert fresh_install is not None
+    apple_audio = fresh_install.targets["apple-1"].dashboard_audio
+    assert apple_audio is not None
+    assert (
+        apple_audio.speech_synthesis_model
+        == "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-6bit"
+    )
+    assert apple_audio.expected_voice == "angus"
+    assert apple_audio.expected_language == "English"
     assert sorted(stability_config.cluster_nodes) == ["node-a", "node-b"]
     assert all(
         node.relaunch_command is not None
@@ -1124,15 +1138,51 @@ def test_foxlight_tts_battery_enforces_semantic_fidelity() -> None:
     )
     assert semantic_test.success.max_word_error_rate == 0.25
     assert all(test.repetitions == 3 for test in semantic_tests)
+    assert all(test.speech_lang_code == "English" for test in semantic_tests)
     assert semantic_tests[-1].prompt == ("Hello world from the Skulk speech battery.")
     assert semantic_tests[-1].success.max_word_error_rate == 0.34
     assert model_sets["speech-tts"].models == [
         "mlx-community/fish-audio-s2-pro-8bit",
-        "mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-4bit",
+        "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-6bit",
     ]
     assert model_sets["speech-tts-candidates"].models == [
         "mlx-community/LongCat-AudioDiT-1B-4bit",
     ]
+
+
+def test_foxlight_voice_suite_requires_managed_reference_contract() -> None:
+    root = Path(__file__).parents[1]
+    model_sets = load_model_sets(root / "examples/foxlight/model_sets.yaml").model_sets
+    test_sets = load_test_sets(root / "examples/foxlight/test_sets.yaml").test_sets
+
+    assert model_sets["speech-reference-tts"].models == [
+        "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-6bit"
+    ]
+    assert model_sets["speech-voice-catalog-tts"].models == [
+        "mlx-community/LongCat-AudioDiT-1B-4bit",
+        "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-6bit",
+        "mlx-community/fish-audio-s2-pro-8bit",
+    ]
+    inventory, synthesis = test_sets["speech-voice-catalog"].tests
+    assert inventory.expected_voice_ids == [
+        "angus",
+        "ember",
+        "hannah",
+        "ian",
+        "jake",
+        "kite",
+        "rufus",
+        "samson",
+        "sydney",
+        "sylvie",
+    ]
+    assert inventory.require_exact_voice_ids is True
+    assert inventory.expected_voice_kind == "reference"
+    assert inventory.expected_voice_language == "en"
+    assert synthesis.speech_voice == "angus"
+    assert synthesis.speech_lang_code == "English"
+    translation = test_sets["speech-translation"].tests[0]
+    assert translation.speech_lang_code == "French"
 
 
 def test_foxlight_realtime_suite_requires_local_remote_provider_evidence() -> None:
@@ -1163,7 +1213,7 @@ def test_foxlight_realtime_suite_requires_local_remote_provider_evidence() -> No
         assert deterministic_test.speech_synthesis_model_id is None
         assert deterministic_test.success.required_substrings == expected_semantic_anchors
     assert fabric_test.realtime_response_tts_model_id == (
-        "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-4bit"
+        "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-6bit"
     )
 
 
@@ -1628,6 +1678,7 @@ class _FakeClient:
         input_text: str,
         response_format: str = "wav",
         voice: str | None = None,
+        lang_code: str | None = None,
         speed: float | None = None,
         temperature: float | None = None,
         top_p: float | None = None,
@@ -1646,6 +1697,7 @@ class _FakeClient:
                 "input_text": input_text,
                 "response_format": response_format,
                 "voice": voice,
+                "lang_code": lang_code,
                 "speed": speed,
                 "temperature": temperature,
                 "top_p": top_p,
@@ -1676,9 +1728,23 @@ class _FakeClient:
             streaming=stream,
         )
 
-    def audio_voices(self, model_id: str) -> list[str]:
-        del model_id
-        return ["ryan", "aiden"]
+    def audio_voices(self, model_id: str) -> list[AudioVoiceMetadata]:
+        return [
+            AudioVoiceMetadata(
+                id="angus",
+                name="Angus",
+                model=model_id,
+                preferred_languages=("en",),
+                kind="reference",
+            ),
+            AudioVoiceMetadata(
+                id="ember",
+                name="Ember",
+                model=model_id,
+                preferred_languages=("en",),
+                kind="reference",
+            ),
+        ]
 
     def audio_transcription(
         self,
@@ -2231,6 +2297,8 @@ def test_run_test_dispatches_audio_speech(tmp_path: Path) -> None:
         name="tts",
         kind="audio_speech",
         prompt="hello",
+        speech_voice="angus",
+        speech_lang_code="English",
         max_tokens=256,
         temperature=0.0,
         top_p=0.8,
@@ -2248,6 +2316,8 @@ def test_run_test_dispatches_audio_speech(tmp_path: Path) -> None:
     assert result.passed is True
     assert "audio_bytes=" in result.output_text
     assert client.speech_requests[0]["model_id"] == "org/TTS"
+    assert client.speech_requests[0]["voice"] == "angus"
+    assert client.speech_requests[0]["lang_code"] == "English"
     assert client.speech_requests[0]["temperature"] == 0.0
     assert client.speech_requests[0]["top_p"] == 0.8
     assert client.speech_requests[0]["max_tokens"] == 256
@@ -3711,7 +3781,10 @@ def test_audio_voices_requires_expected_inventory(tmp_path: Path) -> None:
             name="voices",
             kind="audio_voices",
             prompt="",
-            expected_voice_ids=["ryan", "aiden"],
+            expected_voice_ids=["angus", "ember"],
+            require_exact_voice_ids=True,
+            expected_voice_kind="reference",
+            expected_voice_language="en",
             success=SuccessCriteria(min_chars=0),
         ),
         repetition=1,
@@ -3719,7 +3792,32 @@ def test_audio_voices_requires_expected_inventory(tmp_path: Path) -> None:
     )
 
     assert result.passed is True
-    assert "ryan" in result.output_text
+    assert "angus" in result.output_text
+
+
+def test_audio_voices_rejects_extra_or_mistyped_inventory(tmp_path: Path) -> None:
+    result = _runner()._run_test(
+        _FakeClient(),  # type: ignore[arg-type]
+        model_id="org/ManagedVoices",
+        test=PromptTest(
+            name="voices",
+            kind="audio_voices",
+            prompt="",
+            expected_voice_ids=["angus"],
+            require_exact_voice_ids=True,
+            expected_voice_kind="builtin",
+            expected_voice_language="fr",
+            success=SuccessCriteria(min_chars=0),
+        ),
+        repetition=1,
+        artifact_dir=tmp_path,
+    )
+
+    assert result.passed is False
+    messages = {issue.message for issue in result.issues}
+    assert "Voice catalog included unexpected identifiers" in messages
+    assert "Voice catalog reported an unexpected source kind" in messages
+    assert "Voice catalog omitted the required language tag" in messages
 
 
 def test_ensure_model_placed_fast_fails_when_instance_never_appears() -> None:

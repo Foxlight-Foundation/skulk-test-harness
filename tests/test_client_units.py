@@ -7,6 +7,7 @@ import pytest
 
 from skulk_test_harness import client as client_module
 from skulk_test_harness.client import (
+    AudioVoiceMetadata,
     ChatExecution,
     ClusterApiOwner,
     DataPlaneDiagnosticsSnapshot,
@@ -492,6 +493,7 @@ def test_audio_speech_posts_openai_payload_and_returns_bytes(
             input_text="hello",
             response_format="wav",
             voice="af_heart",
+            lang_code="English",
             speed=1.1,
             temperature=0.0,
             top_p=0.8,
@@ -507,6 +509,7 @@ def test_audio_speech_posts_openai_payload_and_returns_bytes(
             "input": "hello",
             "response_format": "wav",
             "voice": "af_heart",
+            "lang_code": "English",
             "speed": 1.1,
             "temperature": 0.0,
             "top_p": 0.8,
@@ -602,6 +605,7 @@ def test_audio_speech_posts_reference_audio_as_multipart(
         client.audio_speech(
             model_id="org/QwenBase",
             input_text="conditioned output",
+            lang_code="English",
             reference_audio=reference,
             reference_text="reference words",
         )
@@ -613,6 +617,7 @@ def test_audio_speech_posts_reference_audio_as_multipart(
         "model": "org/QwenBase",
         "input": "conditioned output",
         "response_format": "wav",
+        "lang_code": "English",
         "reference_text": "reference words",
     }
     assert seen["files"] == {
@@ -620,7 +625,7 @@ def test_audio_speech_posts_reference_audio_as_multipart(
     }
 
 
-def test_audio_voices_returns_strict_voice_ids(
+def test_audio_voices_returns_strict_voice_metadata(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = SkulkClient("http://skulk.test")
@@ -629,11 +634,27 @@ def test_audio_voices_returns_strict_voice_ids(
         "_request_json",
         lambda *_args, **_kwargs: {
             "object": "list",
-            "data": [{"id": "ryan"}, {"id": "aiden"}],
+            "data": [
+                {
+                    "id": "angus",
+                    "name": "Angus",
+                    "model": "org/TTS",
+                    "preferred_languages": ["en"],
+                    "kind": "reference",
+                }
+            ],
         },
     )
     try:
-        assert client.audio_voices("org/TTS") == ["ryan", "aiden"]
+        assert client.audio_voices("org/TTS") == [
+            AudioVoiceMetadata(
+                id="angus",
+                name="Angus",
+                model="org/TTS",
+                preferred_languages=("en",),
+                kind="reference",
+            )
+        ]
     finally:
         client.close()
 
