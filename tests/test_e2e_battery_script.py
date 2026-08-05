@@ -196,3 +196,19 @@ def test_vision_data_plane_cells_respect_family_placement_contracts() -> None:
     assert model_sets["vision-default-placement"].models == [
         "mlx-community/gemma-4-e2b-it-8bit"
     ]
+
+
+def test_translation_cell_uses_stt_fixture_instead_of_multilingual_tts() -> None:
+    """Keep release translation coverage within the shipped speech contract."""
+
+    root = Path(__file__).resolve().parents[1]
+    script = root / "examples" / "foxlight" / "run_e2e_battery.sh"
+
+    assert "cell speech-translation-stt speech-translation" in script.read_text()
+    model_sets = load_model_sets(
+        root / "examples" / "foxlight" / "model_sets.yaml"
+    ).model_sets
+    assert "speech-translation-tts" not in model_sets
+    assert model_sets["speech-translation-stt"].models == [
+        "CogniSoftOrg/canary-1b-v2-mlx-bf16"
+    ]

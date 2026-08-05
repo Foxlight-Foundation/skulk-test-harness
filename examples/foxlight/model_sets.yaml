@@ -143,13 +143,13 @@ model_sets:
     models:
       - mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit
 
-  speech-translation-tts:
-    name: speech-translation-tts
+  speech-translation-stt:
+    name: speech-translation-stt
     description: >-
-      Multilingual TTS fixture model for the speech-to-English translation
-      roundtrip. Canary is mounted as the secondary model by the test.
+      Speech-to-English translation target exercised with a checked-in French
+      audio fixture. This does not imply multilingual TTS or bundled voices.
     models:
-      - mlx-community/fish-audio-s2-pro-8bit
+      - CogniSoftOrg/canary-1b-v2-mlx-bf16
 
   speech-reference-tts:
     name: speech-reference-tts

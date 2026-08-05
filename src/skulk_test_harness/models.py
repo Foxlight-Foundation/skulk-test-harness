@@ -31,6 +31,7 @@ TestKind = Literal[
     "audio_speech_pressure",
     "audio_voices",
     "audio_transcription",
+    "audio_translation",
     "audio_transcription_streaming",
     "realtime_transcription",
     "realtime_conversation",
@@ -1340,9 +1341,9 @@ class PromptTest(HarnessBaseModel):
     input_audio_path: Path | None = Field(
         default=None,
         description=(
-            "For transcription, realtime, and Fabric speech-chain tests, path "
-            "to a deterministic audio fixture. Relative paths resolve from the "
-            "current harness working directory."
+            "For transcription, translation, realtime, and Fabric speech-chain "
+            "tests, path to a deterministic audio fixture. Relative paths resolve "
+            "from the current harness working directory."
         ),
     )
     input_audio_mime_type: str | None = Field(

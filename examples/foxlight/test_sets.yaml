@@ -812,15 +812,14 @@ test_sets:
   speech-translation:
     name: speech-translation
     description: >
-      Synthesizes a deterministic French utterance, stages and mounts Canary
-      through the normal model-store path, then requires an English translation.
+      Uploads a checked-in, known-transcript French utterance to Canary through
+      the normal model-store path, then requires an English translation. The
+      fixture is not a bundled Skulk voice or multilingual TTS contract.
     tests:
-      - name: french-to-english-roundtrip
-        kind: speech_translation_roundtrip
-        prompt: Bonjour. Le projet Skulk transforme la parole en texte anglais.
-        speech_lang_code: French
-        audio_response_format: wav
-        transcription_model_id: CogniSoftOrg/canary-1b-v2-mlx-bf16
+      - name: french-fixture-to-english
+        kind: audio_translation
+        prompt: ""
+        input_audio_path: src/skulk_test_harness/fixtures/french-translation-release.wav
         transcription_response_format: json
         transcription_language: fr
         success:
