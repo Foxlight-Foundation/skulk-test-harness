@@ -727,8 +727,14 @@ class DashboardQualifier:
                 )
 
                 # Replay must use the same sentence pipeline as live auto-speech.
-                # Waiting for the message's Speak control also proves the first
-                # playback reached idle before the second journey begins.
+                # The model may ignore the requested sentence count, so wait for
+                # the live queue and its audio timeline to become idle before
+                # recording the replay boundary.
+                page.get_by_role(
+                    "button", name="Stop speech", exact=True
+                ).wait_for(
+                    state="detached", timeout=self.model_ready_timeout_s * 1000
+                )
                 replay_speak = page.get_by_role(
                     "button", name="Speak message", exact=True
                 ).last
