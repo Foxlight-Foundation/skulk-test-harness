@@ -2412,7 +2412,10 @@ def test_dashboard_audio_requires_a_real_dashboard_and_mlx_audio() -> None:
             text_models=["org/chat"],
             dashboard_audio=contract,
         )
-    with pytest.raises(ValidationError, match="dashboard_contract='required'"):
+    with pytest.raises(
+        ValidationError,
+        match="eligible release qualification targets must require the dashboard",
+    ):
         FreshInstallTarget(
             kind="physical",
             platform="apple",
@@ -4631,13 +4634,7 @@ def test_dashboard_contract_asserts_both_shipped_shapes(
     served: bool,
     expected_failure: str | None,
 ) -> None:
-    """A headless node is a shipped shape, and both outcomes are asserted.
-
-    The installer skips the dashboard build on a target with no Node toolchain,
-    so demanding the web UI everywhere fails a supported install. Declaring the
-    absence keeps it a contract rather than a skip: an unexpectedly missing
-    dashboard still fails, and so does one that appears where none should.
-    """
+    """The low-level checker still asserts explicit headless experiments."""
 
     body = '<html><body><div id="root"></div></body></html>' if served else "not found"
 
@@ -4666,6 +4663,19 @@ def test_dashboard_contract_asserts_both_shipped_shapes(
             expected_commit=None,
             dashboard_contract=cast(DashboardContract, contract),
         )
+
+
+def test_eligible_release_target_requires_dashboard() -> None:
+    """An eligible default-install target cannot weaken the dashboard gate."""
+
+    target_data = _physical_target().model_dump()
+    target_data["dashboard_contract"] = "absent"
+
+    with pytest.raises(
+        ValidationError,
+        match="eligible release qualification targets must require the dashboard",
+    ):
+        FreshInstallTarget.model_validate(target_data)
 
 
 @pytest.mark.parametrize(

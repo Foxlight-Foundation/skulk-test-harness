@@ -498,6 +498,7 @@ def test_audio_speech_posts_openai_payload_and_returns_bytes(
             temperature=0.0,
             top_p=0.8,
             max_tokens=256,
+            seed=42,
         )
     finally:
         client.close()
@@ -514,6 +515,7 @@ def test_audio_speech_posts_openai_payload_and_returns_bytes(
             "temperature": 0.0,
             "top_p": 0.8,
             "max_tokens": 256,
+            "seed": 42,
         },
     }
     assert execution.audio == wav
