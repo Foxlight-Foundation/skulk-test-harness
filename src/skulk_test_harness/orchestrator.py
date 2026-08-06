@@ -85,6 +85,7 @@ class _SpeechGenerationKwargs(TypedDict):
     top_p: float | None
     max_tokens: int | None
     lang_code: str | None
+    seed: int | None
 
 
 class HarnessRunner:
@@ -4817,6 +4818,7 @@ def _speech_generation_kwargs(test: PromptTest) -> _SpeechGenerationKwargs:
         "top_p": test.top_p if "top_p" in configured else None,
         "max_tokens": tts_max_tokens,
         "lang_code": test.speech_lang_code,
+        "seed": test.speech_seed,
     }
 
 

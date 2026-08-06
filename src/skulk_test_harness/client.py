@@ -1683,6 +1683,7 @@ class SkulkClient:
         temperature: float | None = None,
         top_p: float | None = None,
         max_tokens: int | None = None,
+        seed: int | None = None,
         stream: bool = False,
         streaming_interval: float | None = None,
         read_delay_s: float = 0.0,
@@ -1720,6 +1721,8 @@ class SkulkClient:
             payload["top_p"] = top_p
         if max_tokens is not None:
             payload["max_tokens"] = max_tokens
+        if seed is not None:
+            payload["seed"] = seed
 
         start = time.monotonic()
         if stream:

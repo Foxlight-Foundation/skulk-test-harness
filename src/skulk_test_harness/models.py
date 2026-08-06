@@ -49,9 +49,9 @@ FreshInstallTargetKind = Literal["physical", "runpod"]
 ServiceManager = Literal["launchd", "systemd", "command"]
 FreshInstallStageStatus = Literal["pending", "running", "passed", "failed", "skipped"]
 DataTransport = Literal["zenoh", "gossipsub"]
-# Whether a clean install on this target is expected to serve the web UI. A
-# machine with no Node toolchain ships as an API-only node by design, so that
-# outcome is a contract to assert rather than a failure or a skip.
+# ``absent`` is retained for separate, explicit ``--headless`` experiments.
+# Release qualification itself runs the default installer command, so every
+# eligible target is required to serve the dashboard.
 DashboardContract = Literal["required", "absent"]
 
 
@@ -334,9 +334,9 @@ class FreshInstallTarget(HarnessBaseModel):
     dashboard_contract: DashboardContract = Field(
         default="required",
         description=(
-            "Whether a clean install here must serve the web UI. Set 'absent' "
-            "only for a target with no Node toolchain, where the installer "
-            "skips the dashboard build by design; both outcomes are asserted."
+            "Whether the web UI must be served. Every eligible default-install "
+            "release target must use 'required'; 'absent' is reserved for "
+            "separate, explicitly headless experiments."
         ),
     )
     text_models: list[str] = Field(
@@ -361,6 +361,10 @@ class FreshInstallTarget(HarnessBaseModel):
 
         if self.eligible and self.exclusion_reason:
             raise ValueError("eligible targets cannot declare exclusion_reason")
+        if self.eligible and self.dashboard_contract != "required":
+            raise ValueError(
+                "eligible release qualification targets must require the dashboard"
+            )
         if self.kind == "physical":
             if not self.ssh_host:
                 raise ValueError("physical targets require ssh_host")
@@ -1223,6 +1227,16 @@ class PromptTest(HarnessBaseModel):
         default=None,
         gt=0,
         description="Optional TTS speed multiplier passed to `/v1/audio/speech`.",
+    )
+    speech_seed: int | None = Field(
+        default=42,
+        ge=0,
+        le=(2**32) - 1,
+        description=(
+            "Optional unsigned 32-bit TTS sampling seed. Defaults to the "
+            "dashboard's shipped seed so speech cells exercise user-facing "
+            "sampling behavior; set null to test the API's advancing RNG path."
+        ),
     )
     reference_model_id: str | None = Field(
         default=None,

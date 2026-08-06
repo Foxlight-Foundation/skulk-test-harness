@@ -130,6 +130,13 @@ harness:
 15. keeps the lease through mandatory RunPod qualification and releases it only
     after restoration, provider deletion, and the composite audit succeed.
 
+Every eligible release target must serve the production dashboard after the
+literal default installer command. A missing host Node/npm installation is not
+an accepted headless outcome because the installer carries its own pinned
+runtime. Explicit `--headless` experiments remain available as diagnostics,
+but they are ineligible for candidate or shipping qualification and cannot
+weaken this gate.
+
 Legacy single-target diagnostic legs can still declare paired isolation
 commands. They are not the physical release gate. A target used by
 `physical_fleets` declares `whole_fleet_member: true`, supplies no isolation

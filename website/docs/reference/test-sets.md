@@ -88,6 +88,7 @@ Each map key must match the test set's `name`.
 | `speech_voice` | Optional voice name for TTS |
 | `speech_lang_code` | Optional model-language value sent as `lang_code` for TTS |
 | `speech_speed` | Optional speech speed multiplier for TTS |
+| `speech_seed` | Optional unsigned 32-bit TTS sampling seed; defaults to `42` to mirror the shipped dashboard, while `null` omits the API field and exercises advancing RNG |
 | `reference_model_id` | Donor TTS model for `kind: speech_reference_roundtrip` |
 | `reference_text` | Transcript spoken in the generated reference clip; defaults to `prompt` |
 | `expected_voice_ids` | Voice identifiers required for `kind: audio_voices` |

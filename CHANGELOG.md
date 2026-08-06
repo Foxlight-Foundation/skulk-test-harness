@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Speech cells now send unsigned sampling seed `42` by default, matching the
+  shipped dashboard's deterministic TTS behavior. Tests can set
+  `speech_seed: null` to exercise the API's advancing random stream.
+
 - Exercise speech-to-English translation with a fixed French WAV uploaded
   directly to the mounted translation model, rather than synthesizing the
   fixture through an unsupported multilingual TTS/voice path.
@@ -31,6 +35,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lease. Sandboxed single-node legs remain diagnostic-only.
 
 ### Fixed
+
+- Eligible candidate and shipping targets must require the production
+  dashboard. Explicitly headless installs remain diagnostic-only and cannot
+  weaken the fresh-install release gate.
 
 - Authoritative fleet-lease reads now retry bounded, read-only Git fetch
   transport failures before failing closed, so one transient 30-second fetch

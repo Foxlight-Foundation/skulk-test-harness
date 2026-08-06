@@ -848,6 +848,26 @@ def test_prompt_test_model_scope_is_exact_and_defaults_to_all_models() -> None:
         )
 
 
+def test_prompt_test_speech_seed_defaults_and_bounds() -> None:
+    """Speech cells mirror dashboard sampling unless omission is explicit."""
+
+    assert PromptTest(name="default-seed", prompt="hello").speech_seed == 42
+    assert (
+        PromptTest(name="omitted-seed", prompt="hello", speech_seed=None).speech_seed
+        is None
+    )
+    assert (
+        PromptTest(
+            name="max-seed", prompt="hello", speech_seed=(2**32) - 1
+        ).speech_seed
+        == (2**32) - 1
+    )
+    with pytest.raises(ValueError):
+        PromptTest(name="negative-seed", prompt="hello", speech_seed=-1)
+    with pytest.raises(ValueError):
+        PromptTest(name="overflow-seed", prompt="hello", speech_seed=2**32)
+
+
 def test_served_spec_selector_matches_runtime_field() -> None:
     selector = (
         load_model_sets(Path(__file__).parents[1] / "configs/model_sets.yaml")
@@ -1705,6 +1725,7 @@ class _FakeClient:
         temperature: float | None = None,
         top_p: float | None = None,
         max_tokens: int | None = None,
+        seed: int | None = None,
         stream: bool = False,
         streaming_interval: float | None = None,
         read_delay_s: float = 0.0,
@@ -1724,6 +1745,7 @@ class _FakeClient:
                 "temperature": temperature,
                 "top_p": top_p,
                 "max_tokens": max_tokens,
+                "seed": seed,
                 "stream": stream,
                 "streaming_interval": streaming_interval,
                 "read_delay_s": read_delay_s,
@@ -2343,6 +2365,7 @@ def test_run_test_dispatches_audio_speech(tmp_path: Path) -> None:
     assert client.speech_requests[0]["temperature"] == 0.0
     assert client.speech_requests[0]["top_p"] == 0.8
     assert client.speech_requests[0]["max_tokens"] == 256
+    assert client.speech_requests[0]["seed"] == 42
     assert result.artifact_path is not None
     assert result.artifact_path == tmp_path / "org-tts--tts--rep-1.wav"
     assert result.artifact_path.read_bytes() == _wav_bytes()
