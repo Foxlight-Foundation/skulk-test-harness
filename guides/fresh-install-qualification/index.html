@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="generator" content="Docusaurus v3.10.1">
 <title data-rh="true">Fresh-install release qualification | Skulk Test Harness</title><meta data-rh="true" name="viewport" content="width=device-width,initial-scale=1"><meta data-rh="true" name="twitter:card" content="summary_large_image"><meta data-rh="true" property="og:url" content="https://foxlight-foundation.github.io/skulk-test-harness/guides/fresh-install-qualification"><meta data-rh="true" property="og:locale" content="en"><meta data-rh="true" name="docusaurus_locale" content="en"><meta data-rh="true" name="docsearch:language" content="en"><meta data-rh="true" name="docusaurus_version" content="current"><meta data-rh="true" name="docusaurus_tag" content="docs-default-current"><meta data-rh="true" name="docsearch:version" content="current"><meta data-rh="true" name="docsearch:docusaurus_tag" content="docs-default-current"><meta data-rh="true" property="og:title" content="Fresh-install release qualification | Skulk Test Harness"><meta data-rh="true" name="description" content="Fresh-install qualification is the only harness suite that can satisfy Skulk&#x27;s"><meta data-rh="true" property="og:description" content="Fresh-install qualification is the only harness suite that can satisfy Skulk&#x27;s"><link data-rh="true" rel="icon" href="/skulk-test-harness/img/skulk-logo.svg"><link data-rh="true" rel="canonical" href="https://foxlight-foundation.github.io/skulk-test-harness/guides/fresh-install-qualification"><link data-rh="true" rel="alternate" href="https://foxlight-foundation.github.io/skulk-test-harness/guides/fresh-install-qualification" hreflang="en"><link data-rh="true" rel="alternate" href="https://foxlight-foundation.github.io/skulk-test-harness/guides/fresh-install-qualification" hreflang="x-default"><script data-rh="true" type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Fresh-install release qualification","item":"https://foxlight-foundation.github.io/skulk-test-harness/guides/fresh-install-qualification"}]}</script><link rel="stylesheet" href="/skulk-test-harness/assets/css/styles.9fe42a7d.css">
-<script src="/skulk-test-harness/assets/js/runtime~main.3db6f981.js" defer="defer"></script>
+<script src="/skulk-test-harness/assets/js/runtime~main.757edbcf.js" defer="defer"></script>
 <script src="/skulk-test-harness/assets/js/main.42683a4a.js" defer="defer"></script>
 </head>
 <body>
@@ -109,6 +109,12 @@ same complete original topology before accepting recovery; and</li>
 <li class="">keeps the lease through mandatory RunPod qualification and releases it only
 after restoration, provider deletion, and the composite audit succeed.</li>
 </ol>
+<p>Every eligible release target must serve the production dashboard after the
+literal default installer command. A missing host Node/npm installation is not
+an accepted headless outcome because the installer carries its own pinned
+runtime. Explicit <code>--headless</code> experiments remain available as diagnostics,
+but they are ineligible for candidate or shipping qualification and cannot
+weaken this gate.</p>
 <p>Legacy single-target diagnostic legs can still declare paired isolation
 commands. They are not the physical release gate. A target used by
 <code>physical_fleets</code> declares <code>whole_fleet_member: true</code>, supplies no isolation
