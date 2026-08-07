@@ -407,3 +407,53 @@ def test_fleet_cli_round_trip(remote: Path, tmp_path: Path) -> None:
     released = runner.invoke(cli.app, ["fleet", "release", "--config", str(cfg_file)])
     assert released.exit_code == 0
     assert "released the fleet" in released.output
+
+
+def test_segment_lock_path_main_is_unchanged() -> None:
+    """The main segment keeps the configured path byte-identical."""
+    from skulk_test_harness.fleet_lock import MAIN_SEGMENT, segment_lock_path
+
+    assert (
+        segment_lock_path("coordination/fleet-lock.json", MAIN_SEGMENT)
+        == "coordination/fleet-lock.json"
+    )
+
+
+def test_segment_lock_path_inserts_segment_before_extension() -> None:
+    from skulk_test_harness.fleet_lock import segment_lock_path
+
+    assert (
+        segment_lock_path("coordination/fleet-lock.json", "den")
+        == "coordination/fleet-lock.den.json"
+    )
+
+
+def test_segment_lock_path_rejects_unsafe_names() -> None:
+    import pytest
+
+    from skulk_test_harness.fleet_lock import segment_lock_path
+
+    for bad in ("../escape", "UPPER", "", "a" * 33, "spa ce"):
+        with pytest.raises(ValueError):
+            segment_lock_path("coordination/fleet-lock.json", bad)
+
+
+def test_segments_hold_independent_leases(remote: Path, tmp_path: Path) -> None:
+    """Acquiring one segment leaves the other free (separate lock files)."""
+    from skulk_test_harness.fleet_lock import FleetLockStore
+
+    main_store = _store(remote, tmp_path / "clone-main", "claude")
+    den_config = _store(remote, tmp_path / "clone-den", "claude")._config
+    den_store = FleetLockStore(den_config, segment="den")
+    codex_main = _store(remote, tmp_path / "clone-codex", "codex")
+
+    assert den_store.acquire(branch="feat/memory", host="m5").ok
+    # The den lease does not block the main pool for the other agent.
+    assert codex_main.acquire(branch="dev", host="codex-box").ok
+    # But the den itself is now held against a second claim by another holder.
+    codex_den_config = _store(remote, tmp_path / "clone-codex-den", "codex")._config
+    codex_den = FleetLockStore(codex_den_config, segment="den")
+    assert not codex_den.acquire(branch="dev", host="codex-box").ok
+    # Leases record their segment.
+    assert den_store.read().segment == "den"
+    assert main_store.read().segment in (None, "main")
