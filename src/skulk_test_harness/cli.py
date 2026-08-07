@@ -17,7 +17,7 @@ from skulk_test_harness import __version__, stability
 from skulk_test_harness import submit as submit_module
 from skulk_test_harness.client import SkulkClient
 from skulk_test_harness.compare import compare, load_reports, select_run_dirs
-from skulk_test_harness.fleet_lock import FleetLockStore
+from skulk_test_harness.fleet_lock import MAIN_SEGMENT, FleetLockStore
 from skulk_test_harness.fresh_install import FreshInstallQualifier
 from skulk_test_harness.goal_parser import parse_goal
 from skulk_test_harness.models import (
@@ -100,12 +100,23 @@ def _load_runner(config_path: Path) -> tuple[HarnessConfig, HarnessRunner]:
     )
 
 
-def _load_fleet_store(cfg: HarnessConfig) -> FleetLockStore | None:
-    """Build the fleet-lock store, or ``None`` when the lease is not configured."""
+def _load_fleet_store(
+    cfg: HarnessConfig, *, segment: str = MAIN_SEGMENT
+) -> FleetLockStore | None:
+    """Build the fleet-lock store, or ``None`` when the lease is not configured.
+
+    ``segment`` selects an independent named lease (its own lock file in the
+    coordination repo), so agents working disjoint hardware pools stop
+    serializing on one mutex. The main segment keeps the historical file.
+    """
 
     if cfg.fleet_lock is None:
         return None
-    return FleetLockStore(cfg.fleet_lock)
+    try:
+        return FleetLockStore(cfg.fleet_lock, segment=segment)
+    except ValueError as exception:
+        console.print(f"[bold red]REFUSED[/]: {exception}")
+        raise typer.Exit(code=2) from exception
 
 
 def _require_fleet_or_refuse(cfg: HarnessConfig, *, force: bool) -> None:
@@ -561,11 +572,23 @@ def fresh_install_diagnose(
 
 
 @fleet_app.command("status")
-def fleet_status(config: ConfigPath = Path("skulk-harness.yaml")) -> None:
+def fleet_status(
+    config: ConfigPath = Path("skulk-harness.yaml"),
+    segment: Annotated[
+        str,
+        typer.Option(
+            "--segment",
+            help=(
+                "Named fleet segment to operate on (independent lease per "
+                "segment); default is the shared main pool."
+            ),
+        ),
+    ] = MAIN_SEGMENT,
+) -> None:
     """Show the current fleet lease."""
 
     cfg = load_config(config)
-    store = _load_fleet_store(cfg)
+    store = _load_fleet_store(cfg, segment=segment)
     if store is None:
         console.print(
             "fleet lock is not configured (no `fleet_lock` in the harness "
@@ -593,11 +616,21 @@ def fleet_acquire(
         typer.Option("--ttl-minutes", help="Lease lifetime; config default if unset."),
     ] = None,
     note: Annotated[str | None, typer.Option("--note")] = None,
+    segment: Annotated[
+        str,
+        typer.Option(
+            "--segment",
+            help=(
+                "Named fleet segment to operate on (independent lease per "
+                "segment); default is the shared main pool."
+            ),
+        ),
+    ] = MAIN_SEGMENT,
 ) -> None:
     """Acquire the shared fleet, or refuse if another agent holds it."""
 
     cfg = load_config(config)
-    store = _load_fleet_store(cfg)
+    store = _load_fleet_store(cfg, segment=segment)
     if store is None:
         console.print("fleet lock is not configured; nothing to acquire.")
         return
@@ -623,11 +656,21 @@ def fleet_extend(
         float | None,
         typer.Option("--ttl-minutes", help="New lifetime; config default if unset."),
     ] = None,
+    segment: Annotated[
+        str,
+        typer.Option(
+            "--segment",
+            help=(
+                "Named fleet segment to operate on (independent lease per "
+                "segment); default is the shared main pool."
+            ),
+        ),
+    ] = MAIN_SEGMENT,
 ) -> None:
     """Push the lease TTL forward (holder only). Use during a long battery."""
 
     cfg = load_config(config)
-    store = _load_fleet_store(cfg)
+    store = _load_fleet_store(cfg, segment=segment)
     if store is None:
         console.print("fleet lock is not configured; nothing to extend.")
         return
@@ -652,11 +695,21 @@ def fleet_release(
             help="Release even if another agent holds it (break a stuck lock).",
         ),
     ] = False,
+    segment: Annotated[
+        str,
+        typer.Option(
+            "--segment",
+            help=(
+                "Named fleet segment to operate on (independent lease per "
+                "segment); default is the shared main pool."
+            ),
+        ),
+    ] = MAIN_SEGMENT,
 ) -> None:
     """Release the shared fleet so another agent can take it."""
 
     cfg = load_config(config)
-    store = _load_fleet_store(cfg)
+    store = _load_fleet_store(cfg, segment=segment)
     if store is None:
         console.print("fleet lock is not configured; nothing to release.")
         return

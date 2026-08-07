@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import fcntl
 import json
+import re
 import subprocess
 import time
 from collections.abc import Iterator
@@ -79,6 +80,10 @@ class FleetLease(BaseModel):
     # ``schema_version`` with the on-disk alias ``schema``.
     schema_version: int = Field(default=1, alias="schema")
     state: str = "free"
+    # The named fleet segment this lease covers ("main" when absent). Older
+    # harnesses ignore the field via extra="ignore"; older lock files without
+    # it read back as the main segment.
+    segment: str | None = None
     holder: str | None = None
     branch: str | None = None
     host: str | None = None
@@ -132,6 +137,35 @@ class LeaseOutcome:
     message: str
 
 
+SEGMENT_NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
+"""Segment names stay short, lowercase, and path-safe."""
+
+
+def segment_lock_path(base_path: str, segment: str) -> str:
+    """Derive the lock-file path for a named segment.
+
+    The main segment keeps the configured path unchanged, so existing
+    deployments and older harness versions are untouched; any other segment
+    inserts its name before the extension (``fleet-lock.den.json``), giving
+    each segment an independent compare-and-swap file in the same repo.
+    """
+
+    if segment == MAIN_SEGMENT:
+        return base_path
+    if not SEGMENT_NAME_PATTERN.match(segment):
+        raise ValueError(
+            f"invalid segment name {segment!r}: use 1-32 chars of [a-z0-9-], "
+            "starting alphanumeric"
+        )
+    if base_path.endswith(".json"):
+        return f"{base_path[: -len('.json')]}.{segment}.json"
+    return f"{base_path}.{segment}"
+
+
+MAIN_SEGMENT = "main"
+"""The default segment: the shared pool, stored at the configured path."""
+
+
 class FleetLockStore:
     """Git compare-and-swap store for the fleet lease.
 
@@ -140,8 +174,10 @@ class FleetLockStore:
     surfaced as a lost race rather than retried blindly.
     """
 
-    def __init__(self, config: FleetLock) -> None:
+    def __init__(self, config: FleetLock, *, segment: str = MAIN_SEGMENT) -> None:
         self._config = config
+        self._segment = segment
+        self._lock_path = segment_lock_path(config.path, segment)
         self._dir = (config.cache_dir or _default_cache_dir()).expanduser()
         self._local_lock_path = self._dir.parent / f".{self._dir.name}.lock"
 
@@ -237,10 +273,10 @@ class FleetLockStore:
         caller can re-read the authoritative state.
         """
 
-        lock_path = self._dir / self._config.path
+        lock_path = self._dir / self._lock_path
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         lock_path.write_text(lease.to_json())
-        self._git("add", "--", self._config.path)
+        self._git("add", "--", self._lock_path)
         # Idempotent no-op writes (identical content) need no commit or push.
         if not self._git("status", "--porcelain").stdout.strip():
             # A no-op is successful only when an authoritative reread contains
@@ -288,7 +324,7 @@ class FleetLockStore:
         """Fetch the lease while the caller owns the local cache lock."""
 
         self._ensure_clone()
-        lock_path = self._dir / self._config.path
+        lock_path = self._dir / self._lock_path
         if not lock_path.exists():
             return FleetLease()
         return FleetLease.model_validate_json(lock_path.read_text())
@@ -347,6 +383,7 @@ class FleetLockStore:
         ttl = ttl_s if ttl_s is not None else self._config.default_ttl_s
         lease = FleetLease(
             state="held",
+            segment=self._segment,
             holder=self._config.holder,
             branch=branch,
             host=host,
