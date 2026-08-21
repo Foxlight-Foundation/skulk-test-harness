@@ -627,3 +627,84 @@ test_sets:
         enable_thinking: false
         success:
           min_chars: 250
+
+  external-api-compat:
+    name: external-api-compat
+    description: >
+      Third-party client compatibility. Drives the OpenAI, Anthropic and Ollama
+      wire surfaces the way software that has never heard of Skulk drives them,
+      and asserts response shapes, streaming framing and error envelopes rather
+      than generated text. Using Skulk through its API is the primary use case,
+      so these are contract tests: a client branches on status codes and field
+      names long before it looks at what the model said.
+    tests:
+      - name: openai-surface-contract
+        kind: compat_probe
+        compat_surface: openai
+        prompt: "Reply with exactly the word: ready"
+        description: >
+          GET /v1/models list shape and coverage of serving models; a
+          non-streaming completion with a well-formed choices/usage object; a
+          streaming completion framed as SSE and terminated with [DONE]; a
+          404 error envelope for an unknown model; and a malformed request
+          answered with a client error rather than a server error. A success
+          status carrying an empty or unparseable body fails this test.
+        success:
+          min_chars: 0
+
+      - name: anthropic-surface-contract
+        kind: compat_probe
+        compat_surface: anthropic
+        prompt: "Reply with exactly the word: ready"
+        description: >
+          POST /v1/messages returns Anthropic's message shape, with content
+          text blocks, a known stop_reason and input/output token usage. Also
+          checks a separately supplied system prompt, which every Anthropic
+          client sends outside the message list, and the unknown-model error
+          envelope. This is the surface Claude Code speaks.
+        success:
+          min_chars: 0
+
+      - name: ollama-surface-contract
+        kind: compat_probe
+        compat_surface: ollama
+        prompt: "Reply with exactly the word: ready"
+        description: >
+          Version, tag listing and chat across every prefix an Ollama client
+          may produce, including the doubled and versioned forms, plus
+          generate, show, and a streaming chat framed as newline-delimited
+          JSON terminated by done=true. Clients disagree about whether their
+          base URL already ends in /api, so the aliases are load-bearing.
+        success:
+          min_chars: 0
+
+  client-app-compat:
+    name: client-app-compat
+    description: >
+      Install a real third-party application and drive it against the cluster.
+      The compatibility probes assert the wire contract; this asserts the thing
+      an operator actually cares about, that an application installed the way
+      its own documentation says to install it works when pointed at Skulk.
+      AnythingLLM is the first because one journey exercises both halves of the
+      OpenAI surface: chat completions for the conversation and embeddings for
+      document indexing. Requires Docker on the machine running the harness,
+      and pulls the upstream image on first run.
+    tests:
+      - name: anythingllm-chat-and-retrieval
+        kind: client_app
+        prompt: "Reply with exactly the word: ready"
+        max_tokens: 8192
+        repetitions: 1
+        client_app_embedding_model_id: BAAI/bge-small-en-v1.5
+        client_app_startup_timeout_s: 600
+        description: >
+          Starts AnythingLLM with the cluster configured as both its language
+          model and its embedding provider, using the same Docker recipe the
+          dashboard's Integrations page generates. Asserts the application is
+          really pointed at this cluster, holds a conversation, then uploads a
+          document containing a token generated fresh for this run, embeds it
+          through the cluster, and asks a question only answerable from that
+          document. A fluent answer that omits the token fails, because it
+          proves the model answered from priors rather than from retrieval.
+        success:
+          min_chars: 0

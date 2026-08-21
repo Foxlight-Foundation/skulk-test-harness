@@ -37,6 +37,8 @@ Each map key must match the test set's `name`.
 | `concurrent` | Aggregate decode throughput and correctness under many simultaneous requests; reports aggregate tokens per second and per-request decode-rate distribution. Streaming cells also report time-to-first-token under load. Single-turn: it forwards `tools` for tool-call emission under load but does not run the tool-result round trip (`tool_mocks` is rejected; use `kind: tool` for that) |
 | `error` | Expected API error behavior |
 | `embedding` | Embeddings endpoint behavior |
+| `compat_probe` | Third-party wire-format compatibility for one surface (`openai`, `anthropic` or `ollama`). Runs a battery of shape, streaming-framing and error-envelope checks the way a client that has never heard of Skulk would, rather than asserting generated text. A success status carrying an empty or unparseable body fails |
+| `client_app` | Installs a real third-party application in a container, points it at the cluster and drives it through its own API. Requires Docker on the machine running the harness |
 | `audio_speech` | Text-to-speech endpoint behavior; generated audio is saved as an artifact |
 | `audio_speech_streaming` | Stable card-qualified text-to-speech streaming behavior; generated audio and timing sidecar are saved as artifacts |
 | `audio_speech_pressure` | Concurrent streaming TTS across discovered API owners, with deterministic local/remote routing, DATA diagnostics, optional chat workers, and one audio/timing artifact per speech request |
@@ -84,6 +86,13 @@ Each map key must match the test set's `name`.
 | `embedding_input` | Embedding request input |
 | `expected_embedding_dimensions` | Required vector dimensionality |
 | `min_embedding_norm` | Minimum L2 norm for embedding vectors |
+| `compat_surface` | Wire format a `compat_probe` speaks: `openai`, `anthropic` or `ollama` |
+| `compat_include_streaming` | Whether a compat probe also exercises the surface's streaming form (default true) |
+| `compat_embedding_model_id` | Optional embedding model for the OpenAI compat probe; also asserts that asking an embedding model to chat returns a 400 envelope |
+| `client_app_image` | Container image for a `client_app` test (defaults to the upstream AnythingLLM image) |
+| `client_app_port` | Host port the application is published on (default 3101, deliberately not the app's own default) |
+| `client_app_embedding_model_id` | Embedding model the application indexes documents with; enables the retrieval leg of the journey |
+| `client_app_startup_timeout_s` | How long the application has to report healthy, including image pull |
 | `audio_response_format` | TTS audio response format, such as `wav` |
 | `speech_voice` | Optional voice name for TTS |
 | `speech_lang_code` | Optional model-language value sent as `lang_code` for TTS |
@@ -163,6 +172,8 @@ Each map key must match the test set's `name`.
 | `cancellation` | Streaming cancellation coverage |
 | `context-admission` | Oversized request guard |
 | `embeddings` | Embeddings endpoint coverage |
+| `external-api-compat` | Contract coverage for the OpenAI, Anthropic and Ollama surfaces that third-party clients speak |
+| `client-app-compat` | Installs AnythingLLM against the cluster and drives chat plus document retrieval through it |
 | `speech-synthesis` | Text-to-speech endpoint coverage |
 | `speech-synthesis-semantic` | TTS-to-STT prompt-fidelity coverage using word error rate |
 | `speech-synthesis-streaming` | Experimental text-to-speech streaming coverage |

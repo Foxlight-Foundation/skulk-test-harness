@@ -15,6 +15,12 @@ AudioResponseFormat = Literal["mp3", "wav", "flac", "ogg", "opus"]
 TranscriptionResponseFormat = Literal[
     "json", "text", "verbose_json", "srt", "vtt", "ndjson"
 ]
+CompatSurface = Literal["openai", "anthropic", "ollama"]
+"""Third-party wire format a compat probe speaks.
+
+Mirrors `compat_api.CompatSurface`; declared here so configuration validation
+does not have to import the probe modules.
+"""
 OwnerTopology = Literal["any", "local_remote"]
 SpeechOwnerTopology = OwnerTopology
 TestKind = Literal[
@@ -40,6 +46,8 @@ TestKind = Literal[
     "speech_translation_roundtrip",
     "speech_reference_roundtrip",
     "vision_data_plane",
+    "compat_probe",
+    "client_app",
 ]
 RunMode = Literal["plan", "execute"]
 IssueSeverity = Literal["info", "warning", "error"]
@@ -1477,6 +1485,69 @@ class PromptTest(HarnessBaseModel):
         ),
     )
     repetitions: int = Field(default=1, ge=1)
+    client_app_image: str | None = Field(
+        default=None,
+        description=(
+            "Container image for kind='client_app'. Defaults to the upstream "
+            "AnythingLLM image. Pinning a digest here trades reproducibility "
+            "against testing what operators actually install."
+        ),
+    )
+    client_app_port: int = Field(
+        default=3101,
+        gt=0,
+        le=65535,
+        description=(
+            "Host port the client application is published on. Deliberately not "
+            "the application's own default, so a run cannot collide with an "
+            "operator's existing instance."
+        ),
+    )
+    client_app_embedding_model_id: str | None = Field(
+        default=None,
+        description=(
+            "Embedding model the client application should index documents "
+            "with. When set, the journey uploads a document, embeds it through "
+            "the cluster, and asks a question only answerable from that "
+            "document, which proves the retrieval path end to end."
+        ),
+    )
+    client_app_startup_timeout_s: int = Field(
+        default=300,
+        gt=0,
+        description=(
+            "How long the application has to report healthy after its container "
+            "starts. Includes image pull on a cold host."
+        ),
+    )
+    compat_surface: CompatSurface | None = Field(
+        default=None,
+        description=(
+            "Third-party wire format to probe for kind='compat_probe': "
+            "'openai' (/v1/models, /v1/chat/completions, /v1/embeddings), "
+            "'anthropic' (/v1/messages), or 'ollama' (/ollama/api/*). Each "
+            "surface runs a battery of shape and error-contract checks rather "
+            "than a single request."
+        ),
+    )
+    compat_include_streaming: bool = Field(
+        default=True,
+        description=(
+            "Whether the compat probe also exercises the surface's streaming "
+            "form. Streaming framing differs per surface (SSE with a [DONE] "
+            "sentinel for OpenAI, newline-delimited JSON for Ollama) and is a "
+            "common source of client breakage, so it is on by default."
+        ),
+    )
+    compat_embedding_model_id: str | None = Field(
+        default=None,
+        description=(
+            "Optional embedding model for the OpenAI compat probe. When set, "
+            "the probe additionally validates /v1/embeddings and asserts that "
+            "asking an embedding model to chat returns a 400 error envelope "
+            "rather than an unhelpful success or server error."
+        ),
+    )
     success: SuccessCriteria = Field(default_factory=SuccessCriteria)
 
     @field_validator("model_ids")
@@ -1489,6 +1560,31 @@ class PromptTest(HarnessBaseModel):
         if len(value) != len(set(value)):
             raise ValueError("PromptTest.model_ids entries must be unique")
         return value
+
+    @model_validator(mode="after")
+    def _validate_compat_contract(self) -> "PromptTest":
+        """Require a surface for compat probes and forbid it elsewhere.
+
+        Config-load validation means `tests sets` and `plan` catch a
+        misconfigured suite without a cluster, which matters because a dry run
+        never reaches the runner.
+        """
+
+        if self.kind != "client_app" and self.client_app_embedding_model_id is not None:
+            raise ValueError(
+                "client_app_embedding_model_id requires kind='client_app'"
+            )
+        if self.kind != "client_app" and self.client_app_image is not None:
+            raise ValueError("client_app_image requires kind='client_app'")
+        if self.kind == "compat_probe" and self.compat_surface is None:
+            raise ValueError("kind='compat_probe' requires compat_surface")
+        if self.kind != "compat_probe" and self.compat_surface is not None:
+            raise ValueError("compat_surface requires kind='compat_probe'")
+        if self.compat_embedding_model_id is not None and self.compat_surface != "openai":
+            raise ValueError(
+                "compat_embedding_model_id applies only to compat_surface='openai'"
+            )
+        return self
 
     @model_validator(mode="after")
     def _validate_concurrency_contract(self) -> "PromptTest":
