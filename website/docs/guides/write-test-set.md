@@ -511,3 +511,70 @@ uv run skulk-harness plan --model-set store-smoke --test-set my-chat-tests
 
 Start with one small test. Add more only after the first one passes and the
 report is easy to understand.
+
+## Third-party API compatibility
+
+Most Skulk use is through its HTTP API rather than the built-in chat, and the
+clients on the other end are written against OpenAI, Anthropic and Ollama
+rather than against Skulk. They branch on status codes and field names long
+before they look at what the model said, so a response that reads correctly to
+a human but is wrong in shape breaks them, and breaks them far from the cause.
+
+A `compat_probe` test asserts that contract for one surface. Each one runs a
+battery rather than a single call, because the failures worth catching live in
+the corners: the second prefix an Ollama client tries, the error body a client
+shows its user, the terminator that tells a stream reader the turn ended.
+
+```yaml
+- name: openai-surface-contract
+  kind: compat_probe
+  compat_surface: openai
+  prompt: "Reply with exactly the word: ready"
+  compat_embedding_model_id: BAAI/bge-small-en-v1.5
+  success:
+    min_chars: 0
+```
+
+`success` is effectively unused for these tests: the verdict comes from the
+wire checks, not from generated text, and the prompt is deliberately trivial so
+that a failure is a wire failure rather than a model failure.
+
+The surfaces available are `openai` (model listing, chat completions streaming
+and not, embeddings, error envelopes), `anthropic` (the Messages API that
+Claude Code speaks, including a separately supplied system prompt), and
+`ollama` (version, tags, chat, generate and show across every prefix an Ollama
+client may produce, plus newline-delimited streaming).
+
+## Driving a real application
+
+A contract test proves the wire is right. It does not prove that a real
+application, installed the way its own documentation says to install it, works
+when pointed at the cluster. An application exercises the API through its own
+client library, its own retry policy and its own assumptions, and it fails in
+ways a hand-written probe does not reach.
+
+A `client_app` test installs one and drives it:
+
+```yaml
+- name: anythingllm-chat-and-retrieval
+  kind: client_app
+  prompt: "Reply with exactly the word: ready"
+  max_tokens: 8192
+  client_app_embedding_model_id: BAAI/bge-small-en-v1.5
+  client_app_startup_timeout_s: 600
+  success:
+    min_chars: 0
+```
+
+This requires Docker on the machine running the harness and pulls the upstream
+image on first run. The container is always removed afterwards, including on
+interrupt, because a leaked one holds its port and poisons the next run.
+
+The retrieval leg is the interesting half. When an embedding model is given,
+the journey uploads a document containing a token generated fresh for that run,
+embeds it through the cluster, and asks a question only answerable from that
+document. A fluent answer that omits the token fails, because it proves the
+model answered from its priors rather than from retrieval. The journey also
+asserts up front that the application really is pointed at this cluster, which
+guards the most embarrassing false pass: the application answering from some
+other provider while the suite reports success.

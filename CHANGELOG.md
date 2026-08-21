@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Two suites covering the API surfaces third-party clients speak, which had no
+  coverage at all: `external-api-compat` and `client-app-compat`.
+
+  `external-api-compat` adds a `compat_probe` kind that drives one wire format
+  the way software that has never heard of Skulk drives it. The `openai`
+  surface checks the model listing, non-streaming and streaming chat
+  completions, embeddings, and the error envelopes for an unknown model, a
+  malformed request and an embedding model asked to chat. The `anthropic`
+  surface checks the Messages shape that Claude Code speaks, including a
+  separately supplied system prompt. The `ollama` surface checks version, tags,
+  chat, generate and show across every prefix an Ollama client may produce,
+  plus newline-delimited streaming. One invariant runs throughout: a success
+  status must carry a body that parses and matches the documented shape, since
+  a 2xx with an empty body defeats client error handling entirely.
+
+  `client-app-compat` adds a `client_app` kind that installs a real application
+  in a container, points it at the cluster and drives it through its own API.
+  AnythingLLM is the first, because one journey exercises both halves of the
+  OpenAI surface: chat completions for the conversation and embeddings for
+  document indexing. The retrieval leg uploads a document carrying a token
+  generated fresh for the run, so a fluent answer that omits the token fails
+  rather than passing on the model's priors. Requires Docker on the machine
+  running the harness.
+
+  The wire contract lives in `compat_api` as pure functions over already-fetched
+  responses, so it is exercised offline in CI; only the requests themselves need
+  a cluster.
+
 ### Changed
 
 - Speech cells now send unsigned sampling seed `42` by default, matching the

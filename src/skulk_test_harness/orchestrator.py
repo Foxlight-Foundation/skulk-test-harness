@@ -9,9 +9,12 @@ import hashlib
 import io
 import json
 import mimetypes
+import os
 import re
 import statistics
+import tempfile
 import time
+import uuid
 import wave
 from collections.abc import Mapping
 from dataclasses import asdict
@@ -35,6 +38,25 @@ from skulk_test_harness.client import (
     bench_chat_async,
     concurrent_benchmark_client,
     stream_chat_async,
+)
+from skulk_test_harness.client_apps import (
+    DEFAULT_CONTAINER_NAME,
+    DEFAULT_IMAGE,
+    ClientAppJourney,
+    docker_logs_argv,
+    docker_remove_argv,
+    docker_run_argv,
+    drive_anythingllm,
+    run_command,
+    summarize_journey,
+    wait_until_healthy,
+)
+from skulk_test_harness.compat_probes import (
+    CompatProbeReport,
+    build_probe_client,
+    run_anthropic_probes,
+    run_ollama_probes,
+    run_openai_probes,
 )
 from skulk_test_harness.fingerprint import gather_fingerprint
 from skulk_test_harness.models import (
@@ -1124,6 +1146,14 @@ class HarnessRunner:
         if test.kind == "embedding":
             return self._run_embedding_test(
                 client, model_id=model_id, test=test, repetition=repetition
+            )
+        if test.kind == "compat_probe":
+            return self._run_compat_probe_test(
+                client, model_id=model_id, test=test, repetition=repetition
+            )
+        if test.kind == "client_app":
+            return self._run_client_app_test(
+                model_id=model_id, test=test, repetition=repetition, artifact_dir=artifact_dir
             )
         if test.kind == "vision_data_plane":
             return self._run_vision_data_plane_test(
@@ -2318,6 +2348,265 @@ class HarnessRunner:
             passed=not any(issue.severity == "error" for issue in issues),
             output_text=error_text,
             metrics=_empty_metrics(),
+            issues=issues,
+        )
+
+    def _run_client_app_test(
+        self,
+        *,
+        model_id: str,
+        test: PromptTest,
+        repetition: int,
+        artifact_dir: Path | None,
+    ) -> TestResult:
+        """Install a real third-party application and drive it against the cluster.
+
+        The container is always removed, including on interrupt, because a
+        leaked one holds its port and poisons the next run. Failure to start is
+        an error rather than a skip: an application that cannot be installed is
+        a result, not an absence of one.
+        """
+
+        issues: list[Issue] = []
+        image = test.client_app_image or DEFAULT_IMAGE
+        container = DEFAULT_CONTAINER_NAME
+        app_base_url = f"http://127.0.0.1:{test.client_app_port}"
+        # Unique per run so a correct grounded answer cannot come from anything
+        # the model saw before, or from a previous run's vectors.
+        token = f"VERMILLION-{uuid.uuid4().hex[:8].upper()}"
+        journey = ClientAppJourney()
+
+        with tempfile.TemporaryDirectory(prefix="skulk-harness-anythingllm-") as storage:
+            os.chmod(storage, 0o777)
+            # A container left by an interrupted run would hold the port.
+            run_command(docker_remove_argv(container), timeout_s=60.0)
+            code, output = run_command(
+                docker_run_argv(
+                    image=image,
+                    container_name=container,
+                    host_port=test.client_app_port,
+                    storage_dir=storage,
+                    api_base_url=self.config.api_base_url,
+                    chat_model_id=model_id,
+                    embedding_model_id=test.client_app_embedding_model_id,
+                    context_window=test.max_tokens or 8192,
+                ),
+                timeout_s=float(test.client_app_startup_timeout_s),
+            )
+            try:
+                if code != 0:
+                    issues.append(
+                        Issue(
+                            severity="error",
+                            model_id=model_id,
+                            test_name=test.name,
+                            message=f"could not start {image}",
+                            evidence={"exit_code": code, "output": output[:2000]},
+                        )
+                    )
+                elif not wait_until_healthy(
+                    app_base_url, timeout_s=float(test.client_app_startup_timeout_s)
+                ):
+                    _, logs = run_command(docker_logs_argv(container), timeout_s=60.0)
+                    issues.append(
+                        Issue(
+                            severity="error",
+                            model_id=model_id,
+                            test_name=test.name,
+                            message=(
+                                f"{image} never reported healthy within "
+                                f"{test.client_app_startup_timeout_s}s"
+                            ),
+                            evidence={"logs": logs[-2000:]},
+                        )
+                    )
+                else:
+                    journey = drive_anythingllm(
+                        app_base_url,
+                        api_base_url=self.config.api_base_url,
+                        grounding_token=token,
+                        request_timeout_s=float(self.config.generation_timeout_s),
+                        embed_document=test.client_app_embedding_model_id is not None,
+                    )
+                    for problem in journey.problems:
+                        issues.append(
+                            Issue(
+                                severity="error",
+                                model_id=model_id,
+                                test_name=test.name,
+                                message=f"client app: {problem}",
+                            )
+                        )
+                    if not journey.problems:
+                        issues.append(
+                            Issue(
+                                severity="info",
+                                model_id=model_id,
+                                test_name=test.name,
+                                message=(
+                                    f"client app: {summarize_journey(journey)}"
+                                ),
+                            )
+                        )
+                    if journey.problems and artifact_dir is not None:
+                        _, logs = run_command(docker_logs_argv(container), timeout_s=60.0)
+                        journey.container_logs = logs[-8000:]
+            finally:
+                run_command(docker_remove_argv(container), timeout_s=120.0)
+
+        if journey.container_logs and artifact_dir is not None:
+            artifact_dir.mkdir(parents=True, exist_ok=True)
+            log_path = artifact_dir / f"{slugify(test.name)}-{slugify(model_id)}-app.log"
+            log_path.write_text(journey.container_logs, encoding="utf-8")
+
+        output_text = journey.grounded_text or journey.chat_text
+        return TestResult(
+            model_id=model_id,
+            test_name=test.name,
+            repetition=repetition,
+            passed=not any(issue.severity == "error" for issue in issues),
+            output_text=output_text,
+            metrics=GenerationMetrics(
+                elapsed_s=journey.elapsed_s,
+                output_chars=len(output_text),
+                generated_chars=len(output_text),
+            ),
+            issues=issues,
+        )
+
+    def _run_compat_probe_test(
+        self,
+        client: SkulkClient,
+        *,
+        model_id: str,
+        test: PromptTest,
+        repetition: int,
+    ) -> TestResult:
+        """Probe one third-party wire surface the way an outside client does.
+
+        Deliberately bypasses `SkulkClient`: the whole point is to behave like
+        software written against OpenAI, Anthropic or Ollama, which knows none
+        of Skulk's helper paths, tagged-union unwrapping or retry policy. The
+        `SkulkClient` argument is used only to learn which models are serving,
+        so the probe can assert that a model the cluster advertises is one a
+        client can actually select.
+        """
+
+        issues: list[Issue] = []
+        surface = test.compat_surface
+        if surface is None:
+            # Config validation forbids this; treated as an error rather than a
+            # skip so a contract regression can never pass silently.
+            issues.append(
+                Issue(
+                    severity="error",
+                    model_id=model_id,
+                    test_name=test.name,
+                    message="compat probe reached the runner without a surface",
+                )
+            )
+            return TestResult(
+                model_id=model_id,
+                test_name=test.name,
+                repetition=repetition,
+                passed=False,
+                output_text="",
+                metrics=_empty_metrics(),
+                issues=issues,
+            )
+
+        serving_model_ids: tuple[str, ...] = ()
+        try:
+            state = client.get_state()
+            serving_model_ids = _serving_model_ids(state)
+        except (SkulkApiError, TypeError, ValueError) as exc:
+            # Not fatal: the shape checks still run, they just cannot assert
+            # that every serving model is advertised.
+            issues.append(
+                Issue(
+                    severity="warning",
+                    model_id=model_id,
+                    test_name=test.name,
+                    message="could not read cluster state for advertised-model checks",
+                    evidence={"error": str(exc)},
+                )
+            )
+
+        report = CompatProbeReport()
+        probe_client = build_probe_client(
+            self.config.api_base_url,
+            timeout_s=float(self.config.request_timeout_s),
+        )
+        try:
+            if surface == "openai":
+                report = run_openai_probes(
+                    probe_client,
+                    model_id=model_id,
+                    serving_model_ids=serving_model_ids,
+                    embedding_model_id=test.compat_embedding_model_id,
+                    include_streaming=test.compat_include_streaming,
+                    generation_timeout_s=float(self.config.generation_timeout_s),
+                )
+            elif surface == "anthropic":
+                report = run_anthropic_probes(
+                    probe_client,
+                    model_id=model_id,
+                    generation_timeout_s=float(self.config.generation_timeout_s),
+                )
+            else:
+                report = run_ollama_probes(
+                    probe_client,
+                    model_id=model_id,
+                    serving_model_ids=serving_model_ids,
+                    include_streaming=test.compat_include_streaming,
+                    generation_timeout_s=float(self.config.generation_timeout_s),
+                )
+        except Exception as exc:  # noqa: BLE001 - a probe crash must be a finding
+            issues.append(
+                Issue(
+                    severity="error",
+                    model_id=model_id,
+                    test_name=test.name,
+                    message=f"{surface} compatibility probe raised",
+                    evidence={"error": str(exc)},
+                )
+            )
+        finally:
+            probe_client.close()
+
+        for problem in report.problems:
+            issues.append(
+                Issue(
+                    severity="error",
+                    model_id=model_id,
+                    test_name=test.name,
+                    message=f"{surface} compatibility: {problem}",
+                )
+            )
+        if report.checks_run and not report.problems:
+            issues.append(
+                Issue(
+                    severity="info",
+                    model_id=model_id,
+                    test_name=test.name,
+                    message=(
+                        f"{surface} compatibility: {report.checks_run} checks passed"
+                    ),
+                )
+            )
+
+        output = report.sample_text
+        return TestResult(
+            model_id=model_id,
+            test_name=test.name,
+            repetition=repetition,
+            passed=not any(issue.severity == "error" for issue in issues),
+            output_text=output,
+            metrics=GenerationMetrics(
+                elapsed_s=report.elapsed_s,
+                output_chars=len(output),
+                generated_chars=len(output),
+            ),
             issues=issues,
         )
 
@@ -7109,3 +7398,33 @@ def _run_id(spec: RunSpec) -> str:
     stamp = time.strftime("%Y%m%d-%H%M%S")
     name = spec.run_name or f"{spec.model_set}-{spec.test_set}"
     return f"{stamp}-{slugify(name)}"
+
+
+def _serving_model_ids(state: Mapping[str, object]) -> tuple[str, ...]:
+    """Model ids that currently have a placed instance.
+
+    Used to assert that a model the cluster is serving is one a third-party
+    client can actually see in a listing. System placements such as the
+    steward are excluded: they are internal and are deliberately not offered
+    to external callers.
+    """
+
+    instances = state.get("instances")
+    if not isinstance(instances, Mapping):
+        return ()
+    found: list[str] = []
+    for wrapper in instances.values():
+        if not isinstance(wrapper, Mapping):
+            continue
+        for inner in wrapper.values():
+            if not isinstance(inner, Mapping):
+                continue
+            if inner.get("systemRole"):
+                continue
+            assignments = inner.get("shardAssignments")
+            if not isinstance(assignments, Mapping):
+                continue
+            model_id = assignments.get("modelId")
+            if isinstance(model_id, str) and model_id and model_id not in found:
+                found.append(model_id)
+    return tuple(found)
