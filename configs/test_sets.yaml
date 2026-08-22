@@ -286,7 +286,7 @@ test_sets:
         prompt: >-
           First write the sentence "I will check that for you." and then call
           the get_weather tool for Denver.
-        max_tokens: 300
+        max_tokens: 900
         temperature: 0
         enable_thinking: false
         tools:
@@ -325,7 +325,10 @@ test_sets:
           a second call in the same message was folded into the first.
         system: Call the tool, then add one short closing word.
         prompt: Call the get_weather tool for Denver, and after the call write the single word Done.
-        max_tokens: 300
+        # Generous, because a reasoning model spends most of its budget in the
+        # reasoning channel before it calls. At 300 gpt-oss returned nothing at
+        # all, which reads as a parser failure but is the token budget.
+        max_tokens: 900
         temperature: 0
         enable_thinking: false
         tools:
