@@ -1,4 +1,30 @@
 model_sets:
+  tool-served-llama-server:
+    name: tool-served-llama-server
+    description: >-
+      GGUF cards that route to the llama-server engine, where the server parses
+      tool calls itself. Runs on any node with the served engine available.
+    models:
+      - unsloth/Qwen3.6-35B-A3B-GGUF
+      - bartowski/openai_gpt-oss-20b-GGUF
+
+  tool-served-vllm-pinned:
+    name: tool-served-vllm-pinned
+    description: >-
+      vLLM cards that pin runtime.vllm_tool_call_parser, so tool calling is
+      expected to work. Needs a GPU node.
+    models:
+      - Qwen/Qwen2.5-7B-Instruct
+
+  tool-served-vllm-parserless:
+    name: tool-served-vllm-parserless
+    description: >-
+      vLLM cards with NO parser pin. Tool requests must be refused loudly;
+      run these with the tool-served-unsupported suite. Needs a GPU node.
+    models:
+      - Qwen/Qwen3.6-27B-FP8
+      - Qwen/Qwen3.6-35B-A3B-FP8
+
   tool-dialects:
     name: tool-dialects
     description: >-

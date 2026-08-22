@@ -2228,6 +2228,12 @@ class HarnessRunner:
                 top_p=test.top_p,
                 enable_thinking=enable_thinking,
                 reasoning_effort=test.reasoning_effort,
+                # Carried so a case can assert a request is refused BECAUSE of
+                # its tools: a vLLM card with no resolvable parser must reject
+                # a tools request loudly rather than answer as if it had none.
+                tools=test.tools,
+                tool_choice=test.tool_choice,
+                parallel_tool_calls=test.parallel_tool_calls,
             )
             issues.append(
                 Issue(

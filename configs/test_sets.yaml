@@ -414,7 +414,7 @@ test_sets:
           in-process engine returned the call on every attempt.
         system: Answer the user directly.
         prompt: What is the weather in Denver? Use the get_weather tool.
-        max_tokens: 400
+        max_tokens: 900
         temperature: 0
         enable_thinking: false
         tools:
@@ -432,7 +432,11 @@ test_sets:
                   - location
         tool_choice: none
         success:
-          min_chars: 20
+          min_chars: 0
+          # Gate on generated rather than visible characters: a reasoning
+          # model's whole answer to a refused-tool prompt can live in the
+          # reasoning channel, and an empty visible answer is not a defect.
+          min_generated_chars: 20
           max_tool_calls: 0
           forbid_tool_scaffolding: true
 
@@ -733,7 +737,7 @@ test_sets:
           Llama answers some plain questions with its own print built-in.
         system: Answer directly. Only use a tool if the question needs it.
         prompt: "Say the single word: ready"
-        max_tokens: 400
+        max_tokens: 900
         temperature: 0
         enable_thinking: false
         tools:
@@ -751,7 +755,8 @@ test_sets:
                   - location
         tool_choice: auto
         success:
-          min_chars: 1
+          min_chars: 0
+          min_generated_chars: 1
           only_offered_tool_calls: true
           forbid_tool_scaffolding: true
 
@@ -763,14 +768,179 @@ test_sets:
           model writing something call-shaped used to be returned as a call.
         system: Answer directly.
         prompt: Reply with a JSON object describing Denver, and nothing else.
-        max_tokens: 400
+        max_tokens: 900
         temperature: 0
         enable_thinking: false
         tools: []
         success:
-          min_chars: 5
+          min_chars: 0
+          min_generated_chars: 5
           max_tool_calls: 0
           forbid_tool_scaffolding: true
+
+  tool-served:
+    name: tool-served
+    description: >-
+      The served engines, llama-server and vLLM, parse tool calls themselves
+      and hand Skulk structured calls, so none of the in-process recovery runs.
+      What has to hold instead is that Skulk carries the request through
+      faithfully and hands the result back unchanged, and that a card whose
+      engine cannot parse tools refuses loudly rather than answering as though
+      no tools were asked for.
+
+      Run this against a model set of served-engine cards. On vLLM that means
+      a GPU node, and the parser is card-driven: a card pinning
+      runtime.vllm_tool_call_parser should call, one without a pin should
+      refuse.
+    tests:
+      - name: served-call-is-dispatchable
+        kind: tool
+        description: >-
+          The structured call a server returns must survive Skulk's proxying
+          intact: unique id, JSON-object arguments, and no scaffolding.
+        system: Use tools whenever the requested answer depends on live data.
+        prompt: What is the weather in Denver?
+        max_tokens: 900
+        temperature: 0
+        enable_thinking: false
+        tools:
+          - type: function
+            function:
+              name: get_weather
+              description: Get current weather for a city.
+              parameters:
+                type: object
+                properties:
+                  location:
+                    type: string
+                    description: City and region for the weather lookup.
+                required:
+                  - location
+        tool_choice: auto
+        tool_mocks:
+          - name: get_weather
+            content: '{"location":"Denver","temperature_f":68,"condition":"windy"}'
+        success:
+          min_chars: 0
+          min_tool_calls: 1
+          require_tool_call_identity: true
+          require_valid_tool_arguments: true
+          only_offered_tool_calls: true
+          forbid_tool_scaffolding: true
+          expected_tool_calls:
+            - name: get_weather
+              required_arguments:
+                - location
+              argument_substrings:
+                location: Denver
+
+      - name: served-choice-none-forbids-a-call
+        kind: tool
+        description: >-
+          tool_choice is passed through to the server, so this checks the
+          passthrough rather than Skulk's own resolution.
+        system: Answer the user directly.
+        prompt: What is the weather in Denver? Use the get_weather tool.
+        max_tokens: 900
+        temperature: 0
+        enable_thinking: false
+        tools:
+          - type: function
+            function:
+              name: get_weather
+              description: Get current weather for a city.
+              parameters:
+                type: object
+                properties:
+                  location:
+                    type: string
+                    description: City and region for the weather lookup.
+                required:
+                  - location
+        tool_choice: none
+        success:
+          min_chars: 0
+          # Gate on generated rather than visible characters: a reasoning
+          # model's whole answer to a refused-tool prompt can live in the
+          # reasoning channel, and an empty visible answer is not a defect.
+          min_generated_chars: 20
+          max_tool_calls: 0
+          forbid_tool_scaffolding: true
+
+      - name: served-tool-result-round-trip
+        kind: tool
+        description: The full client loop through a served engine.
+        system: Use tools whenever the requested answer depends on live data.
+        prompt: What is the weather in Denver?
+        max_tokens: 900
+        temperature: 0
+        enable_thinking: false
+        tools:
+          - type: function
+            function:
+              name: get_weather
+              description: Get current weather for a city.
+              parameters:
+                type: object
+                properties:
+                  location:
+                    type: string
+                    description: City and region for the weather lookup.
+                required:
+                  - location
+        tool_choice: auto
+        tool_mocks:
+          - name: get_weather
+            content: '{"location":"Denver","temperature_f":68,"condition":"windy"}'
+        success:
+          min_chars: 20
+          min_tool_calls: 1
+          required_substrings:
+            - "68"
+          forbid_tool_scaffolding: true
+
+  tool-served-unsupported:
+    name: tool-served-unsupported
+    description: >-
+      A vLLM card with no runtime.vllm_tool_call_parser pin cannot parse tool
+      calls, and the runner refuses such a request rather than answering as
+      though no tools were asked for. Silently dropping the tools would be the
+      worse failure: the caller would get a plausible prose answer and never
+      learn their tools were ignored.
+
+      Run this ONLY against a model set of parserless vLLM cards. Against a
+      card that does pin a parser this suite is expected to fail, because the
+      request will correctly succeed.
+    tests:
+      - name: served-parserless-card-refuses-tools-loudly
+        kind: error
+        system: You are a conformance test assistant.
+        prompt: What is the weather in Denver?
+        max_tokens: 200
+        temperature: 0
+        enable_thinking: false
+        tools:
+          - type: function
+            function:
+              name: get_weather
+              description: Get current weather for a city.
+              parameters:
+                type: object
+                properties:
+                  location:
+                    type: string
+                    description: City and region for the weather lookup.
+                required:
+                  - location
+        tool_choice: auto
+        expected_error_statuses:
+          - 400
+          - 500
+        expected_error_substrings:
+          - tool
+        followup_prompt: Reply with exactly this token and no other text colon TOOLS-REFUSED-CLEANLY
+        success:
+          min_chars: 0
 
   throughput:
     name: throughput
