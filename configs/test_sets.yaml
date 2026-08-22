@@ -355,6 +355,423 @@ test_sets:
               argument_substrings:
                 location: Denver
 
+  tool-contract:
+    name: tool-contract
+    description: >-
+      The OpenAI tool-calling contract, independent of which parser served it.
+      Every case here asserts something a caller depends on regardless of
+      model: that a returned call is dispatchable, that it names a tool the
+      caller offered, and that tool_choice means what it says. A failure points
+      at the API boundary rather than at a dialect.
+    tests:
+      - name: contract-call-is-dispatchable
+        kind: tool
+        description: >-
+          A returned call must carry a unique id and JSON-object arguments. A
+          caller cannot reply without the id, and cannot dispatch arguments
+          that do not parse. Counting calls is blind to both.
+        system: Use tools whenever the requested answer depends on live data.
+        prompt: What is the weather in Denver?
+        max_tokens: 900
+        temperature: 0
+        enable_thinking: false
+        tools:
+          - type: function
+            function:
+              name: get_weather
+              description: Get current weather for a city.
+              parameters:
+                type: object
+                properties:
+                  location:
+                    type: string
+                    description: City and region for the weather lookup.
+                required:
+                  - location
+        tool_choice: auto
+        tool_mocks:
+          - name: get_weather
+            content: '{"location":"Denver","temperature_f":68,"condition":"windy"}'
+        success:
+          min_chars: 0
+          min_tool_calls: 1
+          require_tool_call_identity: true
+          require_valid_tool_arguments: true
+          only_offered_tool_calls: true
+          forbid_tool_scaffolding: true
+          expected_tool_calls:
+            - name: get_weather
+              required_arguments:
+                - location
+              argument_substrings:
+                location: Denver
+
+      - name: contract-choice-none-forbids-a-call
+        kind: tool
+        description: >-
+          tool_choice "none" must produce no call even when the prompt asks for
+          the tool by name. This reached only the served engines, so an
+          in-process engine returned the call on every attempt.
+        system: Answer the user directly.
+        prompt: What is the weather in Denver? Use the get_weather tool.
+        max_tokens: 400
+        temperature: 0
+        enable_thinking: false
+        tools:
+          - type: function
+            function:
+              name: get_weather
+              description: Get current weather for a city.
+              parameters:
+                type: object
+                properties:
+                  location:
+                    type: string
+                    description: City and region for the weather lookup.
+                required:
+                  - location
+        tool_choice: none
+        success:
+          min_chars: 20
+          max_tool_calls: 0
+          forbid_tool_scaffolding: true
+
+      - name: contract-choice-named-pins-the-tool
+        kind: tool
+        description: >-
+          Naming a function must make it the only one callable, even when the
+          prompt points at the other tool.
+        system: Use the tool you are given.
+        prompt: What is the weather in Denver?
+        max_tokens: 900
+        temperature: 0
+        enable_thinking: false
+        tools:
+          - type: function
+            function:
+              name: get_weather
+              description: Get current weather for a city.
+              parameters:
+                type: object
+                properties:
+                  location:
+                    type: string
+                required:
+                  - location
+          - type: function
+            function:
+              name: get_time
+              description: Get the current time in a timezone.
+              parameters:
+                type: object
+                properties:
+                  timezone:
+                    type: string
+                required:
+                  - timezone
+        tool_choice:
+          type: function
+          function:
+            name: get_time
+        success:
+          min_chars: 0
+          only_offered_tool_calls: true
+          require_valid_tool_arguments: true
+          forbid_tool_scaffolding: true
+
+      - name: contract-selects-among-offered-tools
+        kind: tool
+        description: >-
+          With more than one tool offered, the right one must be chosen and the
+          other left alone.
+        system: Choose the most appropriate tool and call it.
+        prompt: What time is it in America/Chicago?
+        max_tokens: 900
+        temperature: 0
+        enable_thinking: false
+        tools:
+          - type: function
+            function:
+              name: get_weather
+              description: Get current weather for a city.
+              parameters:
+                type: object
+                properties:
+                  location:
+                    type: string
+                required:
+                  - location
+          - type: function
+            function:
+              name: get_time
+              description: Get the current time in a timezone.
+              parameters:
+                type: object
+                properties:
+                  timezone:
+                    type: string
+                required:
+                  - timezone
+        tool_choice: auto
+        success:
+          min_chars: 0
+          min_tool_calls: 1
+          only_offered_tool_calls: true
+          require_valid_tool_arguments: true
+          forbid_tool_scaffolding: true
+          expected_tool_calls:
+            - name: get_time
+              required_arguments:
+                - timezone
+
+      - name: contract-tool-result-round-trip
+        kind: tool
+        description: >-
+          The second turn must consume the tool result and answer from it. This
+          exercises the whole loop a client actually runs, not just the call.
+        system: Use tools whenever the requested answer depends on live data.
+        prompt: What is the weather in Denver?
+        max_tokens: 900
+        temperature: 0
+        enable_thinking: false
+        tools:
+          - type: function
+            function:
+              name: get_weather
+              description: Get current weather for a city.
+              parameters:
+                type: object
+                properties:
+                  location:
+                    type: string
+                    description: City and region for the weather lookup.
+                required:
+                  - location
+        tool_choice: auto
+        tool_mocks:
+          - name: get_weather
+            content: '{"location":"Denver","temperature_f":68,"condition":"windy"}'
+        success:
+          min_chars: 20
+          min_tool_calls: 1
+          required_substrings:
+            - "68"
+          forbid_tool_scaffolding: true
+
+  tool-recovery:
+    name: tool-recovery
+    description: >-
+      The shapes a model's output can take around a call, which is where the
+      in-process parsers actually break. Each case reproduces a shape that
+      shipped broken: the marker split across streamed chunks, a spoken
+      preamble before the call, reasoning before the call, and text after it. A
+      failure here points at the recovery scanner, not at the API.
+    tests:
+      - name: recovery-call-after-spoken-preamble
+        kind: tool
+        description: >-
+          A model that announces the action before calling must still have its
+          call found. The opening marker was decided once, on the first text
+          released, so a preamble hid every later marker.
+        system: Say what you are about to do in one short sentence, then call the tool.
+        prompt: >-
+          First write the sentence "I will check that for you." and then call
+          the get_weather tool for Denver.
+        max_tokens: 900
+        temperature: 0
+        enable_thinking: false
+        tools:
+          - type: function
+            function:
+              name: get_weather
+              description: Get current weather for a city.
+              parameters:
+                type: object
+                properties:
+                  location:
+                    type: string
+                    description: City and region for the weather lookup.
+                required:
+                  - location
+        tool_choice: auto
+        tool_mocks:
+          - name: get_weather
+            content: '{"location":"Denver","temperature_f":68,"condition":"windy"}'
+        success:
+          min_chars: 0
+          min_tool_calls: 1
+          only_offered_tool_calls: true
+          forbid_tool_scaffolding: true
+          expected_tool_calls:
+            - name: get_weather
+              argument_substrings:
+                location: Denver
+
+      - name: recovery-call-followed-by-text
+        kind: tool
+        description: >-
+          A model may keep writing after closing its call. The block used to
+          run to the end of generation, so trailing text was swallowed and a
+          second call was folded into the first.
+        system: Call the tool, then add one short closing word.
+        prompt: >-
+          Call the get_weather tool for Denver, and after the call write the
+          single word Done.
+        max_tokens: 900
+        temperature: 0
+        enable_thinking: false
+        tools:
+          - type: function
+            function:
+              name: get_weather
+              description: Get current weather for a city.
+              parameters:
+                type: object
+                properties:
+                  location:
+                    type: string
+                    description: City and region for the weather lookup.
+                required:
+                  - location
+        tool_choice: auto
+        tool_mocks:
+          - name: get_weather
+            content: '{"location":"Denver","temperature_f":68,"condition":"windy"}'
+        success:
+          min_chars: 0
+          min_tool_calls: 1
+          only_offered_tool_calls: true
+          forbid_tool_scaffolding: true
+          expected_tool_calls:
+            - name: get_weather
+              argument_substrings:
+                location: Denver
+
+      - name: recovery-call-after-reasoning
+        kind: tool
+        description: >-
+          Tool parsing runs downstream of the thinking parser, so a model that
+          reasons before calling sends its reasoning through first. That text
+          used to settle the decision permanently and hide the call.
+        system: Think it through, then call the tool.
+        prompt: Work out which tool applies, then get the weather in Denver.
+        max_tokens: 1200
+        temperature: 0
+        enable_thinking: true
+        tools:
+          - type: function
+            function:
+              name: get_weather
+              description: Get current weather for a city.
+              parameters:
+                type: object
+                properties:
+                  location:
+                    type: string
+                    description: City and region for the weather lookup.
+                required:
+                  - location
+        tool_choice: auto
+        tool_mocks:
+          - name: get_weather
+            content: '{"location":"Denver","temperature_f":68,"condition":"windy"}'
+        success:
+          min_chars: 0
+          min_tool_calls: 1
+          only_offered_tool_calls: true
+          forbid_tool_scaffolding: true
+          expected_tool_calls:
+            - name: get_weather
+
+      - name: recovery-no-scaffolding-reaches-the-caller
+        kind: tool
+        description: >-
+          No dialect's markers may appear in the answer or the reasoning. Every
+          marker in the registry leaked from a real model: Llama ran past
+          <|eom_id|>, Qwen leaked a split <tool_call>, Gemma 4 leaked
+          <tool_call|>, harmony leaks its channel headers.
+        system: Use tools whenever the requested answer depends on live data.
+        prompt: What is the weather in Cedar Rapids, Iowa?
+        max_tokens: 900
+        temperature: 0
+        enable_thinking: false
+        tools:
+          - type: function
+            function:
+              name: get_weather
+              description: Get current weather for a city.
+              parameters:
+                type: object
+                properties:
+                  location:
+                    type: string
+                    description: City and region for the weather lookup.
+                required:
+                  - location
+        tool_choice: auto
+        tool_mocks:
+          - name: get_weather
+            content: '{"location":"Cedar Rapids, Iowa","temperature_f":72,"condition":"clear"}'
+        success:
+          min_chars: 0
+          min_tool_calls: 1
+          forbid_tool_scaffolding: true
+          require_valid_tool_arguments: true
+
+  tool-negative:
+    name: tool-negative
+    description: >-
+      Requests that must NOT produce a tool call. These are the cases a
+      presence-only suite cannot express, and every one of them shipped broken
+      at some point precisely because nothing could assert them.
+    tests:
+      - name: negative-plain-question-with-a-tool-available
+        kind: tool
+        description: >-
+          Offering a tool must not make an unrelated question produce a call,
+          and must never produce a call to something the caller did not offer.
+          Llama answers some plain questions with its own print built-in.
+        system: Answer directly. Only use a tool if the question needs it.
+        prompt: "Say the single word: ready"
+        max_tokens: 400
+        temperature: 0
+        enable_thinking: false
+        tools:
+          - type: function
+            function:
+              name: get_weather
+              description: Get current weather for a city.
+              parameters:
+                type: object
+                properties:
+                  location:
+                    type: string
+                    description: City and region for the weather lookup.
+                required:
+                  - location
+        tool_choice: auto
+        success:
+          min_chars: 1
+          only_offered_tool_calls: true
+          forbid_tool_scaffolding: true
+
+      - name: negative-no-tools-offered-yields-no-call
+        kind: tool
+        description: >-
+          With no tools in the request nothing may come back as a call. The
+          parser is wired from the tokenizer and cannot see the request, so a
+          model writing something call-shaped used to be returned as a call.
+        system: Answer directly.
+        prompt: Reply with a JSON object describing Denver, and nothing else.
+        max_tokens: 400
+        temperature: 0
+        enable_thinking: false
+        tools: []
+        success:
+          min_chars: 5
+          max_tool_calls: 0
+          forbid_tool_scaffolding: true
+
   throughput:
     name: throughput
     description: Sustained-generation decode throughput smoke benchmark.

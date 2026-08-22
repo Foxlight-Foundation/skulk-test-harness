@@ -5307,3 +5307,111 @@ def test_max_tool_calls_unset_leaves_the_old_behaviour_alone() -> None:
     )
 
     assert issues == []
+
+
+def test_forbid_tool_scaffolding_catches_a_dialect_the_case_did_not_name() -> None:
+    # The point of the registry: a case written against one model must still
+    # fail when a different dialect's markers leak.
+    issues = _score_output(
+        "model",
+        "leak",
+        'Here you go <|python_tag|>{"name": "get_weather"}',
+        SuccessCriteria(min_chars=1, forbid_tool_scaffolding=True),
+    )
+
+    assert [issue.severity for issue in issues] == ["error"]
+
+
+def test_forbid_tool_scaffolding_can_be_narrowed_to_one_path() -> None:
+    criteria = SuccessCriteria(
+        min_chars=1,
+        forbid_tool_scaffolding=True,
+        forbid_tool_scaffolding_paths=["gemma4"],
+    )
+
+    assert _score_output("model", "leak", "answer <|python_tag|>", criteria) == []
+    assert _score_output("model", "leak", "answer <tool_call|>", criteria) != []
+
+
+def test_forbid_tool_scaffolding_leaves_a_clean_answer_alone() -> None:
+    issues = _score_output(
+        "model",
+        "clean",
+        "The weather in Denver is clear.",
+        SuccessCriteria(min_chars=1, forbid_tool_scaffolding=True),
+    )
+
+    assert issues == []
+
+
+def test_only_offered_tool_calls_rejects_a_model_builtin() -> None:
+    issues = _score_output(
+        "model",
+        "builtin",
+        "",
+        SuccessCriteria(min_chars=0, only_offered_tool_calls=True),
+        tool_calls=[_weather_call("print")],
+        offered_tools=[{"type": "function", "function": {"name": "get_weather"}}],
+    )
+
+    assert [issue.severity for issue in issues] == ["error"]
+    assert "names no offered tool" in issues[0].message
+
+
+def test_require_valid_tool_arguments_rejects_unparseable_arguments() -> None:
+    broken = ToolCallRecord(
+        id="call-1",
+        name="get_weather",
+        arguments_text='{"location": Denver',
+        arguments=None,
+        index=0,
+    )
+    issues = _score_output(
+        "model",
+        "arguments",
+        "",
+        SuccessCriteria(min_chars=0, require_valid_tool_arguments=True),
+        tool_calls=[broken],
+    )
+
+    assert [issue.severity for issue in issues] == ["error"]
+
+
+def test_require_tool_call_identity_rejects_a_call_with_no_id() -> None:
+    anonymous = ToolCallRecord(
+        id="",
+        name="get_weather",
+        arguments_text="{}",
+        arguments={},
+        index=0,
+    )
+    issues = _score_output(
+        "model",
+        "identity",
+        "",
+        SuccessCriteria(min_chars=0, require_tool_call_identity=True),
+        tool_calls=[anonymous],
+    )
+
+    assert any("no id" in issue.message for issue in issues)
+
+
+def test_path_rules_are_off_unless_a_case_opts_in() -> None:
+    # Existing suites must not start failing because a new rule exists.
+    broken = ToolCallRecord(
+        id="",
+        name="print",
+        arguments_text="not json",
+        arguments=None,
+        index=None,
+    )
+    issues = _score_output(
+        "model",
+        "legacy",
+        "",
+        SuccessCriteria(min_chars=0),
+        tool_calls=[broken],
+        offered_tools=[{"type": "function", "function": {"name": "get_weather"}}],
+    )
+
+    assert issues == []

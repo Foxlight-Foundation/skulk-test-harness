@@ -20,6 +20,7 @@ from typing import TypedDict
 
 import httpx
 
+from skulk_test_harness import tool_paths
 from skulk_test_harness.client import (
     AudioSpeechExecution,
     AudioVoiceMetadata,
@@ -1296,6 +1297,7 @@ class HarnessRunner:
             logprob_tokens=execution.logprob_tokens,
             reasoning_text=scored_execution.reasoning_text,
             wall_tps=scored_execution.metrics.wall_tps,
+            offered_tools=test.tools,
         )
         issues.extend(roundtrip_issues)
         artifact_path = _artifact_path(
@@ -5789,6 +5791,47 @@ def _placement_matches_policy(
     return observed_meta == policy.instance_meta
 
 
+def _score_tool_paths(
+    model_id: str,
+    test_name: str,
+    criteria: SuccessCriteria,
+    tool_calls: list[ToolCallRecord],
+    offered_tools: list[dict[str, object]] | None,
+) -> list[Issue]:
+    """Apply the shared tool-calling path rules a case opted into.
+
+    The rules themselves live in ``tool_paths`` and are pure, so they are unit
+    tested without a cluster; this only turns their problems into issues.
+    """
+
+    checks: list[list[str]] = []
+    if criteria.require_tool_call_identity:
+        checks.append(tool_paths.validate_call_identity(tool_calls))
+    if criteria.require_valid_tool_arguments:
+        checks.append(tool_paths.validate_call_arguments(tool_calls))
+    if criteria.only_offered_tool_calls:
+        checks.append(
+            tool_paths.validate_calls_were_offered(
+                tool_calls, tool_paths.offered_tool_names(offered_tools)
+            )
+        )
+    issues: list[Issue] = []
+    for problems in checks:
+        for problem in problems:
+            issues.append(
+                Issue(
+                    severity="error",
+                    model_id=model_id,
+                    test_name=test_name,
+                    message=problem,
+                    evidence={
+                        "tool_call_names": [call.name for call in tool_calls]
+                    },
+                )
+            )
+    return issues
+
+
 def _score_output(
     model_id: str,
     test_name: str,
@@ -5799,9 +5842,21 @@ def _score_output(
     logprob_tokens: int = 0,
     reasoning_text: str = "",
     wall_tps: float | None = None,
+    offered_tools: list[dict[str, object]] | None = None,
 ) -> list[Issue]:
     issues: list[Issue] = []
     tool_calls = tool_calls or []
+    if criteria.forbid_tool_scaffolding:
+        criteria = criteria.model_copy(
+            update={
+                "forbidden_substrings": [
+                    *criteria.forbidden_substrings,
+                    *tool_paths.scaffolding_markers(
+                        criteria.forbid_tool_scaffolding_paths or None
+                    ),
+                ]
+            }
+        )
     generated_chars = len(text) + len(reasoning_text)
     if criteria.require_logprobs and logprob_tokens <= 0:
         issues.append(
@@ -6022,6 +6077,15 @@ def _score_output(
                 evidence={"tool_call_names": [call.name for call in tool_calls]},
             )
         )
+    issues.extend(
+        _score_tool_paths(
+            model_id,
+            test_name,
+            criteria,
+            tool_calls,
+            offered_tools,
+        )
+    )
     issues.extend(
         _score_expected_tool_calls(
             model_id,

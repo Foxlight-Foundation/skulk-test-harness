@@ -949,6 +949,47 @@ class SuccessCriteria(HarnessBaseModel):
     )
     required_substrings: list[str] = Field(default_factory=list)
     forbidden_substrings: list[str] = Field(default_factory=list)
+    forbid_tool_scaffolding: bool = Field(
+        default=False,
+        description=(
+            "Forbid every tool-call dialect's markers in the output, using the "
+            "registry in tool_paths. Prefer this to listing markers by hand: a "
+            "case written for one model must still fail when a different "
+            "dialect leaks, and adding a dialect updates every case at once."
+        ),
+    )
+    forbid_tool_scaffolding_paths: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Narrow forbid_tool_scaffolding to these paths (see tool_paths). "
+            "Leave empty to forbid all of them, which is usually what you want."
+        ),
+    )
+    require_valid_tool_arguments: bool = Field(
+        default=False,
+        description=(
+            "Assert every returned call's arguments are a JSON object a caller "
+            "could dispatch. A dialect recovered from text can produce "
+            "something that looks right and does not parse, which a check that "
+            "only counts calls is blind to."
+        ),
+    )
+    require_tool_call_identity: bool = Field(
+        default=False,
+        description=(
+            "Assert every returned call carries a unique id and an index. "
+            "Without an id a caller cannot reply to the call, since the tool "
+            "result message has to name the call it answers."
+        ),
+    )
+    only_offered_tool_calls: bool = Field(
+        default=False,
+        description=(
+            "Assert every returned call names a tool this test offered. Catches "
+            "a model reaching for one of its own built-ins, which the caller "
+            "has no implementation for."
+        ),
+    )
     required_regexes: list[str] = Field(default_factory=list)
     expected_tool_calls: list["ExpectedToolCall"] = Field(default_factory=list)
     require_html_artifact: bool = False
