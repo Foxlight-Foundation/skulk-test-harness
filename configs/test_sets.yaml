@@ -188,6 +188,170 @@ test_sets:
               argument_substrings:
                 hostname: node-b
 
+      # The cases below pin regressions found by running the tool surface
+      # against live models across the MLX, llama.cpp, llama-server and
+      # served engines. Each one shipped broken at some point, and none was
+      # expressible with a presence-only tool-call check.
+
+      - name: tool-choice-none-returns-no-call
+        kind: tool
+        description: >-
+          tool_choice "none" must not produce a call even when the prompt asks
+          for the tool by name. This reached only the served engines, so the
+          in-process engines ignored it entirely and returned the call on every
+          attempt.
+        system: Answer the user directly.
+        prompt: What is the weather in Denver? Use the get_weather tool.
+        max_tokens: 200
+        temperature: 0
+        enable_thinking: false
+        tools:
+          - type: function
+            function:
+              name: get_weather
+              description: Get current weather for a city.
+              parameters:
+                type: object
+                properties:
+                  location:
+                    type: string
+                required:
+                  - location
+        tool_choice: none
+        success:
+          min_chars: 20
+          max_tool_calls: 0
+
+      - name: no-tool-scaffolding-in-content
+        kind: tool
+        description: >-
+          A tool call must not leave its dialect's markers in the answer text.
+          Every marker listed here leaked from a real model: Llama ran past
+          <|eom_id|>, Qwen leaked a split <tool_call>, Gemma 4 leaked
+          <tool_call|>, and harmony leaks its channel headers.
+        system: Use tools whenever the requested answer depends on live data.
+        prompt: What is the weather in Cedar Rapids, Iowa?
+        max_tokens: 240
+        temperature: 0
+        enable_thinking: false
+        tools:
+          - type: function
+            function:
+              name: get_weather
+              description: Get current weather for a city.
+              parameters:
+                type: object
+                properties:
+                  location:
+                    type: string
+                required:
+                  - location
+        tool_choice:
+          type: function
+          function:
+            name: get_weather
+        tool_mocks:
+          - name: get_weather
+            content: '{"location":"Cedar Rapids, Iowa","temperature_f":72,"condition":"clear"}'
+        success:
+          min_chars: 10
+          min_tool_calls: 1
+          max_tool_calls: 1
+          expected_tool_calls:
+            - name: get_weather
+              required_arguments:
+                - location
+          forbidden_substrings:
+            - "<|eom_id|>"
+            - "<|python_tag|>"
+            - "<|start_header_id|>"
+            - "<tool_call>"
+            - "</tool_call>"
+            - "<|tool_call>"
+            - "<tool_call|>"
+            - "<|tool_response>"
+            - "[TOOL_CALLS]"
+            - "to=functions."
+            - "<|channel|>"
+            - "<|message|>"
+
+      - name: call-after-spoken-preamble
+        kind: tool
+        description: >-
+          A model that announces the action before calling must still have its
+          call recognized. The opening marker was decided once, on the first
+          text released, so a preamble made every later marker invisible and
+          the call came back as raw markup.
+        system: Say what you are about to do in one short sentence, then call the tool.
+        prompt: >-
+          First write the sentence "I will check that for you." and then call
+          the get_weather tool for Denver.
+        max_tokens: 300
+        temperature: 0
+        enable_thinking: false
+        tools:
+          - type: function
+            function:
+              name: get_weather
+              description: Get current weather for a city.
+              parameters:
+                type: object
+                properties:
+                  location:
+                    type: string
+                required:
+                  - location
+        tool_choice: auto
+        tool_mocks:
+          - name: get_weather
+            content: '{"location":"Denver","temperature_f":68,"condition":"windy"}'
+        success:
+          min_chars: 5
+          min_tool_calls: 1
+          expected_tool_calls:
+            - name: get_weather
+              argument_substrings:
+                location: Denver
+          forbidden_substrings:
+            - "<tool_call>"
+            - "<|tool_call>"
+            - "<|python_tag|>"
+
+      - name: call-followed-by-trailing-text
+        kind: tool
+        description: >-
+          A model may keep writing after closing its call. The block used to
+          run to the end of generation, so the trailing text was swallowed and
+          a second call in the same message was folded into the first.
+        system: Call the tool, then add one short closing word.
+        prompt: Call the get_weather tool for Denver, and after the call write the single word Done.
+        max_tokens: 300
+        temperature: 0
+        enable_thinking: false
+        tools:
+          - type: function
+            function:
+              name: get_weather
+              description: Get current weather for a city.
+              parameters:
+                type: object
+                properties:
+                  location:
+                    type: string
+                required:
+                  - location
+        tool_choice: auto
+        tool_mocks:
+          - name: get_weather
+            content: '{"location":"Denver","temperature_f":68,"condition":"windy"}'
+        success:
+          min_chars: 5
+          min_tool_calls: 1
+          expected_tool_calls:
+            - name: get_weather
+              argument_substrings:
+                location: Denver
+
   throughput:
     name: throughput
     description: Sustained-generation decode throughput smoke benchmark.

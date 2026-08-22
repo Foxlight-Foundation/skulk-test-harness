@@ -5241,3 +5241,69 @@ def test_not_ready_message_names_each_cause() -> None:
     assert "failed while loading" in msg("load_failed").lower()
     assert "readiness timeout" in msg("ready_timeout").lower()
     assert "churn" in msg("churn").lower()
+
+
+def _weather_call(name: str = "get_weather") -> ToolCallRecord:
+    return ToolCallRecord(
+        id=f"call-{name}",
+        name=name,
+        arguments_text='{"location": "Denver"}',
+        arguments={"location": "Denver"},
+        index=0,
+    )
+
+
+def test_max_tool_calls_zero_rejects_a_call_that_should_not_exist() -> None:
+    # The only way to express a request that must not produce a call:
+    # tool_choice "none", or a model reaching for its own built-in. A
+    # presence-only check cannot say this, so both regressed unnoticed.
+    issues = _score_output(
+        "model",
+        "tool-choice-none",
+        "The weather in Denver is pleasant.",
+        SuccessCriteria(min_chars=1, max_tool_calls=0),
+        tool_calls=[_weather_call()],
+    )
+
+    assert [issue.severity for issue in issues] == ["error"]
+    assert "Too many tool calls" in issues[0].message
+
+
+def test_max_tool_calls_zero_accepts_a_prose_answer() -> None:
+    issues = _score_output(
+        "model",
+        "tool-choice-none",
+        "The weather in Denver is pleasant.",
+        SuccessCriteria(min_chars=1, max_tool_calls=0),
+        tool_calls=[],
+    )
+
+    assert issues == []
+
+
+def test_max_tool_calls_bounds_a_request_that_may_call_once() -> None:
+    criteria = SuccessCriteria(min_chars=0, min_tool_calls=1, max_tool_calls=1)
+
+    assert _score_output("model", "one", "", criteria, tool_calls=[_weather_call()]) == []
+
+    too_many = _score_output(
+        "model",
+        "one",
+        "",
+        criteria,
+        tool_calls=[_weather_call(), _weather_call("get_time")],
+    )
+    assert [issue.severity for issue in too_many] == ["error"]
+
+
+def test_max_tool_calls_unset_leaves_the_old_behaviour_alone() -> None:
+    # Existing suites do not set it, so any number of calls stays acceptable.
+    issues = _score_output(
+        "model",
+        "unbounded",
+        "",
+        SuccessCriteria(min_chars=0, min_tool_calls=1),
+        tool_calls=[_weather_call(), _weather_call("get_time")],
+    )
+
+    assert issues == []

@@ -6006,6 +6006,22 @@ def _score_output(
                 evidence={"tool_call_names": [call.name for call in tool_calls]},
             )
         )
+    if (
+        criteria.max_tool_calls is not None
+        and len(tool_calls) > criteria.max_tool_calls
+    ):
+        issues.append(
+            Issue(
+                severity="error",
+                model_id=model_id,
+                test_name=test_name,
+                message=(
+                    "Too many tool calls emitted "
+                    f"({len(tool_calls)} > {criteria.max_tool_calls})"
+                ),
+                evidence={"tool_call_names": [call.name for call in tool_calls]},
+            )
+        )
     issues.extend(
         _score_expected_tool_calls(
             model_id,

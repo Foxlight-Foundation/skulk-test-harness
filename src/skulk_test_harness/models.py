@@ -925,6 +925,18 @@ class SuccessCriteria(HarnessBaseModel):
         ),
     )
     min_tool_calls: int = Field(default=0, ge=0)
+    max_tool_calls: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "When set, assert AT MOST this many tool calls came back. Set 0 to "
+            "assert none did, which is the only way to check a request that "
+            "must not produce a call: tool_choice 'none', or a model reaching "
+            "for one of its own built-ins the caller never offered. A "
+            "presence-only check cannot express either, so both regressed "
+            "unnoticed until they were found by hand."
+        ),
+    )
     in_order_integers: int = Field(
         default=0,
         ge=0,
