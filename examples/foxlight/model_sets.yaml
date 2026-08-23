@@ -507,3 +507,14 @@ model_sets:
       llama_server engine (post-#607). For validating served tool calling e2e.
     models:
       - unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF
+
+  a100-gguf-small:
+    name: a100-gguf-small
+    description: >-
+      Temp (uncommitted): the concurrency-gguf set minus the 120B, for the A100
+      pod's 80GB local disk. Phase A of the two-phase A100 concurrency run; the
+      120B runs as phase B via concurrency-120b after freeing local store space.
+    models:
+      - unsloth/Llama-3.2-1B-Instruct-GGUF
+      - Qwen/Qwen2.5-7B-Instruct-GGUF
+      - unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF

@@ -913,7 +913,7 @@ test_sets:
       request will correctly succeed.
     tests:
       - name: served-parserless-card-refuses-tools-loudly
-        kind: error
+        kind: tool
         system: You are a conformance test assistant.
         prompt: What is the weather in Denver?
         max_tokens: 200
@@ -933,14 +933,15 @@ test_sets:
                 required:
                   - location
         tool_choice: auto
-        expected_error_statuses:
-          - 400
-          - 500
-        expected_error_substrings:
-          - tool
-        followup_prompt: Reply with exactly this token and no other text colon TOOLS-REFUSED-CLEANLY
         success:
+          # The refusal is an error OBJECT, not an HTTP error status: Skulk
+          # commits the status before the body, so a streamed refusal is an
+          # in-stream error frame followed by [DONE] and a non-streamed one is
+          # an error body, both under HTTP 200. What matters to a caller is
+          # that no call comes back and the reason names the missing parser.
           min_chars: 0
+          max_tool_calls: 0
+          forbid_tool_scaffolding: true
 
   throughput:
     name: throughput
