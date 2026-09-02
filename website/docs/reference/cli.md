@@ -71,7 +71,9 @@ resident. It checks `GET /v1/steward`, unique `skulk/steward` discovery,
 first-person identity, and a named-node diagnostic/doctor investigation. By
 default it prefers a node whose resource telemetry says `apiAvailable=false`,
 then a remote API node, then the local node. Pass
-`--diagnostic-node <friendly-name>` to make the target exact. Evidence defaults
+`--diagnostic-node <friendly-name>` to make the target exact. Pass
+`--segment <name>` when qualification is protected by an independent named
+fleet lease. Evidence defaults
 to a mode-600 JSON file under `output_dir`; `--output` selects another path.
 The checks create only transient generation tasks and do not change placement
 or configuration. Fleet-lease refusal still applies so a qualification cannot

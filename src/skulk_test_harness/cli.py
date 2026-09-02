@@ -125,7 +125,9 @@ def _load_fleet_store(
         raise typer.Exit(code=2) from exception
 
 
-def _require_fleet_or_refuse(cfg: HarnessConfig, *, force: bool) -> None:
+def _require_fleet_or_refuse(
+    cfg: HarnessConfig, *, force: bool, segment: str = MAIN_SEGMENT
+) -> None:
     """Refuse to touch the fleet when another agent holds the lease.
 
     A safety net for the execute paths: the primary mechanism is the explicit
@@ -134,7 +136,7 @@ def _require_fleet_or_refuse(cfg: HarnessConfig, *, force: bool) -> None:
     use) or already held by this agent. ``force`` overrides the refusal.
     """
 
-    store = _load_fleet_store(cfg)
+    store = _load_fleet_store(cfg, segment=segment)
     if store is None:
         return
     assert cfg.fleet_lock is not None
@@ -269,7 +271,7 @@ def _require_shipping_data_transport(
 
 
 def _require_execution_preflight(
-    cfg: HarnessConfig, *, force: bool
+    cfg: HarnessConfig, *, force: bool, segment: str = MAIN_SEGMENT
 ) -> tuple[list[str], list[str]]:
     """Apply every safety and shipping-contract gate before fleet mutation.
 
@@ -277,7 +279,7 @@ def _require_execution_preflight(
     named runs, and stability suites cannot certify a transport path that the
     configured profile does not ship.
     """
-    _require_fleet_or_refuse(cfg, force=force)
+    _require_fleet_or_refuse(cfg, force=force, segment=segment)
     if cfg.required_data_transport is None and not cfg.eligible_fleet_nodes:
         return [], []
     with SkulkClient(
@@ -786,11 +788,21 @@ def steward_qualify(
             help="Proceed even if another agent holds the shared-fleet lease.",
         ),
     ] = False,
+    segment: Annotated[
+        str,
+        typer.Option(
+            "--segment",
+            help=(
+                "Named fleet segment whose independent lease protects this "
+                "qualification; default is the shared main pool."
+            ),
+        ),
+    ] = MAIN_SEGMENT,
 ) -> None:
     """Run the release-blocking resident status, identity, and tool checks."""
 
     cfg = load_config(config)
-    _require_execution_preflight(cfg, force=force)
+    _require_execution_preflight(cfg, force=force, segment=segment)
     with SkulkClient(
         cfg.api_base_url,
         request_timeout_s=cfg.request_timeout_s,
