@@ -331,10 +331,10 @@ def qualify_steward(
                     "chip verbatim, character for character, without abbreviating "
                     "or correcting them. Use this compact format: 'Node: <name>; "
                     "Model: <exact model>; Chip: <exact chip>; "
-                    f"{doctor_count} doctor findings'. "
+                    "<number> doctor findings'. "
                     + (
-                        "Then include the first finding's exact check ID "
-                        f"'{doctor_check_id}' and verdict '{doctor_verdict}'."
+                        "When findings exist, include the first finding's exact "
+                        "check ID and verdict."
                         if doctor_check_id is not None and doctor_verdict is not None
                         else ""
                     )
