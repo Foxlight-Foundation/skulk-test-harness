@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import subprocess
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
 
+from skulk_test_harness import __version__
 from skulk_test_harness.client import SkulkClient
 
 
@@ -11,6 +15,10 @@ from skulk_test_harness.client import SkulkClient
 class StewardQualificationEvidence:
     """Bounded evidence from one resident-intelligence qualification pass."""
 
+    generated_at: str
+    harness_version: str
+    harness_commit: str
+    skulk_commit: str
     passed: bool
     checks: tuple[str, ...]
     failures: tuple[str, ...]
@@ -18,6 +26,51 @@ class StewardQualificationEvidence:
     target_node_name: str
     identity_response: str
     diagnostics_response: str
+
+
+def _harness_commit() -> str:
+    """Return the source commit when running from a checkout."""
+
+    repository = Path(__file__).resolve().parents[2]
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repository), "rev-parse", "HEAD"],
+            capture_output=True,
+            check=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+    return result.stdout.strip() or "unknown"
+
+
+def _skulk_commit(diagnostics: dict[str, object]) -> str:
+    """Read the serving Skulk commit from node diagnostics."""
+
+    runtime = diagnostics.get("runtime")
+    if not isinstance(runtime, dict):
+        return "unknown"
+    commit = runtime.get("skulkCommit")
+    return commit if isinstance(commit, str) and commit else "unknown"
+
+
+def _target_hardware_facts(
+    state: dict[str, object], target_node_id: str
+) -> tuple[str, ...]:
+    """Return API-observed facts that a successful diagnostic tool must recover."""
+
+    identities = state.get("nodeIdentities")
+    if not isinstance(identities, dict):
+        return ()
+    identity = identities.get(target_node_id)
+    if not isinstance(identity, dict):
+        return ()
+    return tuple(
+        value.strip()
+        for key in ("modelId", "chipId")
+        if isinstance((value := identity.get(key)), str) and value.strip()
+    )
 
 
 def _friendly_node_names(state: dict[str, object]) -> dict[str, str]:
@@ -101,6 +154,7 @@ def qualify_steward(
 
     checks: list[str] = []
     failures: list[str] = []
+    local_diagnostics = client.get_diagnostics_node()
     status = client.get_steward_status()
     expected_status = {
         "enabled": True,
@@ -140,15 +194,28 @@ def qualify_steward(
     target_node_id, target_node_name = _diagnostic_target(
         client, state, diagnostic_node_name
     )
+    expected_hardware_facts = _target_hardware_facts(state, target_node_id)
+    if len(expected_hardware_facts) < 2:
+        failures.append(
+            "target node lacks model and chip facts needed to prove diagnostics"
+        )
     identity = client.stream_chat(
         model_id="skulk/steward",
-        messages=[{"role": "user", "content": "What is your name?"}],
+        messages=[
+            {
+                "role": "user",
+                "content": (
+                    "State your identity in one sentence. Begin exactly with "
+                    "'I am Skulk'."
+                ),
+            }
+        ],
         max_tokens=96,
         temperature=0.0,
         top_p=1.0,
         enable_thinking=False,
     ).text.strip()
-    if "skulk" not in identity.casefold():
+    if not identity.casefold().startswith("i am skulk"):
         failures.append("resident identity response did not identify itself as Skulk")
     elif not identity:
         failures.append("resident identity response was empty")
@@ -163,7 +230,8 @@ def qualify_steward(
                 "content": (
                     f"Inspect node {target_node_name} using its complete node "
                     "diagnostics and doctor findings. Name the node and summarize "
-                    "the observed result in plain language."
+                    "the observed result in plain language, including its exact "
+                    "hardware model and chip."
                 ),
             }
         ],
@@ -180,10 +248,24 @@ def qualify_steward(
         failures.append(
             "named-node diagnostic response leaked the internal node identity"
         )
+    elif any(
+        fact.casefold() not in diagnostics.casefold()
+        for fact in expected_hardware_facts
+    ):
+        failures.append(
+            "named-node diagnostic response did not reproduce API-observed "
+            "hardware facts"
+        )
     else:
-        checks.append("named-node diagnostics completed without identity leakage")
+        checks.append(
+            "named-node diagnostics reproduced API facts without identity leakage"
+        )
 
     return StewardQualificationEvidence(
+        generated_at=datetime.now(UTC).isoformat(),
+        harness_version=__version__,
+        harness_commit=_harness_commit(),
+        skulk_commit=_skulk_commit(local_diagnostics),
         passed=not failures,
         checks=tuple(checks),
         failures=tuple(failures),

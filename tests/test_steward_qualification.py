@@ -22,14 +22,25 @@ class _Client:
             "desired_model": "org/brain",
         }
 
+    def get_diagnostics_node(self) -> dict[str, object]:
+        return {"runtime": {"skulkCommit": "abc123"}}
+
     def list_models(self) -> list[dict[str, object]]:
         return [{"id": "skulk/steward", "system_role": "steward"}]
 
     def get_state(self) -> dict[str, object]:
         return {
             "nodeIdentities": {
-                "peer-api": {"friendlyName": "api-node"},
-                "peer-worker": {"friendlyName": "worker-node"},
+                "peer-api": {
+                    "friendlyName": "api-node",
+                    "modelId": "API Model",
+                    "chipId": "API Chip",
+                },
+                "peer-worker": {
+                    "friendlyName": "worker-node",
+                    "modelId": "Worker Model 42",
+                    "chipId": "Worker Chip 9",
+                },
             },
             "nodeResources": {
                 "peer-api": {"apiAvailable": True},
@@ -48,10 +59,13 @@ class _Client:
         prompt = message["content"]
         assert isinstance(prompt, str)
         self.prompts.append(prompt)
-        if "name" in prompt:
+        if prompt.startswith("State your identity"):
             return SimpleNamespace(text="I am Skulk.")
         return SimpleNamespace(
-            text="worker-node is healthy; its doctor checks report no problems."
+            text=(
+                "worker-node is a Worker Model 42 with Worker Chip 9; "
+                "its doctor checks report no problems."
+            )
         )
 
 
@@ -63,6 +77,7 @@ def test_qualification_prefers_no_api_worker_for_named_diagnostics() -> None:
     assert evidence.passed is True
     assert evidence.target_node_name == "worker-node"
     assert len(evidence.checks) == 4
+    assert evidence.skulk_commit == "abc123"
     assert "peer-worker" not in evidence.diagnostics_response
     assert "worker-node" in client.prompts[1]
 
@@ -87,3 +102,20 @@ def test_qualification_rejects_non_ready_transition_and_identity_leak() -> None:
     assert evidence.passed is False
     assert any("ready=False" in failure for failure in evidence.failures)
     assert any("leaked" in failure for failure in evidence.failures)
+
+
+def test_qualification_rejects_negated_identity_and_unproven_diagnostics() -> None:
+    client = _Client()
+    responses = iter(
+        [
+            SimpleNamespace(text="I am not Skulk."),
+            SimpleNamespace(text="worker-node could not be inspected."),
+        ]
+    )
+    client.stream_chat = lambda **_kwargs: next(responses)  # type: ignore[method-assign]
+
+    evidence = qualify_steward(client)  # type: ignore[arg-type]
+
+    assert evidence.passed is False
+    assert any("identity" in failure for failure in evidence.failures)
+    assert any("API-observed" in failure for failure in evidence.failures)
