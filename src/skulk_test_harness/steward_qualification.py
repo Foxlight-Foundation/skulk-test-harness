@@ -93,12 +93,19 @@ def _diagnostic_target(
     client: SkulkClient,
     state: dict[str, object],
     requested_name: str | None,
+    eligible_node_ids: set[str] | None,
 ) -> tuple[str, str]:
     """Choose one named node, preferring a worker that does not expose an API."""
 
     names = _friendly_node_names(state)
+    if eligible_node_ids is not None:
+        names = {
+            node_id: name
+            for node_id, name in names.items()
+            if node_id in eligible_node_ids
+        }
     if not names:
-        raise RuntimeError("/state has no friendly node identities")
+        raise RuntimeError("eligible fleet scope has no friendly node identities")
     if requested_name is not None:
         matches = [
             (node_id, name) for node_id, name in names.items() if name == requested_name
@@ -144,6 +151,7 @@ def qualify_steward(
     client: SkulkClient,
     *,
     diagnostic_node_name: str | None = None,
+    eligible_node_ids: set[str] | None = None,
 ) -> StewardQualificationEvidence:
     """Exercise the enabled resident, discovery entry, and named-node tools.
 
@@ -192,7 +200,7 @@ def qualify_steward(
 
     state = client.get_state()
     target_node_id, target_node_name = _diagnostic_target(
-        client, state, diagnostic_node_name
+        client, state, diagnostic_node_name, eligible_node_ids
     )
     expected_hardware_facts = _target_hardware_facts(state, target_node_id)
     if len(expected_hardware_facts) < 2:

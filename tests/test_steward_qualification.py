@@ -61,6 +61,13 @@ class _Client:
         self.prompts.append(prompt)
         if prompt.startswith("State your identity"):
             return SimpleNamespace(text="I am Skulk.")
+        if "api-node" in prompt:
+            return SimpleNamespace(
+                text=(
+                    "api-node is an API Model with API Chip; "
+                    "its doctor checks report no problems."
+                )
+            )
         return SimpleNamespace(
             text=(
                 "worker-node is a Worker Model 42 with Worker Chip 9; "
@@ -119,3 +126,16 @@ def test_qualification_rejects_negated_identity_and_unproven_diagnostics() -> No
     assert evidence.passed is False
     assert any("identity" in failure for failure in evidence.failures)
     assert any("API-observed" in failure for failure in evidence.failures)
+
+
+def test_qualification_restricts_diagnostics_to_eligible_fleet_scope() -> None:
+    client = _Client()
+
+    evidence = qualify_steward(
+        client,  # pyright: ignore[reportArgumentType]
+        eligible_node_ids={"peer-api"},
+    )
+
+    assert evidence.passed is True
+    assert evidence.target_node_name == "api-node"
+    assert "api-node" in client.prompts[1]

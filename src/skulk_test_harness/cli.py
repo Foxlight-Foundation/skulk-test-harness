@@ -802,7 +802,9 @@ def steward_qualify(
     """Run the release-blocking resident status, identity, and tool checks."""
 
     cfg = load_config(config)
-    _require_execution_preflight(cfg, force=force, segment=segment)
+    eligible_node_ids, _incidental_node_ids = _require_execution_preflight(
+        cfg, force=force, segment=segment
+    )
     with SkulkClient(
         cfg.api_base_url,
         request_timeout_s=cfg.request_timeout_s,
@@ -812,6 +814,7 @@ def steward_qualify(
         evidence = qualify_steward(
             client,
             diagnostic_node_name=diagnostic_node,
+            eligible_node_ids=(set(eligible_node_ids) if eligible_node_ids else None),
         )
 
     if output is None:
