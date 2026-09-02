@@ -38,8 +38,8 @@ class _Client:
                 },
                 "peer-worker": {
                     "friendlyName": "worker-node",
-                    "modelId": "Worker Model 42",
-                    "chipId": "Worker Chip 9",
+                    "modelId": "Worker Model_42",
+                    "chipId": "Worker_Chip 9",
                 },
             },
             "nodeResources": {

@@ -74,6 +74,13 @@ def _target_hardware_facts(
     )
 
 
+def _normalized_fact_text(value: str) -> str:
+    """Normalize harmless presentation differences without dropping words."""
+
+    expanded = value.casefold().replace("w/", "with")
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", expanded).split())
+
+
 def _friendly_node_names(state: dict[str, object]) -> dict[str, str]:
     """Return stable friendly names keyed by live node identity."""
 
@@ -258,7 +265,7 @@ def qualify_steward(
             "named-node diagnostic response leaked the internal node identity"
         )
     elif any(
-        fact.casefold() not in diagnostics.casefold()
+        _normalized_fact_text(fact) not in _normalized_fact_text(diagnostics)
         for fact in expected_hardware_facts
     ):
         failures.append(
