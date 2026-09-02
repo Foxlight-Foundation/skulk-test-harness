@@ -30,7 +30,7 @@ class StewardQualificationEvidence:
 
 
 def _harness_commit() -> str:
-    """Return the source commit when running from a checkout."""
+    """Return the source commit, marking a checkout with local changes dirty."""
 
     repository = Path(__file__).resolve().parents[2]
     try:
@@ -41,9 +41,19 @@ def _harness_commit() -> str:
             text=True,
             timeout=5,
         )
+        status = subprocess.run(
+            ["git", "-C", str(repository), "status", "--porcelain"],
+            capture_output=True,
+            check=True,
+            text=True,
+            timeout=5,
+        )
     except (OSError, subprocess.SubprocessError):
         return "unknown"
-    return result.stdout.strip() or "unknown"
+    commit = result.stdout.strip()
+    if not commit:
+        return "unknown"
+    return f"{commit}-dirty" if status.stdout.strip() else commit
 
 
 def _skulk_commit(diagnostics: dict[str, object]) -> str:
@@ -54,6 +64,12 @@ def _skulk_commit(diagnostics: dict[str, object]) -> str:
         return "unknown"
     commit = runtime.get("skulkCommit")
     return commit if isinstance(commit, str) and commit else "unknown"
+
+
+def _is_attributable_commit(value: str) -> bool:
+    """Return whether a provenance value identifies one clean Git commit."""
+
+    return re.fullmatch(r"[0-9a-fA-F]{7,64}", value) is not None
 
 
 def _target_hardware_facts(
@@ -171,6 +187,16 @@ def qualify_steward(
     checks: list[str] = []
     failures: list[str] = []
     local_diagnostics = client.get_diagnostics_node()
+    harness_commit = _harness_commit()
+    skulk_commit = _skulk_commit(local_diagnostics)
+    if not _is_attributable_commit(harness_commit):
+        failures.append(
+            f"harness source provenance is not a clean commit: {harness_commit!r}"
+        )
+    if not _is_attributable_commit(skulk_commit):
+        failures.append(
+            f"serving Skulk source provenance is unavailable: {skulk_commit!r}"
+        )
     status = client.get_steward_status()
     expected_status = {
         "enabled": True,
@@ -280,8 +306,8 @@ def qualify_steward(
     return StewardQualificationEvidence(
         generated_at=datetime.now(UTC).isoformat(),
         harness_version=__version__,
-        harness_commit=_harness_commit(),
-        skulk_commit=_skulk_commit(local_diagnostics),
+        harness_commit=harness_commit,
+        skulk_commit=skulk_commit,
         passed=not failures,
         checks=tuple(checks),
         failures=tuple(failures),
