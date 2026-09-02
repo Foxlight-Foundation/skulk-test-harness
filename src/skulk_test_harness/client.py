@@ -847,13 +847,9 @@ async def bench_chat_async(
         metrics = metrics.model_copy(
             update={
                 "skulk_prompt_tps": _float_or_none(stats.get("prompt_tps")),
-                "skulk_generation_tps": _float_or_none(
-                    stats.get("generation_tps")
-                ),
+                "skulk_generation_tps": _float_or_none(stats.get("generation_tps")),
                 "skulk_prompt_tokens": _int_or_none(stats.get("prompt_tokens")),
-                "skulk_generation_tokens": _int_or_none(
-                    stats.get("generation_tokens")
-                ),
+                "skulk_generation_tokens": _int_or_none(stats.get("generation_tokens")),
                 "serving_batches": _bool_or_none(stats.get("serving_batches")),
                 "in_flight_at_admission": _int_or_none(
                     stats.get("in_flight_at_admission")
@@ -978,6 +974,14 @@ class SkulkClient:
         payload = self._request_json("GET", "/state")
         if not isinstance(payload, dict):
             raise TypeError("Expected /state to return an object")
+        return payload
+
+    def get_steward_status(self) -> dict[str, object]:
+        """Return the intelligent-fabric resident's availability contract."""
+
+        payload = self._request_json("GET", "/v1/steward")
+        if not isinstance(payload, dict):
+            raise TypeError("Expected /v1/steward to return an object")
         return payload
 
     def get_cluster_api_owners(self) -> list[ClusterApiOwner]:
@@ -1136,7 +1140,9 @@ class SkulkClient:
 
         identities = state.get("nodeIdentities")
         identity = identities.get(node_id) if isinstance(identities, dict) else None
-        friendly_name = identity.get("friendlyName") if isinstance(identity, dict) else None
+        friendly_name = (
+            identity.get("friendlyName") if isinstance(identity, dict) else None
+        )
         if isinstance(friendly_name, str) and friendly_name:
             candidate = _replace_url_host(self.base_url, friendly_name)
             if candidate not in candidates:
@@ -1374,7 +1380,9 @@ class SkulkClient:
             if not isinstance(name, str) or not name:
                 raise TypeError("Expected every audio voice to have a string name")
             if not isinstance(response_model, str) or response_model != model_id:
-                raise TypeError("Expected every audio voice to name the requested model")
+                raise TypeError(
+                    "Expected every audio voice to name the requested model"
+                )
             if not isinstance(preferred_languages, list) or not all(
                 isinstance(language, str) and language
                 for language in preferred_languages

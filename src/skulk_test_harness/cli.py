@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import socket
 import time
+from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
@@ -31,22 +32,27 @@ from skulk_test_harness.models import (
 from skulk_test_harness.orchestrator import HarnessRunner
 from skulk_test_harness.reporting import ReportWriter
 from skulk_test_harness.specs import load_config, load_model_sets, load_test_sets
+from skulk_test_harness.steward_qualification import qualify_steward
 
 app = typer.Typer(help="Agent-controlled Skulk end-to-end test and benchmark harness.")
 models_app = typer.Typer(help="Inspect model sets and live Skulk model catalog.")
 tests_app = typer.Typer(help="Inspect named test sets.")
-stability_app = typer.Typer(help="Run cluster stability suites (failover/churn/soak/refusal).")
+stability_app = typer.Typer(
+    help="Run cluster stability suites (failover/churn/soak/refusal)."
+)
 fleet_app = typer.Typer(
     help="Coordinate exclusive access to a shared test fleet across agents."
 )
 fresh_install_app = typer.Typer(
     help="Qualify the literal fresh-install experience used for release gates."
 )
+steward_app = typer.Typer(help="Qualify Skulk's resident intelligent-fabric service.")
 app.add_typer(models_app, name="models")
 app.add_typer(tests_app, name="tests")
 app.add_typer(stability_app, name="stability")
 app.add_typer(fleet_app, name="fleet")
 app.add_typer(fresh_install_app, name="fresh-install")
+app.add_typer(steward_app, name="steward")
 
 console = Console()
 
@@ -674,9 +680,7 @@ def fleet_extend(
     if store is None:
         console.print("fleet lock is not configured; nothing to extend.")
         return
-    outcome = store.extend(
-        ttl_s=None if ttl_minutes is None else ttl_minutes * 60.0
-    )
+    outcome = store.extend(ttl_s=None if ttl_minutes is None else ttl_minutes * 60.0)
     if outcome.ok:
         console.print(f"[bold green]OK[/]: {outcome.message}")
         _print_lease(store)
@@ -755,6 +759,69 @@ def doctor(config: ConfigPath = Path("skulk-harness.yaml")) -> None:
         console.print(f"[yellow]warning[/yellow] {issue.message} {issue.evidence}")
 
 
+@steward_app.command("qualify")
+def steward_qualify(
+    config: ConfigPath = Path("skulk-harness.yaml"),
+    diagnostic_node: Annotated[
+        str | None,
+        typer.Option(
+            "--diagnostic-node",
+            help=(
+                "Friendly node name for the remote diagnostics check. By default "
+                "the harness prefers a node advertising apiAvailable=false."
+            ),
+        ),
+    ] = None,
+    output: Annotated[
+        Path | None,
+        typer.Option(
+            "--output",
+            help="Evidence JSON path. Defaults under the configured runs directory.",
+        ),
+    ] = None,
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            help="Proceed even if another agent holds the shared-fleet lease.",
+        ),
+    ] = False,
+) -> None:
+    """Run the release-blocking resident status, identity, and tool checks."""
+
+    cfg = load_config(config)
+    _require_execution_preflight(cfg, force=force)
+    with SkulkClient(
+        cfg.api_base_url,
+        request_timeout_s=cfg.request_timeout_s,
+        generation_timeout_s=cfg.generation_timeout_s,
+        stream_read_timeout_s=cfg.stream_read_timeout_s,
+    ) as client:
+        evidence = qualify_steward(
+            client,
+            diagnostic_node_name=diagnostic_node,
+        )
+
+    if output is None:
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        output = cfg.output_dir / f"steward-qualification-{stamp}.json"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(asdict(evidence), indent=2, sort_keys=True) + "\n")
+    output.chmod(0o600)
+
+    table = Table(title="Intelligent Fabric Qualification")
+    table.add_column("Check")
+    table.add_column("Result")
+    for check in evidence.checks:
+        table.add_row(check, "PASS")
+    for failure in evidence.failures:
+        table.add_row(failure, "FAIL")
+    console.print(table)
+    console.print(f"Evidence: {output}")
+    if not evidence.passed:
+        raise typer.Exit(code=1)
+
+
 @models_app.command("sets")
 def list_model_sets(config: ConfigPath = Path("skulk-harness.yaml")) -> None:
     """List configured named model sets."""
@@ -783,7 +850,9 @@ def list_catalog(config: ConfigPath = Path("skulk-harness.yaml")) -> None:
     """List live Skulk catalog models from the configured API."""
 
     cfg = load_config(config)
-    with SkulkClient(cfg.api_base_url, request_timeout_s=cfg.request_timeout_s) as client:
+    with SkulkClient(
+        cfg.api_base_url, request_timeout_s=cfg.request_timeout_s
+    ) as client:
         catalog = client.list_models()
     table = Table(title="Skulk Model Catalog")
     table.add_column("Model")
@@ -791,7 +860,9 @@ def list_catalog(config: ConfigPath = Path("skulk-harness.yaml")) -> None:
     table.add_column("Tasks")
     table.add_column("Capabilities")
     for item in catalog:
-        model_id = str(item.get("hugging_face_id") or item.get("id") or item.get("name"))
+        model_id = str(
+            item.get("hugging_face_id") or item.get("id") or item.get("name")
+        )
         table.add_row(
             model_id,
             str(item.get("family") or ""),
@@ -806,7 +877,9 @@ def list_store(config: ConfigPath = Path("skulk-harness.yaml")) -> None:
     """List models currently registered in the Skulk model store."""
 
     cfg = load_config(config)
-    with SkulkClient(cfg.api_base_url, request_timeout_s=cfg.request_timeout_s) as client:
+    with SkulkClient(
+        cfg.api_base_url, request_timeout_s=cfg.request_timeout_s
+    ) as client:
         registry = client.get_store_registry() or {}
     entries = _registry_entries(registry)
     table = Table(title="Skulk Model Store")
@@ -830,7 +903,9 @@ def add_model(
     """Ask Skulk to add/fetch a model card."""
 
     cfg = load_config(config)
-    with SkulkClient(cfg.api_base_url, request_timeout_s=cfg.request_timeout_s) as client:
+    with SkulkClient(
+        cfg.api_base_url, request_timeout_s=cfg.request_timeout_s
+    ) as client:
         payload = client.add_model_card(model_id)
     console.print(payload or {"status": "ok", "model_id": model_id})
 
@@ -856,7 +931,9 @@ def download_model(
             while time.monotonic() < deadline:
                 status = client.get_store_download_status(model_id) or {}
                 console.print(status)
-                status_text = str(status.get("status") or status.get("state") or "").lower()
+                status_text = str(
+                    status.get("status") or status.get("state") or ""
+                ).lower()
                 if status_text in {"complete", "completed", "ready", "succeeded"}:
                     return
                 if status_text in {"failed", "error"}:
@@ -895,8 +972,12 @@ def plan(
             help="Exact placement shape contract: MlxRing, MlxJaccl, or LlamaRpc."
         ),
     ] = "MlxRing",
-    min_nodes: Annotated[int | None, typer.Option(help="Minimum node count override")] = None,
-    max_nodes: Annotated[int | None, typer.Option(help="Maximum node count override")] = None,
+    min_nodes: Annotated[
+        int | None, typer.Option(help="Minimum node count override")
+    ] = None,
+    max_nodes: Annotated[
+        int | None, typer.Option(help="Maximum node count override")
+    ] = None,
 ) -> None:
     """Plan a harness run without mutating the cluster."""
 
@@ -963,8 +1044,12 @@ def run(
             help="Exact placement shape contract: MlxRing, MlxJaccl, or LlamaRpc."
         ),
     ] = "MlxRing",
-    min_nodes: Annotated[int | None, typer.Option(help="Minimum node count override")] = None,
-    max_nodes: Annotated[int | None, typer.Option(help="Maximum node count override")] = None,
+    min_nodes: Annotated[
+        int | None, typer.Option(help="Minimum node count override")
+    ] = None,
+    max_nodes: Annotated[
+        int | None, typer.Option(help="Maximum node count override")
+    ] = None,
     exclude_nodes: Annotated[
         str | None,
         typer.Option(
@@ -1277,6 +1362,7 @@ def stability_churn(
         cfg, force=force
     )
     with _stability_client(cfg) as client:
+
         def resolve_placement_scope() -> tuple[list[str], list[str]]:
             return _placement_scope_from_state(cfg, client.get_state())
 
@@ -1296,8 +1382,12 @@ def stability_churn(
 def stability_soak(
     model: ModelOption = DEFAULT_STABILITY_MODEL,
     config: ConfigPath = Path("skulk-harness.yaml"),
-    concurrency: Annotated[int, typer.Option(help="Concurrent completion workers.")] = 4,
-    duration_s: Annotated[float, typer.Option(help="Soak duration in seconds.")] = 120.0,
+    concurrency: Annotated[
+        int, typer.Option(help="Concurrent completion workers.")
+    ] = 4,
+    duration_s: Annotated[
+        float, typer.Option(help="Soak duration in seconds.")
+    ] = 120.0,
     force: Annotated[
         bool,
         typer.Option(
@@ -1425,7 +1515,9 @@ def _print_comparison(record: ComparisonRecord) -> None:
 
     for model in record.models:
         decode = next((d for d in model.deltas if d.metric == "decode_tps"), None)
-        base = f"{decode.baseline:.1f}" if decode and decode.baseline is not None else "-"
+        base = (
+            f"{decode.baseline:.1f}" if decode and decode.baseline is not None else "-"
+        )
         cand = (
             f"{decode.candidate:.1f}"
             if decode and decode.candidate is not None
@@ -1476,9 +1568,12 @@ def _registry_entries(registry: dict[str, object]) -> list[dict[str, object]]:
 
 @app.command()
 def submit(
-    run_path: Annotated[Path, typer.Argument(help="Run directory or report.json to submit.")],
+    run_path: Annotated[
+        Path, typer.Argument(help="Run directory or report.json to submit.")
+    ],
     dry_run: Annotated[
-        bool, typer.Option("--dry-run", help="Print the exact payload instead of sending.")
+        bool,
+        typer.Option("--dry-run", help="Print the exact payload instead of sending."),
     ] = False,
     github_token: Annotated[
         str | None, typer.Option("--github-token", help="GitHub token for attribution.")
