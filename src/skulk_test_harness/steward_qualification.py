@@ -327,12 +327,13 @@ def qualify_steward(
                 "role": "user",
                 "content": (
                     f"Inspect node {target_node_name} using its complete node "
-                    "diagnostics and doctor findings. Name the node and summarize "
-                    "the observed result in plain language, including its exact "
-                    "hardware model and chip. Report the exact doctor finding "
-                    f"count using the phrase '{doctor_count} doctor findings'. "
+                    "diagnostics and doctor findings. Copy the hardware model and "
+                    "chip verbatim, character for character, without abbreviating "
+                    "or correcting them. Use this compact format: 'Node: <name>; "
+                    "Model: <exact model>; Chip: <exact chip>; "
+                    f"{doctor_count} doctor findings'. "
                     + (
-                        "Also include the first finding's exact check ID "
+                        "Then include the first finding's exact check ID "
                         f"'{doctor_check_id}' and verdict '{doctor_verdict}'."
                         if doctor_check_id is not None and doctor_verdict is not None
                         else ""
