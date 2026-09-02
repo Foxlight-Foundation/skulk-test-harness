@@ -59,7 +59,7 @@ class _Client:
         prompt = message["content"]
         assert isinstance(prompt, str)
         self.prompts.append(prompt)
-        if prompt.startswith("State your identity"):
+        if prompt.startswith("What system or service"):
             return SimpleNamespace(text="I am Skulk.")
         if "api-node" in prompt:
             return SimpleNamespace(
@@ -85,6 +85,7 @@ def test_qualification_prefers_no_api_worker_for_named_diagnostics() -> None:
     assert evidence.target_node_name == "worker-node"
     assert len(evidence.checks) == 4
     assert evidence.skulk_commit == "abc123"
+    assert "Skulk" not in client.prompts[0]
     assert "peer-worker" not in evidence.diagnostics_response
     assert "worker-node" in client.prompts[1]
 

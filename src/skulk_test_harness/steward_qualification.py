@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -212,10 +213,7 @@ def qualify_steward(
         messages=[
             {
                 "role": "user",
-                "content": (
-                    "State your identity in one sentence. Begin exactly with "
-                    "'I am Skulk'."
-                ),
+                "content": "What system or service are you? Answer in one sentence.",
             }
         ],
         max_tokens=96,
@@ -223,7 +221,10 @@ def qualify_steward(
         top_p=1.0,
         enable_thinking=False,
     ).text.strip()
-    if not identity.casefold().startswith("i am skulk"):
+    if (
+        re.search(r"\b(?:i am|i'm|this is)\s+(?:the\s+)?skulk\b", identity.casefold())
+        is None
+    ):
         failures.append("resident identity response did not identify itself as Skulk")
     elif not identity:
         failures.append("resident identity response was empty")
