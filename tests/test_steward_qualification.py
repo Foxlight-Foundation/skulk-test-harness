@@ -37,6 +37,9 @@ class _Client:
     def get_diagnostics_node(self) -> dict[str, object]:
         return {"runtime": {"skulkCommit": "abc1234"}}
 
+    def get_cluster_node_diagnostics(self, _node_id: str) -> dict[str, object]:
+        return {"doctor": []}
+
     def list_models(self) -> list[dict[str, object]]:
         return [{"id": "skulk/steward", "system_role": "steward"}]
 
@@ -47,11 +50,13 @@ class _Client:
                     "friendlyName": "api-node",
                     "modelId": "API Model",
                     "chipId": "API Chip",
+                    "skulkCommit": "abc1234",
                 },
                 "peer-worker": {
                     "friendlyName": "worker-node",
                     "modelId": "Worker Model_42",
                     "chipId": "Worker_Chip 9",
+                    "skulkCommit": "abc1234",
                 },
             },
             "nodeResources": {
@@ -76,14 +81,13 @@ class _Client:
         if "api-node" in prompt:
             return SimpleNamespace(
                 text=(
-                    "api-node is an API Model with API Chip; "
-                    "its doctor checks report no problems."
+                    "api-node is an API Model with API Chip; it has 0 doctor findings."
                 )
             )
         return SimpleNamespace(
             text=(
                 "worker-node is a Worker Model 42 with Worker Chip 9; "
-                "its doctor checks report no problems."
+                "it has 0 doctor findings."
             )
         )
 
@@ -97,6 +101,10 @@ def test_qualification_prefers_no_api_worker_for_named_diagnostics() -> None:
     assert evidence.target_node_name == "worker-node"
     assert len(evidence.checks) == 4
     assert evidence.skulk_commit == "abc1234"
+    assert evidence.node_commits == {
+        "api-node": "abc1234",
+        "worker-node": "abc1234",
+    }
     assert "Skulk" not in client.prompts[0]
     assert "peer-worker" not in evidence.diagnostics_response
     assert "worker-node" in client.prompts[1]
@@ -168,3 +176,23 @@ def test_qualification_rejects_unattributable_source_provenance(
     assert evidence.passed is False
     assert any("harness source provenance" in failure for failure in evidence.failures)
     assert any("Skulk source provenance" in failure for failure in evidence.failures)
+
+
+def test_qualification_rejects_mixed_node_commits_and_unproven_doctor() -> None:
+    client = _Client()
+    state = client.get_state()
+    identities = state["nodeIdentities"]
+    assert isinstance(identities, dict)
+    worker = identities["peer-worker"]
+    assert isinstance(worker, dict)
+    worker["skulkCommit"] = "def5678"
+    client.get_state = lambda: state  # type: ignore[method-assign]
+    client.get_cluster_node_diagnostics = lambda _node_id: {  # type: ignore[method-assign]
+        "doctor": [{"checkId": "models-storage", "verdict": "degraded"}]
+    }
+
+    evidence = qualify_steward(client)  # type: ignore[arg-type]
+
+    assert evidence.passed is False
+    assert any("runs def5678" in failure for failure in evidence.failures)
+    assert any("doctor finding count" in failure for failure in evidence.failures)

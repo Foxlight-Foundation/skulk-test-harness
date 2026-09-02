@@ -20,6 +20,7 @@ class StewardQualificationEvidence:
     harness_version: str
     harness_commit: str
     skulk_commit: str
+    node_commits: dict[str, str]
     passed: bool
     checks: tuple[str, ...]
     failures: tuple[str, ...]
@@ -111,6 +112,45 @@ def _friendly_node_names(state: dict[str, object]) -> dict[str, str]:
         if isinstance(friendly_name, str) and friendly_name.strip():
             names[node_id] = friendly_name.strip()
     return names
+
+
+def _node_commits(
+    state: dict[str, object], eligible_node_ids: set[str] | None
+) -> dict[str, str]:
+    """Return source provenance for every node in the exercised fleet scope."""
+
+    identities = state.get("nodeIdentities")
+    typed_identities = identities if isinstance(identities, dict) else {}
+    names = _friendly_node_names(state)
+    selected_ids = set(names) if eligible_node_ids is None else eligible_node_ids
+    commits: dict[str, str] = {}
+    for node_id in sorted(selected_ids):
+        identity = typed_identities.get(node_id)
+        commit = identity.get("skulkCommit") if isinstance(identity, dict) else None
+        commits[names.get(node_id, f"unresolved:{node_id}")] = (
+            commit if isinstance(commit, str) and commit else "unknown"
+        )
+    return commits
+
+
+def _doctor_reference(
+    diagnostics: dict[str, object],
+) -> tuple[int, str | None, str | None]:
+    """Return the finding count and first stable doctor result identifiers."""
+
+    doctor = diagnostics.get("doctor")
+    if not isinstance(doctor, list):
+        raise RuntimeError("target node diagnostics omitted the doctor result list")
+    if not doctor:
+        return 0, None, None
+    first = doctor[0]
+    if not isinstance(first, dict):
+        raise RuntimeError("target node diagnostics returned an invalid doctor result")
+    check_id = first.get("checkId")
+    verdict = first.get("verdict")
+    if not isinstance(check_id, str) or not isinstance(verdict, str):
+        raise RuntimeError("target node doctor result omitted its check ID or verdict")
+    return len(doctor), check_id, verdict
 
 
 def _diagnostic_target(
@@ -233,6 +273,18 @@ def qualify_steward(
         checks.append("virtual steward model is discoverable exactly once")
 
     state = client.get_state()
+    node_commits = _node_commits(state, eligible_node_ids)
+    if not node_commits:
+        failures.append("exercised fleet scope has no node source provenance")
+    for node_name, commit in node_commits.items():
+        if not _is_attributable_commit(commit):
+            failures.append(
+                f"node {node_name!r} source provenance is unavailable: {commit!r}"
+            )
+        elif commit.casefold() != skulk_commit.casefold():
+            failures.append(
+                f"node {node_name!r} runs {commit}, expected {skulk_commit}"
+            )
     target_node_id, target_node_name = _diagnostic_target(
         client, state, diagnostic_node_name, eligible_node_ids
     )
@@ -241,6 +293,10 @@ def qualify_steward(
         failures.append(
             "target node lacks model and chip facts needed to prove diagnostics"
         )
+    target_diagnostics = client.get_cluster_node_diagnostics(target_node_id)
+    doctor_count, doctor_check_id, doctor_verdict = _doctor_reference(
+        target_diagnostics
+    )
     identity = client.stream_chat(
         model_id="skulk/steward",
         messages=[
@@ -273,7 +329,14 @@ def qualify_steward(
                     f"Inspect node {target_node_name} using its complete node "
                     "diagnostics and doctor findings. Name the node and summarize "
                     "the observed result in plain language, including its exact "
-                    "hardware model and chip."
+                    "hardware model and chip. Report the exact doctor finding "
+                    f"count using the phrase '{doctor_count} doctor findings'. "
+                    + (
+                        "Also include the first finding's exact check ID "
+                        f"'{doctor_check_id}' and verdict '{doctor_verdict}'."
+                        if doctor_check_id is not None and doctor_verdict is not None
+                        else ""
+                    )
                 ),
             }
         ],
@@ -298,6 +361,23 @@ def qualify_steward(
             "named-node diagnostic response did not reproduce API-observed "
             "hardware facts"
         )
+    elif f"{doctor_count} doctor findings" not in diagnostics.casefold():
+        failures.append(
+            "named-node diagnostic response did not reproduce the doctor finding count"
+        )
+    elif (
+        doctor_check_id is not None
+        and doctor_verdict is not None
+        and (
+            _normalized_fact_text(doctor_check_id)
+            not in _normalized_fact_text(diagnostics)
+            or _normalized_fact_text(doctor_verdict)
+            not in _normalized_fact_text(diagnostics)
+        )
+    ):
+        failures.append(
+            "named-node diagnostic response did not reproduce the first doctor result"
+        )
     else:
         checks.append(
             "named-node diagnostics reproduced API facts without identity leakage"
@@ -308,6 +388,7 @@ def qualify_steward(
         harness_version=__version__,
         harness_commit=harness_commit,
         skulk_commit=skulk_commit,
+        node_commits=node_commits,
         passed=not failures,
         checks=tuple(checks),
         failures=tuple(failures),

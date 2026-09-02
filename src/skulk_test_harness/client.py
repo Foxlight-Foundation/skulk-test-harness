@@ -1230,6 +1230,15 @@ class SkulkClient:
             raise TypeError("Expected /v1/diagnostics/node to return an object")
         return payload
 
+    def get_cluster_node_diagnostics(self, node_id: str) -> dict[str, object]:
+        """Return the proxied diagnostics bundle for one live cluster node."""
+
+        path_node = quote(node_id, safe="")
+        payload = self._request_json("GET", f"/v1/diagnostics/cluster/{path_node}")
+        if not isinstance(payload, dict):
+            raise TypeError("Expected cluster node diagnostics to return an object")
+        return payload
+
     def get_data_plane_diagnostics(self) -> DataPlaneDiagnosticsSnapshot:
         """Return typed DATA lifecycle and egress counters for this API node."""
 
