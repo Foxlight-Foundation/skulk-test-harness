@@ -1,4 +1,43 @@
 model_sets:
+  tool-served-llama-server:
+    name: tool-served-llama-server
+    description: >-
+      GGUF cards that route to the llama-server engine, where the server parses
+      tool calls itself. Runs on any node with the served engine available.
+    models:
+      - unsloth/Qwen3.6-35B-A3B-GGUF
+      - bartowski/openai_gpt-oss-20b-GGUF
+
+  tool-served-vllm-pinned:
+    name: tool-served-vllm-pinned
+    description: >-
+      vLLM cards that pin runtime.vllm_tool_call_parser, so tool calling is
+      expected to work. Needs a GPU node.
+    models:
+      - Qwen/Qwen2.5-7B-Instruct
+
+  tool-served-vllm-parserless:
+    name: tool-served-vllm-parserless
+    description: >-
+      vLLM cards with NO parser pin. Tool requests must be refused loudly;
+      run these with the tool-served-unsupported suite. Needs a GPU node.
+    models:
+      - Qwen/Qwen3.6-27B-FP8
+      - Qwen/Qwen3.6-35B-A3B-FP8
+
+  tool-dialects:
+    name: tool-dialects
+    description: >-
+      One model per tool-call dialect Skulk supports, so the tool-tests suite
+      exercises every parser rather than one. generic covers the <tool_call>
+      marker dialect, unmarked covers Llama's bare call object, gemma4 covers
+      call:NAME{...}, and gpt_oss covers harmony channels.
+    models:
+      - mlx-community/Qwen3.5-4B-MLX-4bit
+      - mlx-community/Llama-3.2-3B-Instruct-4bit
+      - mlx-community/gemma-4-e4b-it-8bit
+      - mlx-community/gpt-oss-20b-MXFP4-Q8
+
   smoke:
     name: smoke
     description: Store-backed default for harness validation on the Kite cluster.
@@ -467,4 +506,15 @@ model_sets:
       Just the Qwen3-Coder-30B-A3B agentic coding GGUF, which defaults to the
       llama_server engine (post-#607). For validating served tool calling e2e.
     models:
+      - unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF
+
+  a100-gguf-small:
+    name: a100-gguf-small
+    description: >-
+      Temp (uncommitted): the concurrency-gguf set minus the 120B, for the A100
+      pod's 80GB local disk. Phase A of the two-phase A100 concurrency run; the
+      120B runs as phase B via concurrency-120b after freeing local store space.
+    models:
+      - unsloth/Llama-3.2-1B-Instruct-GGUF
+      - Qwen/Qwen2.5-7B-Instruct-GGUF
       - unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF
