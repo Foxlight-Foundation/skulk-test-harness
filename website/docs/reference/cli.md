@@ -23,6 +23,7 @@ current directory, falling back to built-in defaults if absent).
 | `goal --execute` | Yes | Yes | Execute the parsed goal |
 | `compare` | No | No | Compare two local run sets like-for-like |
 | `submit` | No | No | Submit a local run to the community benchmarks ledger |
+| `steward qualify` | Yes | No placement/config mutation | Qualify the enabled resident intelligent fabric and record evidence |
 | `fresh-install qualify` | Existing services are snapshotted and stopped | Yes, every selected physical-fleet member | Install and qualify the candidate or shipping product experience on the real topology |
 
 `compare` and `submit` work entirely from local report files under
@@ -58,6 +59,25 @@ ledger's ingest API).
 Stability suites also accept `--model`/`-m` (the model to exercise), and
 per-suite knobs: `--min-nodes` (failover), `--rounds` (churn), and
 `--concurrency` plus `--duration-s` (soak).
+
+## Steward Command
+
+```bash
+uv run skulk-harness steward qualify --config skulk-harness.yaml
+```
+
+The command requires Intelligent Fabric to be enabled with a ready, idle
+resident. It checks `GET /v1/steward`, unique `skulk/steward` discovery,
+first-person identity, and a named-node diagnostic/doctor investigation. By
+default it prefers a node whose resource telemetry says `apiAvailable=false`,
+then a remote API node, then the local node. Pass
+`--diagnostic-node <friendly-name>` to make the target exact. Pass
+`--segment <name>` when qualification is protected by an independent named
+fleet lease. Evidence defaults
+to a mode-600 JSON file under `output_dir`; `--output` selects another path.
+The checks create only transient generation tasks and do not change placement
+or configuration. Fleet-lease refusal still applies so a qualification cannot
+add load while another holder owns the shared fleet.
 
 ## Fresh-install Command
 

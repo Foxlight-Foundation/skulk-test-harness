@@ -62,6 +62,20 @@ uv run skulk-harness doctor
 reach the API, copy `skulk-harness.example.yaml` to `skulk-harness.yaml` and
 set `api_base_url` to wherever your Skulk API lives.
 
+To qualify an enabled Intelligent Fabric independently from operator model
+placements, run:
+
+```bash
+uv run skulk-harness steward qualify --config skulk-harness.yaml
+```
+
+This requires a ready, idle resident; checks the unique `skulk/steward` catalog
+entry and first-person identity; then asks Skulk to inspect one named node's
+complete diagnostics and doctor findings. The harness prefers a worker that
+advertises no API, when one exists, and writes private JSON evidence under
+`runs/`. Use `--diagnostic-node <friendly-name>` to pin the target and
+`--segment <name>` when the run is protected by an independent named lease.
+
 Now preview a run. Nothing touches the cluster yet: `run` is a **dry run by
 default**.
 

@@ -379,6 +379,34 @@ def test_require_fleet_or_refuse(remote: Path, tmp_path: Path) -> None:
     cli._require_fleet_or_refuse(HarnessConfig(), force=False)  # pyright: ignore[reportPrivateUsage]
 
 
+def test_require_fleet_or_refuse_honors_named_segment(
+    remote: Path, tmp_path: Path
+) -> None:
+    import typer
+
+    from skulk_test_harness import cli
+
+    lock = FleetLock(
+        remote=str(remote), holder="claude", cache_dir=tmp_path / "named-owner"
+    )
+    owner = FleetLockStore(lock, segment="gpu")
+    assert owner.acquire(branch="feature/gpu", host="a").ok
+    contender_cfg = HarnessConfig(
+        fleet_lock=FleetLock(
+            remote=str(remote), holder="codex", cache_dir=tmp_path / "named-contender"
+        )
+    )
+
+    with pytest.raises(typer.Exit):
+        cli._require_fleet_or_refuse(  # pyright: ignore[reportPrivateUsage]
+            contender_cfg, force=False, segment="gpu"
+        )
+
+    cli._require_fleet_or_refuse(  # pyright: ignore[reportPrivateUsage]
+        contender_cfg, force=False, segment="main"
+    )
+
+
 def test_fleet_cli_round_trip(remote: Path, tmp_path: Path) -> None:
     from typer.testing import CliRunner
 

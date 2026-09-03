@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `skulk-harness steward qualify` records a private, machine-readable release
+  check for the enabled intelligent fabric: ready/idle status consistency,
+  unique virtual-model discovery, Skulk identity, and named-node diagnostics.
+  It prefers a worker advertising `apiAvailable=false`, proving the steward can
+  inspect a non-API host without exposing its internal node identity.
+
 ### Changed
 
 - Speech cells now send unsigned sampling seed `42` by default, matching the

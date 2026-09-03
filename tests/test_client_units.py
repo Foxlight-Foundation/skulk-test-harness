@@ -46,6 +46,29 @@ class _FakeWebSocket:
         self.closed = (code, reason)
 
 
+def test_get_steward_status_requires_object_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = SkulkClient("http://local.test/")
+    monkeypatch.setattr(
+        client,
+        "_request_json",
+        lambda method, path, **_kwargs: (
+            {
+                "enabled": True,
+                "present": True,
+                "ready": True,
+            }
+            if (method, path) == ("GET", "/v1/steward")
+            else None
+        ),
+    )
+    try:
+        assert client.get_steward_status()["ready"] is True
+    finally:
+        client.close()
+
+
 def test_cluster_api_urls_include_local_and_reachable_peers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
