@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 from dataclasses import dataclass
@@ -28,6 +29,7 @@ class StewardQualificationEvidence:
     target_node_name: str
     identity_response: str
     diagnostics_response: str
+    diagnostics_tool_trace: str
 
 
 def _harness_commit() -> str:
@@ -121,15 +123,24 @@ def _node_commits(
 
     identities = state.get("nodeIdentities")
     typed_identities = identities if isinstance(identities, dict) else {}
+    resources = state.get("nodeResources")
+    typed_resources = resources if isinstance(resources, dict) else {}
     names = _friendly_node_names(state)
-    selected_ids = set(names) if eligible_node_ids is None else eligible_node_ids
+    selected_ids = (
+        set(typed_identities) | set(typed_resources)
+        if eligible_node_ids is None
+        else eligible_node_ids
+    )
     commits: dict[str, str] = {}
+    unidentified_index = 0
     for node_id in sorted(selected_ids):
         identity = typed_identities.get(node_id)
         commit = identity.get("skulkCommit") if isinstance(identity, dict) else None
-        commits[names.get(node_id, f"unresolved:{node_id}")] = (
-            commit if isinstance(commit, str) and commit else "unknown"
-        )
+        node_name = names.get(node_id)
+        if node_name is None:
+            unidentified_index += 1
+            node_name = f"Unidentified node {unidentified_index}"
+        commits[node_name] = commit if isinstance(commit, str) and commit else "unknown"
     return commits
 
 
@@ -151,6 +162,28 @@ def _doctor_reference(
     if not isinstance(check_id, str) or not isinstance(verdict, str):
         raise RuntimeError("target node doctor result omitted its check ID or verdict")
     return len(doctor), check_id, verdict
+
+
+def _tool_trace_called(trace: str, tool_name: str, target_node_name: str) -> bool:
+    """Return whether the structured reasoning trace proves one named tool call."""
+
+    for line in trace.splitlines():
+        rendered_name, separator, rendered_arguments = line.partition(" ")
+        if rendered_name != tool_name or not separator:
+            continue
+        try:
+            arguments = json.loads(rendered_arguments)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(arguments, dict):
+            continue
+        requested_node = arguments.get("node_name", arguments.get("node"))
+        if (
+            isinstance(requested_node, str)
+            and requested_node.casefold() == target_node_name.casefold()
+        ):
+            return True
+    return False
 
 
 def _diagnostic_target(
@@ -320,7 +353,7 @@ def qualify_steward(
     else:
         checks.append("resident identifies itself as Skulk")
 
-    diagnostics = client.stream_chat(
+    diagnostics_execution = client.stream_chat(
         model_id="skulk/steward",
         messages=[
             {
@@ -345,9 +378,15 @@ def qualify_steward(
         temperature=0.0,
         top_p=1.0,
         enable_thinking=False,
-    ).text.strip()
+    )
+    diagnostics = diagnostics_execution.text.strip()
+    diagnostics_tool_trace = diagnostics_execution.reasoning_text.strip()
     if not diagnostics:
         failures.append("named-node diagnostic response was empty")
+    elif not _tool_trace_called(diagnostics_tool_trace, "run_doctor", target_node_name):
+        failures.append(
+            "named-node diagnostic response lacked a structured run_doctor trace"
+        )
     elif target_node_name.casefold() not in diagnostics.casefold():
         failures.append("named-node diagnostic response omitted the friendly node name")
     elif target_node_id in diagnostics:
@@ -397,4 +436,5 @@ def qualify_steward(
         target_node_name=target_node_name,
         identity_response=identity,
         diagnostics_response=diagnostics,
+        diagnostics_tool_trace=diagnostics_tool_trace,
     )

@@ -82,13 +82,21 @@ class _Client:
             return SimpleNamespace(
                 text=(
                     "api-node is an API Model with API Chip; it has 0 doctor findings."
-                )
+                ),
+                reasoning_text=(
+                    'get_node_diagnostics {"node_name":"api-node"}\n'
+                    'run_doctor {"node_name":"api-node"}\n'
+                ),
             )
         return SimpleNamespace(
             text=(
                 "worker-node is a Worker Model 42 with Worker Chip 9; "
                 "it has 0 doctor findings."
-            )
+            ),
+            reasoning_text=(
+                'get_node_diagnostics {"node_name":"worker-node"}\n'
+                'run_doctor {"node_name":"worker-node"}\n'
+            ),
         )
 
 
@@ -122,7 +130,8 @@ def test_qualification_rejects_non_ready_transition_and_identity_leak() -> None:
         "desired_model": "org/better",
     }
     client.stream_chat = lambda **_kwargs: SimpleNamespace(  # type: ignore[method-assign]
-        text="worker-node peer-worker"
+        text="worker-node peer-worker",
+        reasoning_text='run_doctor {"node_name":"worker-node"}\n',
     )
 
     evidence = qualify_steward(client)  # type: ignore[arg-type]
@@ -137,7 +146,10 @@ def test_qualification_rejects_negated_identity_and_unproven_diagnostics() -> No
     responses = iter(
         [
             SimpleNamespace(text="I am not Skulk."),
-            SimpleNamespace(text="worker-node could not be inspected."),
+            SimpleNamespace(
+                text="worker-node could not be inspected.",
+                reasoning_text='run_doctor {"node_name":"worker-node"}\n',
+            ),
         ]
     )
     client.stream_chat = lambda **_kwargs: next(responses)  # type: ignore[method-assign]
@@ -196,3 +208,45 @@ def test_qualification_rejects_mixed_node_commits_and_unproven_doctor() -> None:
     assert evidence.passed is False
     assert any("runs def5678" in failure for failure in evidence.failures)
     assert any("doctor finding count" in failure for failure in evidence.failures)
+
+
+def test_qualification_requires_structured_doctor_tool_trace() -> None:
+    client = _Client()
+    responses = iter(
+        [
+            SimpleNamespace(text="I am Skulk."),
+            SimpleNamespace(
+                text=(
+                    "worker-node is a Worker Model 42 with Worker Chip 9; "
+                    "it has 0 doctor findings."
+                ),
+                reasoning_text=('get_node_diagnostics {"node_name":"worker-node"}\n'),
+            ),
+        ]
+    )
+    client.stream_chat = lambda **_kwargs: next(responses)  # type: ignore[method-assign]
+
+    evidence = qualify_steward(client)  # type: ignore[arg-type]
+
+    assert evidence.passed is False
+    assert any(
+        "structured run_doctor trace" in failure for failure in evidence.failures
+    )
+
+
+def test_qualification_rejects_unidentified_live_resource_node() -> None:
+    client = _Client()
+    state = client.get_state()
+    resources = state["nodeResources"]
+    assert isinstance(resources, dict)
+    resources["peer-unidentified"] = {"apiAvailable": False}
+    client.get_state = lambda: state  # type: ignore[method-assign]
+
+    evidence = qualify_steward(client)  # type: ignore[arg-type]
+
+    assert evidence.passed is False
+    assert evidence.node_commits["Unidentified node 1"] == "unknown"
+    assert any(
+        "Unidentified node 1" in failure and "unavailable" in failure
+        for failure in evidence.failures
+    )
