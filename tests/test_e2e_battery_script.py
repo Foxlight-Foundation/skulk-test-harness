@@ -212,3 +212,73 @@ def test_translation_cell_uses_stt_fixture_instead_of_multilingual_tts() -> None
     assert model_sets["speech-translation-stt"].models == [
         "CogniSoftOrg/canary-1b-v2-mlx-bf16"
     ]
+
+
+FRESH_FLEET_DROPPED_CELLS = (
+    'cell pooled-rpc       llama-cpp        "--min-nodes 2 --instance-meta LlamaRpc"',
+    'cell concurrency-120b           concurrency-reasoning  "--max-nodes 1"',
+    "cell concurrency-gguf-pooled    concurrency-reasoning  "
+    '"--min-nodes 2 --max-nodes 2 --instance-meta LlamaRpc"',
+)
+
+
+def _cell_commands(script: Path) -> list[list[str]]:
+    """Return every battery cell invocation in script order."""
+    return [
+        shlex.split(line.strip())
+        for line in script.read_text().splitlines()
+        if line.strip().startswith("cell ")
+    ]
+
+
+def _shell_code(script: Path) -> list[str]:
+    """Return the script's shell code without comments, cells, or blank lines."""
+    return [
+        line
+        for line in script.read_text().splitlines()
+        if line.strip()
+        and not line.lstrip().startswith("#")
+        and not line.strip().startswith("cell ")
+    ]
+
+
+def test_fresh_fleet_battery_tracks_the_full_battery() -> None:
+    """Keep the fresh-fleet battery the full battery minus only its huge models.
+
+    A freshly installed fleet elects its store host at random, so the
+    fresh-fleet variant leaves out the cells that download a 40 GB-plus GGUF.
+    Every other cell, flag, and line of shell machinery must stay identical, so
+    an edit to the full battery fails here until the variant follows it.
+    """
+    root = Path(__file__).resolve().parents[1] / "examples" / "foxlight"
+    full_script = root / "run_e2e_battery.sh"
+    fresh_script = root / "run_e2e_battery_fresh_fleet.sh"
+    dropped = [shlex.split(line) for line in FRESH_FLEET_DROPPED_CELLS]
+
+    assert all(command in _cell_commands(full_script) for command in dropped)
+    expected = [
+        ["cell", "gguf-big-fresh", *command[2:]]
+        if command[:2] == ["cell", "gguf-big"]
+        else command
+        for command in _cell_commands(full_script)
+        if command not in dropped
+    ]
+    assert _cell_commands(fresh_script) == expected
+    assert _shell_code(fresh_script) == _shell_code(full_script)
+
+
+def test_fresh_fleet_gguf_set_drops_only_the_huge_models() -> None:
+    """The fresh-fleet GGUF set is gguf-big without its two 40 GB-plus models."""
+    root = Path(__file__).resolve().parents[1]
+    model_sets = load_model_sets(
+        root / "examples" / "foxlight" / "model_sets.yaml"
+    ).model_sets
+    huge = {
+        "bartowski/Llama-3.3-70B-Instruct-GGUF",
+        "bartowski/openai_gpt-oss-120b-GGUF",
+    }
+
+    assert huge <= set(model_sets["gguf-big"].models)
+    assert model_sets["gguf-big-fresh"].models == [
+        model for model in model_sets["gguf-big"].models if model not in huge
+    ]

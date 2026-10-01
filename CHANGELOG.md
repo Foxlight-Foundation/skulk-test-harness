@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `examples/foxlight/run_e2e_battery_fresh_fleet.sh` runs the full E2E battery
+  without its two GGUF models of 40 GB and more, for physical fresh-install
+  fleets whose randomly elected store host cannot hold them: `gguf-big` runs as
+  the new `gguf-big-fresh` model set, and the `pooled-rpc`, `concurrency-120b`
+  and `concurrency-gguf-pooled` cells are absent. A test keeps it identical to
+  `run_e2e_battery.sh` in every other cell and line of shell code.
+
 - `skulk-harness steward qualify` records a private, machine-readable release
   check for the enabled intelligent fabric: ready/idle status consistency,
   unique virtual-model discovery, Skulk identity, and named-node diagnostics.
@@ -16,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   inspect a non-API host without exposing its internal node identity.
 
 ### Changed
+
+- The Foxlight fresh-install example expects the dashboard's `skulk` voice:
+  Skulk 2.0 speech cards default to that English-preferring signature voice,
+  so automatic selection chooses it for English text instead of `angus`.
 
 - Speech cells now send unsigned sampling seed `42` by default, matching the
   shipped dashboard's deterministic TTS behavior. Tests can set
