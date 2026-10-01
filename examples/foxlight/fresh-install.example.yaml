@@ -50,7 +50,9 @@ fresh_install:
       dashboard_audio:
         speech_synthesis_model: mlx-community/Qwen3-TTS-12Hz-0.6B-Base-6bit
         transcription_model: mlx-community/parakeet-tdt-0.6b-v3
-        expected_voice: angus
+        # Skulk 2.0 cards default to the English-preferring `skulk` voice,
+        # which the dashboard's automatic selection chooses for English text.
+        expected_voice: skulk
         expected_language: English
 
     apple-2:

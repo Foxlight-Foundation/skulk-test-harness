@@ -24,6 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The Foxlight fresh-install example expects the dashboard's `skulk` voice:
+  Skulk 2.0 speech cards default to that English-preferring signature voice,
+  so automatic selection chooses it for English text instead of `angus`.
+
 - Speech cells now send unsigned sampling seed `42` by default, matching the
   shipped dashboard's deterministic TTS behavior. Tests can set
   `speech_seed: null` to exercise the API's advancing random stream.
