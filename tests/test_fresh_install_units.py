@@ -6009,6 +6009,25 @@ def test_dashboard_transcript_match_tolerates_punctuation_not_wrong_words() -> N
     )
 
 
+def test_dashboard_transcript_match_reads_digits_as_their_number_words() -> None:
+    """A recognizer writing "7" for "seven" has not misheard the word."""
+
+    assert _transcript_matches(
+        "release audio bravo hotel seven cedar",
+        "Release audio Bravo Hotel 7 Cedar",
+    )
+    # One misheard word in six stays within the quarter word-error bound.
+    assert _transcript_matches(
+        "release audio bravo hotel seven cedar",
+        "Release Audio Bravo Hotel 7 Seater",
+    )
+    # Two real errors in six do not, whatever the number formatting.
+    assert not _transcript_matches(
+        "release audio bravo hotel seven cedar",
+        "release audio bravo hotel 8 seater",
+    )
+
+
 def test_dashboard_stt_fixture_is_non_silent_and_stops_before_looping() -> None:
     fixture = (
         Path(dashboard_qualification_module.__file__).parent
