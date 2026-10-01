@@ -5155,6 +5155,14 @@ class _StubConversationLocator:
     def click(self) -> None:
         self.clicks += 1
 
+    @property
+    def first(self) -> "_StubConversationLocator":
+        return self
+
+    def evaluate(self, expression: str) -> str:
+        assert "tagName" in expression
+        return "SELECT"
+
     def select_option(self, value: str) -> None:
         self.selected.append(value)
 
@@ -5210,6 +5218,14 @@ class _StubSelectedComposer:
         assert state == "visible"
         assert timeout == 30_000
 
+    @property
+    def first(self) -> "_StubSelectedComposer":
+        return self
+
+    def evaluate(self, expression: str) -> str:
+        assert "tagName" in expression
+        return "SELECT"
+
     def select_option(self, value: str) -> None:
         self.selected.append(value)
 
@@ -5259,6 +5275,152 @@ def test_chat_model_selection_accepts_the_sole_ready_model_composer() -> None:
         model_id="org/model",
     )
     assert explicit_selector_page.selector.selected == ["org/model"]
+
+
+
+class _StubTextMarker:
+    """The inner text a menu option is filtered on."""
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+
+class _StubMenuOptions:
+    """Listbox options, optionally filtered by one inner element's exact text."""
+
+    def __init__(
+        self,
+        labels: list[tuple[str, str]],
+        menu: "_StubDesignedMenu",
+        matches: list[str] | None = None,
+    ) -> None:
+        self.labels = labels
+        self.menu = menu
+        self.matches = matches
+
+    def filter(self, *, has: _StubTextMarker) -> "_StubMenuOptions":
+        return _StubMenuOptions(
+            self.labels,
+            self.menu,
+            [model_id for short_name, model_id in self.labels if has.text in (short_name, model_id)],
+        )
+
+    def count(self) -> int:
+        return len(self.labels) if self.matches is None else len(self.matches)
+
+    def click(self) -> None:
+        assert self.matches is not None and len(self.matches) == 1
+        self.menu.chosen = self.matches[0]
+        self.menu.open = False
+
+
+class _StubDesignedMenu:
+    """A designed listbox menu: a labelled button opening role=option rows."""
+
+    def __init__(self, labels: list[tuple[str, str]]) -> None:
+        self.open = False
+        self.chosen: str | None = None
+        self.options = _StubMenuOptions(labels, self)
+
+    # Trigger button.
+    @property
+    def first(self) -> "_StubDesignedMenu":
+        return self
+
+    def wait_for(self, *, state: str, timeout: float) -> None:
+        if state == "hidden":
+            assert not self.open
+
+    def evaluate(self, expression: str) -> str:
+        assert "tagName" in expression
+        return "BUTTON"
+
+    def get_attribute(self, name: str) -> str:
+        assert name == "aria-expanded"
+        return "true" if self.open else "false"
+
+    def click(self) -> None:
+        self.open = True
+
+    def inner_text(self) -> str:
+        return self.chosen.rsplit("/", maxsplit=1)[-1] if self.chosen else "Select"
+
+    # Listbox.
+    def get_by_role(self, role: str) -> _StubMenuOptions:
+        assert role == "option"
+        assert self.open
+        return self.options
+
+
+class _StubDesignedMenuPage:
+    """Dashboard page exposing one designed model menu."""
+
+    def __init__(self, menu: _StubDesignedMenu) -> None:
+        self.menu = menu
+
+    def get_by_label(self, label: str, *, exact: bool) -> _StubDesignedMenu:
+        assert (label, exact) == ("Select chat model", True)
+        return self.menu
+
+    def get_by_role(self, role: str, *, name: str, exact: bool) -> _StubDesignedMenu:
+        assert (role, name, exact) == ("listbox", "Select chat model", True)
+        return self.menu
+
+    def get_by_text(self, text: str, *, exact: bool) -> _StubTextMarker:
+        assert exact is True
+        return _StubTextMarker(text)
+
+
+def test_designed_model_menu_chooses_the_exact_model() -> None:
+    qualifier = DashboardQualifier(
+        api_base_url="http://example.invalid",
+        artifact_directory=Path("unused"),
+        poll_interval_s=1,
+        model_ready_timeout_s=1,
+    )
+    menu = _StubDesignedMenu(
+        [
+            ("Qwen3.5-2B-4bit", "mlx-community/Qwen3.5-2B-4bit"),
+            ("Qwen3-VL-4B-Instruct-4bit", "mlx-community/Qwen3-VL-4B-Instruct-4bit"),
+        ]
+    )
+    qualifier._choose_dashboard_model(  # pyright: ignore[reportPrivateUsage]
+        cast(Page, _StubDesignedMenuPage(menu)),
+        label="Select chat model",
+        model_id="mlx-community/Qwen3-VL-4B-Instruct-4bit",
+    )
+    assert menu.chosen == "mlx-community/Qwen3-VL-4B-Instruct-4bit"
+    assert menu.open is False
+
+
+def test_designed_model_menu_refuses_an_ambiguous_or_missing_model() -> None:
+    qualifier = DashboardQualifier(
+        api_base_url="http://example.invalid",
+        artifact_directory=Path("unused"),
+        poll_interval_s=1,
+        model_ready_timeout_s=1,
+    )
+    duplicate_short_names = _StubDesignedMenu(
+        [
+            ("model-4bit", "first-org/model-4bit"),
+            ("model-4bit", "second-org/model-4bit"),
+        ]
+    )
+    with pytest.raises(RuntimeError, match="no single option"):
+        qualifier._choose_dashboard_model(  # pyright: ignore[reportPrivateUsage]
+            cast(Page, _StubDesignedMenuPage(duplicate_short_names)),
+            label="Select chat model",
+            model_id="third-org/model-4bit",
+        )
+    assert duplicate_short_names.chosen is None
+
+    # The full id still separates two options that share a short name.
+    qualifier._choose_dashboard_model(  # pyright: ignore[reportPrivateUsage]
+        cast(Page, _StubDesignedMenuPage(duplicate_short_names)),
+        label="Select chat model",
+        model_id="second-org/model-4bit",
+    )
+    assert duplicate_short_names.chosen == "second-org/model-4bit"
 
 
 class _StubPersistedMessage:
