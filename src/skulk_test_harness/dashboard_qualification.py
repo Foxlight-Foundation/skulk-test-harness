@@ -472,13 +472,63 @@ class DashboardQualifier:
         retry_response = self._wait_for_assistant(page, expected=phrase)
         return request_failure_visible, echo_matched(phrase, retry_response)
 
+    def _choose_dashboard_model(self, page: Page, *, label: str, model_id: str) -> None:
+        """Choose one exact model in a labelled dashboard model control.
+
+        Current dashboards draw each model control as a designed menu: a
+        button named by the label opens a listbox whose options name each
+        model by its last path segment, and the chat menu also shows the full
+        model id. Older builds used a native select, which keeps working
+        through ``select_option``. The choice must land on exactly one option
+        and the control must then show that model, so a renamed or ambiguous
+        option fails loudly instead of qualifying the wrong model.
+
+        Args:
+            page: Dashboard page holding the control.
+            label: Accessible label of the model control.
+            model_id: Exact catalog model id to choose.
+
+        Raises:
+            RuntimeError: When no single option matches the model, or the
+                control does not show the model after the choice.
+        """
+
+        control = page.get_by_label(label, exact=True).first
+        control.wait_for(state="visible", timeout=30_000)
+        if control.evaluate("element => element.tagName") == "SELECT":
+            control.select_option(model_id)
+            return
+        if control.get_attribute("aria-expanded") != "true":
+            control.click()
+        listbox = page.get_by_role("listbox", name=label, exact=True)
+        listbox.wait_for(state="visible", timeout=10_000)
+        options = listbox.get_by_role("option")
+        short_name = model_id.rsplit("/", maxsplit=1)[-1]
+        chosen = options.filter(has=page.get_by_text(model_id, exact=True))
+        if chosen.count() != 1:
+            chosen = options.filter(has=page.get_by_text(short_name, exact=True))
+        if chosen.count() != 1:
+            raise RuntimeError(
+                f"dashboard control {label!r} offered no single option for "
+                f"{model_id!r} among {options.count()} options"
+            )
+        chosen.click()
+        listbox.wait_for(state="hidden", timeout=10_000)
+        shown = control.inner_text().strip()
+        if short_name not in shown:
+            raise RuntimeError(
+                f"dashboard control {label!r} shows {shown!r} after choosing "
+                f"{model_id!r}"
+            )
+
     def _select_chat_model(self, page: Page, *, model_id: str) -> None:
         """Select an exact mounted model in the shipped chat model control."""
 
         selector = page.get_by_label("Select chat model", exact=True)
         if selector.count() > 0:
-            selector.wait_for(state="visible", timeout=30_000)
-            selector.select_option(model_id)
+            self._choose_dashboard_model(
+                page, label="Select chat model", model_id=model_id
+            )
             return
         message = page.get_by_label("Chat message", exact=True)
         message.wait_for(state="visible", timeout=30_000)
@@ -564,9 +614,11 @@ class DashboardQualifier:
                 )
                 page.goto(f"{self.api_base_url}/chat", wait_until="networkidle")
                 self._select_chat_model(page, model_id=chat_model_id)
-                speech_selector = page.get_by_label("Select speech model", exact=True)
-                speech_selector.wait_for(state="visible", timeout=30_000)
-                speech_selector.select_option(speech_synthesis_model)
+                self._choose_dashboard_model(
+                    page,
+                    label="Select speech model",
+                    model_id=speech_synthesis_model,
+                )
                 draft = page.get_by_label("Chat message", exact=True)
                 draft.fill(fixture_phrase)
                 speak = page.get_by_role("button", name="Speak draft", exact=True)
@@ -943,11 +995,11 @@ class DashboardQualifier:
             page.goto(f"{self.api_base_url}/chat", wait_until="networkidle")
             self._dismiss_first_run_consent(page)
             self._select_chat_model(page, model_id=chat_model_id)
-            transcription_selector = page.get_by_label(
-                "Select transcription model", exact=True
+            self._choose_dashboard_model(
+                page,
+                label="Select transcription model",
+                model_id=transcription_model,
             )
-            transcription_selector.wait_for(state="visible", timeout=30_000)
-            transcription_selector.select_option(transcription_model)
             start = page.get_by_role("button", name="Start recording", exact=True)
             start.wait_for(state="visible", timeout=30_000)
             with page.expect_response(
@@ -1052,7 +1104,9 @@ class DashboardQualifier:
         page.wait_for_url("**/chat")
         selector = page.get_by_label("Select chat model", exact=True)
         if selector.count():
-            selector.select_option(model_id)
+            self._choose_dashboard_model(
+                page, label="Select chat model", model_id=model_id
+            )
         progress.selected = True
 
         phrase = echo_phrase()
@@ -1264,7 +1318,9 @@ class DashboardQualifier:
         # before asserting anything about the reply.
         selector = page.get_by_label("Select chat model", exact=True)
         if selector.count():
-            selector.select_option(model_id)
+            self._choose_dashboard_model(
+                page, label="Select chat model", model_id=model_id
+            )
         message = page.get_by_label("Chat message", exact=True)
         message.wait_for(state="visible", timeout=30_000)
         # The turn only means anything against an empty thread.
