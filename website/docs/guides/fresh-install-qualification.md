@@ -149,6 +149,16 @@ authoritative reread. A renewal or restoration failure stops further testing,
 makes one emergency extension, leaves the lease held, and writes a critical
 recovery report.
 
+A fresh fleet elects its model-store host at random, so the store can land on
+the member with the least free disk. When not every member can hold the
+battery's largest model, set `physical_fleets.<name>.e2e_battery_script` to
+`examples/foxlight/run_e2e_battery_fresh_fleet.sh`. That variant is the full
+battery without its two GGUF models of 40 GB and more (Llama 3.3 70B and
+gpt-oss-120B): `gguf-big` runs as `gguf-big-fresh`, and the `pooled-rpc`,
+`concurrency-120b`, and `concurrency-gguf-pooled` cells are absent. Every other
+cell is unchanged, and a test keeps the two scripts in step. Configured fleets
+with managed disk keep running the full battery.
+
 Large batteries may set `physical_fleets.<name>.e2e_entrypoint_target` to a
 different member of the same freshly installed topology. Dashboard, vision,
 and audio user journeys continue through `entrypoint_target`; only the complete

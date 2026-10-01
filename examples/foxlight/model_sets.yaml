@@ -302,6 +302,17 @@ model_sets:
       - bartowski/Llama-3.3-70B-Instruct-GGUF
       - bartowski/openai_gpt-oss-120b-GGUF
 
+  gguf-big-fresh:
+    name: gguf-big-fresh
+    description: >-
+      The gguf-big set without its two models of 40 GB and more, for
+      fresh-install qualification. A fresh fleet elects its model-store host at
+      random, so the battery cannot assume that host has room for Llama 3.3 70B
+      or gpt-oss-120B. Configured fleets keep running the complete gguf-big set.
+    models:
+      - Qwen/Qwen2.5-7B-Instruct-GGUF
+      - unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF
+
   mtp-served:
     name: mtp-served
     description: >-
