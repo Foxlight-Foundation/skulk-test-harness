@@ -871,6 +871,7 @@ test_sets:
           - kite
           - rufus
           - samson
+          - skulk
           - sydney
           - sylvie
         require_exact_voice_ids: true

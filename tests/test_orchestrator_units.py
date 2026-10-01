@@ -1193,6 +1193,7 @@ def test_foxlight_voice_suite_requires_managed_reference_contract() -> None:
         "kite",
         "rufus",
         "samson",
+        "skulk",
         "sydney",
         "sylvie",
     ]
