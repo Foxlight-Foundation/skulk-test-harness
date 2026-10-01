@@ -141,7 +141,7 @@ def test_public_and_foxlight_example_configs_load() -> None:
         apple_audio.speech_synthesis_model
         == "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-6bit"
     )
-    assert apple_audio.expected_voice == "angus"
+    assert apple_audio.expected_voice == "skulk"
     assert apple_audio.expected_language == "English"
     assert sorted(stability_config.cluster_nodes) == ["node-a", "node-b"]
     assert all(
