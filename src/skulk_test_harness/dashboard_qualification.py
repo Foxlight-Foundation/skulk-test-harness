@@ -12,6 +12,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
+from typing import Final
 
 from playwright.sync_api import (
     Browser,
@@ -389,16 +390,26 @@ class DashboardQualifier:
         page.get_by_role("button", name="Settings", exact=True).click()
         heading = page.get_by_text("Settings", exact=True)
         heading.wait_for(state="visible", timeout=30_000)
+        # Settings groups its fields into collapsible sections that open on
+        # demand, so open Download the way a user would before reading it.
+        download = page.locator("details").filter(
+            has=page.locator("summary", has_text="Download")
+        )
+        if download.count() and download.first.get_attribute("open") is None:
+            download.first.locator("summary").click()
         page.get_by_text("Allow HuggingFace fallback", exact=True).wait_for(
             state="visible", timeout=30_000
         )
+        save = page.get_by_role("button", name="Save changes", exact=True)
+        if not save.count():
+            save = page.get_by_role("button", name="Save", exact=True)
         with page.expect_response(
             lambda response: (
                 response.request.method == "PUT" and response.url.endswith("/config")
             ),
             timeout=30_000,
         ) as response_info:
-            page.get_by_role("button", name="Save", exact=True).click()
+            save.click()
         response = response_info.value
         if not response.ok:
             raise RuntimeError(
@@ -412,17 +423,20 @@ class DashboardQualifier:
         """Require the cluster graph to render every expected fresh member."""
 
         page.goto(f"{self.api_base_url}/cluster", wait_until="networkidle")
-        inspect = page.get_by_role(
-            "button", name="Inspect live node diagnostics", exact=True
+        # Each rendered node is one selectable button whose name reads its
+        # memory and compute; per-node actions appear only on hover or focus,
+        # so they cannot count the fleet.
+        nodes = page.get_by_role(
+            "button", name=re.compile(r"\d+% memory, \d+% compute")
         )
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline:
             self._check_abort()
-            count = inspect.count()
+            count = nodes.count()
             if count == expected_node_count:
                 return count
             page.wait_for_timeout(250)
-        return inspect.count()
+        return nodes.count()
 
     def _qualify_failure_and_retry(
         self,
@@ -1765,11 +1779,31 @@ def _fake_microphone_recording_ms(fixture_path: Path) -> int:
     return max(1_000, duration_ms - 200)
 
 
+_NUMBER_WORDS: Final[Mapping[str, str]] = {
+    "zero": "0", "one": "1", "two": "2", "three": "3", "four": "4",
+    "five": "5", "six": "6", "seven": "7", "eight": "8", "nine": "9",
+    "ten": "10", "eleven": "11", "twelve": "12", "thirteen": "13",
+    "fourteen": "14", "fifteen": "15", "sixteen": "16", "seventeen": "17",
+    "eighteen": "18", "nineteen": "19", "twenty": "20",
+}
+
+
+def _transcript_words(text: str) -> list[str]:
+    """Split text into comparable words, writing small numbers as digits.
+
+    Speech recognizers conventionally write "seven" as "7", so a digit and
+    its word are the same word rather than a recognition error.
+    """
+
+    words: list[str] = re.findall(r"\w+(?:['’]\w+)?", text.casefold())
+    return [_NUMBER_WORDS.get(word, word) for word in words]
+
+
 def _transcript_matches(reference: str, transcript: str) -> bool:
     """Accept a dashboard transcription with at most one quarter word error."""
 
-    reference_words = re.findall(r"\w+(?:['’]\w+)?", reference.casefold())
-    transcript_words = re.findall(r"\w+(?:['’]\w+)?", transcript.casefold())
+    reference_words = _transcript_words(reference)
+    transcript_words = _transcript_words(transcript)
     if not reference_words:
         return not transcript_words
     previous = list(range(len(transcript_words) + 1))
