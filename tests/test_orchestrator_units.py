@@ -1603,7 +1603,12 @@ def test_vision_suite_uses_original_card_and_strict_semantic_checks(
         assert data_plane.images[0].input_path == Path(
             "fixtures/vision/semantic-qualification-card.png"
         )
-        assert len(data_plane.success.required_regexes) == 3
+        # Gemma 3n routing checks the code and shape only; its color answer
+        # is a near tie that flips between one and two ranks.
+        expected_regexes = (
+            2 if data_plane.name == "gemma3n-image-local-remote-routing" else 3
+        )
+        assert len(data_plane.success.required_regexes) == expected_regexes
     qwen35_data_plane = next(
         test
         for test in foxlight_data_plane_tests
