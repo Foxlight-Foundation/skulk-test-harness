@@ -1424,29 +1424,29 @@ class DashboardQualifier:
         assistant = page.get_by_label("Assistant message", exact=True).filter(
             visible=True
         )
-        saw_cancel_control = False
-        last_text: str | None = None
-        stable_without_cancel_polls = 0
+        settled_candidate: str | None = None
         while time.monotonic() < deadline:
             self._check_abort()
             count = assistant.count()
             if count > after_count:
-                text = self._assistant_response_text(assistant.nth(count - 1))
                 cancel = page.get_by_role(
                     "button", name="Cancel generation", exact=True
                 )
-                if cancel.count() > 0:
-                    saw_cancel_control = True
-                    stable_without_cancel_polls = 0
-                elif saw_cancel_control:
-                    return text
-                elif text == last_text:
-                    stable_without_cancel_polls += 1
-                    if stable_without_cancel_polls >= 1:
+                # Check the control before reading the text: a read taken
+                # first can predate the final chunk of a generation that ends
+                # before the control is checked, which returned replies
+                # without their last tokens. The reply is complete once two
+                # consecutive reads, both taken after generation ended, agree.
+                # Empty text is never complete: it is the card before its
+                # first chunk.
+                generation_ended = cancel.count() == 0
+                text = self._assistant_response_text(assistant.nth(count - 1))
+                if generation_ended and text.strip():
+                    if text == settled_candidate:
                         return text
+                    settled_candidate = text
                 else:
-                    stable_without_cancel_polls = 0
-                last_text = text
+                    settled_candidate = None
             page.wait_for_timeout(500)
         raise TimeoutError(
             "dashboard assistant response did not complete while waiting for "

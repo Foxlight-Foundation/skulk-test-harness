@@ -5739,8 +5739,89 @@ def test_assistant_wait_requires_stream_completion() -> None:
         expected="UJUEUC",
     )
 
-    assert page.polls == 2
+    # Generation ends at the third read; the fourth confirms the text settled.
+    assert page.polls == 3
     assert response == "UJUEUC cyan circle"
+
+
+class _StubLateFinalChunkAssistant:
+    """Assistant card whose final tokens render just after generation ends."""
+
+    def __init__(self, page: "_StubLateFinalChunkPage") -> None:
+        self.page = page
+
+    def filter(self, *, visible: bool) -> "_StubLateFinalChunkAssistant":
+        assert visible is True
+        return self
+
+    def count(self) -> int:
+        return 1
+
+    def nth(self, index: int) -> "_StubLateFinalChunkAssistant":
+        assert index == 0
+        return self
+
+    def inner_text(self) -> str:
+        if self.page.polls < 2:
+            return "Welcome to Copper Harbor, room"
+        return "Welcome to Copper Harbor, room 4824."
+
+
+class _StubLateFinalChunkCancel:
+    """Cancel control that disappears one poll before the final tokens render."""
+
+    def __init__(self, page: "_StubLateFinalChunkPage") -> None:
+        self.page = page
+
+    def count(self) -> int:
+        return 1 if self.page.polls < 1 else 0
+
+
+class _StubLateFinalChunkPage:
+    """Dashboard page where generation ends before its last chunk is drawn."""
+
+    def __init__(self) -> None:
+        self.polls = 0
+        self.assistant = _StubLateFinalChunkAssistant(self)
+        self.cancel = _StubLateFinalChunkCancel(self)
+
+    def get_by_label(self, label: str, *, exact: bool) -> _StubLateFinalChunkAssistant:
+        assert (label, exact) == ("Assistant message", True)
+        return self.assistant
+
+    def get_by_role(
+        self, role: str, *, name: str, exact: bool
+    ) -> _StubLateFinalChunkCancel:
+        assert (role, name, exact) == ("button", "Cancel generation", True)
+        return self.cancel
+
+    def wait_for_timeout(self, milliseconds: float) -> None:
+        assert milliseconds == 500
+        self.polls += 1
+
+
+def test_assistant_wait_waits_for_the_final_chunk_after_generation_ends() -> None:
+    """A reply read as generation ends must not lose its last tokens.
+
+    The release gate's dashboard retry check failed this way: the control was
+    gone, the reply had not drawn its last token, and the check judged
+    "... room" against a phrase ending in the room number.
+    """
+
+    qualifier = DashboardQualifier(
+        api_base_url="http://example.invalid",
+        artifact_directory=Path("unused"),
+        poll_interval_s=1,
+        model_ready_timeout_s=1,
+    )
+    page = _StubLateFinalChunkPage()
+
+    response = qualifier._wait_for_assistant(  # pyright: ignore[reportPrivateUsage]
+        cast(Page, page),
+        expected="4824",
+    )
+
+    assert response == "Welcome to Copper Harbor, room 4824."
 
 
 def test_assistant_wait_ignores_hidden_conversation_history() -> None:
