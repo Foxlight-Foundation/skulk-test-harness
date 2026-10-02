@@ -1238,11 +1238,16 @@ test_sets:
         images:
           - input_path: fixtures/vision/semantic-qualification-card.png
             media_type: image/png
+        # Routing proves the image reached both API owners and was read: the
+        # code and the shape. Color stays with the single-node card test. This
+        # 2B checkpoint names the color only on one side of a near tie at its
+        # sixth token ("card" -0.625 vs "badge" -0.875 on one rank; the order
+        # flips across two ranks with every other token within ~0.08 nats), so
+        # a color check here measures arithmetic noise, not routing.
         success:
           min_chars: 16
           required_regexes:
             - "(?i)\\bFUE4ZG\\b"
-            - "(?i)\\b(?:cyan|teal)\\b"
             - "(?i)\\bdiamond\\b"
           forbidden_substrings:
             - bedroom
