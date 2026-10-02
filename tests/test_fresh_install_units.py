@@ -5824,6 +5824,83 @@ def test_assistant_wait_waits_for_the_final_chunk_after_generation_ends() -> Non
     assert response == "Welcome to Copper Harbor, room 4824."
 
 
+class _StubEmptyReplyAssistant:
+    """Assistant card that never receives any visible text."""
+
+    def filter(self, *, visible: bool) -> "_StubEmptyReplyAssistant":
+        assert visible is True
+        return self
+
+    def count(self) -> int:
+        return 1
+
+    def nth(self, index: int) -> "_StubEmptyReplyAssistant":
+        assert index == 0
+        return self
+
+    def inner_text(self) -> str:
+        return ""
+
+
+class _StubEmptyReplyCancel:
+    """Cancel control shown for the first ``visible_polls`` polls only."""
+
+    def __init__(self, page: "_StubEmptyReplyPage", visible_polls: int) -> None:
+        self.page = page
+        self.visible_polls = visible_polls
+
+    def count(self) -> int:
+        return 1 if self.page.polls < self.visible_polls else 0
+
+
+class _StubEmptyReplyPage:
+    """Dashboard page whose generation completes with an empty reply."""
+
+    def __init__(self, *, cancel_visible_polls: int) -> None:
+        self.polls = 0
+        self.assistant = _StubEmptyReplyAssistant()
+        self.cancel = _StubEmptyReplyCancel(self, cancel_visible_polls)
+
+    def get_by_label(self, label: str, *, exact: bool) -> _StubEmptyReplyAssistant:
+        assert (label, exact) == ("Assistant message", True)
+        return self.assistant
+
+    def get_by_role(self, role: str, *, name: str, exact: bool) -> _StubEmptyReplyCancel:
+        assert (role, name, exact) == ("button", "Cancel generation", True)
+        return self.cancel
+
+    def wait_for_timeout(self, milliseconds: float) -> None:
+        assert milliseconds == 500
+        self.polls += 1
+
+
+@pytest.mark.parametrize(
+    ("cancel_visible_polls", "expected_polls"),
+    [(1, 2), (0, 19)],
+    ids=["generation-seen", "generation-never-seen"],
+)
+def test_assistant_wait_returns_a_completed_empty_reply_promptly(
+    cancel_visible_polls: int, expected_polls: int
+) -> None:
+    """An empty reply is a qualification failure to report, not a 30-minute wait."""
+
+    qualifier = DashboardQualifier(
+        api_base_url="http://example.invalid",
+        artifact_directory=Path("unused"),
+        poll_interval_s=1,
+        model_ready_timeout_s=1,
+    )
+    page = _StubEmptyReplyPage(cancel_visible_polls=cancel_visible_polls)
+
+    response = qualifier._wait_for_assistant(  # pyright: ignore[reportPrivateUsage]
+        cast(Page, page),
+        expected="anything",
+    )
+
+    assert response == ""
+    assert page.polls == expected_polls
+
+
 def test_assistant_wait_ignores_hidden_conversation_history() -> None:
     """The active reply must win over mounted cards from hidden threads."""
 

@@ -165,6 +165,11 @@ class _JourneyProgress:
         )
 
 
+#: Polls (500 ms each) an empty assistant card may sit with no generation
+#: in progress before the wait accepts it as an empty reply.
+_EMPTY_REPLY_QUIET_POLLS = 20
+
+
 class DashboardQualifier:
     """Drive find, download, launch, select, and chat through the served UI."""
 
@@ -1425,6 +1430,8 @@ class DashboardQualifier:
             visible=True
         )
         settled_candidate: str | None = None
+        saw_generation = False
+        quiet_empty_polls = 0
         while time.monotonic() < deadline:
             self._check_abort()
             count = assistant.count()
@@ -1437,15 +1444,25 @@ class DashboardQualifier:
                 # before the control is checked, which returned replies
                 # without their last tokens. The reply is complete once two
                 # consecutive reads, both taken after generation ended, agree.
-                # Empty text is never complete: it is the card before its
-                # first chunk.
                 generation_ended = cancel.count() == 0
+                saw_generation = saw_generation or not generation_ended
                 text = self._assistant_response_text(assistant.nth(count - 1))
-                if generation_ended and text.strip():
+                if generation_ended and (text.strip() or saw_generation):
+                    quiet_empty_polls = 0
                     if text == settled_candidate:
                         return text
                     settled_candidate = text
+                elif generation_ended:
+                    # An empty card with no generation seen is usually the card
+                    # before its first chunk, but can be an empty reply that
+                    # finished within one poll. Accept it after a bounded quiet
+                    # window rather than the whole deadline.
+                    quiet_empty_polls += 1
+                    settled_candidate = None
+                    if quiet_empty_polls >= _EMPTY_REPLY_QUIET_POLLS:
+                        return text
                 else:
+                    quiet_empty_polls = 0
                     settled_candidate = None
             page.wait_for_timeout(500)
         raise TimeoutError(
