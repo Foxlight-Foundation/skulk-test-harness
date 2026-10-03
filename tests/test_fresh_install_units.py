@@ -6167,6 +6167,24 @@ def test_dashboard_transcript_match_tolerates_punctuation_not_wrong_words() -> N
     )
 
 
+
+def test_dashboard_transcript_match_ignores_the_looped_fixture_restarting() -> None:
+    """The fake microphone loops its fixture; its restart is not a misheard word.
+
+    Gate run 12 failed on exactly this transcript: one misheard word in six,
+    plus the opening word of the fixture's second pass.
+    """
+
+    reference = "release audio bravo hotel seven cedar"
+    assert _transcript_matches(reference, "Release Audio Bravo Hotel 7 Seater. Release")
+    assert _transcript_matches(reference, "release audio bravo hotel seven cedar release audio")
+    # A longer tail is no longer a brief overrun, and only the loop's opening
+    # words, without the phrase, is not a transcription of it.
+    assert not _transcript_matches(
+        reference, "release audio bravo hotel seven cedar release audio bravo hotel"
+    )
+    assert not _transcript_matches(reference, "release audio")
+
 def test_dashboard_transcript_match_reads_digits_as_their_number_words() -> None:
     """A recognizer writing "7" for "seven" has not misheard the word."""
 
