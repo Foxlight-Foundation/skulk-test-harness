@@ -1816,6 +1816,28 @@ def _transcript_words(text: str) -> list[str]:
     return [_NUMBER_WORDS.get(word, word) for word in words]
 
 
+def _without_loop_restart(
+    reference_words: list[str], transcript_words: list[str]
+) -> list[str]:
+    """Drop trailing words where the looped fixture starts over.
+
+    Chromium's fake microphone loops its fixture, so dictation that runs a
+    moment long transcribes the opening of a second pass ("... cedar
+    release"). Those words repeat the reference's start; they are the loop,
+    not recognition errors. Only a tail of at most half the reference is
+    trimmed, and only when at least the reference's length minus one word
+    remains before it, so a transcript the dashboard inserted twice still
+    fails.
+    """
+
+    for overlap in range(len(reference_words) // 2, 0, -1):
+        if len(transcript_words) - overlap < len(reference_words) - 1:
+            continue
+        if transcript_words[-overlap:] == reference_words[:overlap]:
+            return transcript_words[:-overlap]
+    return transcript_words
+
+
 def _transcript_matches(reference: str, transcript: str) -> bool:
     """Accept a dashboard transcription with at most one quarter word error."""
 
@@ -1823,6 +1845,7 @@ def _transcript_matches(reference: str, transcript: str) -> bool:
     transcript_words = _transcript_words(transcript)
     if not reference_words:
         return not transcript_words
+    transcript_words = _without_loop_restart(reference_words, transcript_words)
     previous = list(range(len(transcript_words) + 1))
     for reference_index, reference_word in enumerate(reference_words, start=1):
         current = [reference_index]
