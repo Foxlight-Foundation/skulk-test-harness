@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `image_generation` and `image_edit` test kinds cover Skulk's image
+  endpoints: a generation must return PNGs of exactly the requested size, an
+  edit must return valid PNGs, and every image is saved as an artifact. The
+  example `image-generation` model and test sets (FLUX.1-schnell and
+  FLUX.1-Kontext) join the E2E battery and its fresh-fleet variant.
 - `examples/foxlight/run_e2e_battery_fresh_fleet.sh` runs the full E2E battery
   without its two GGUF models of 40 GB and more, for physical fresh-install
   fleets whose randomly elected store host cannot hold them: `gguf-big` runs as

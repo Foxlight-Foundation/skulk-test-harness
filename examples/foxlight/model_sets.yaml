@@ -84,6 +84,16 @@ model_sets:
     models:
       - sentence-transformers/all-MiniLM-L6-v2
 
+  image-generation:
+    name: image-generation
+    description: >-
+      Image generation and editing targets for Skulk's MLX image engine, which
+      runs on Apple Silicon. FLUX.1-schnell generates in four steps;
+      FLUX.1-Kontext edits an input image.
+    models:
+      - exolabs/FLUX.1-schnell-4bit
+      - exolabs/FLUX.1-Kontext-dev-4bit
+
   speech-tts:
     name: speech-tts
     description: >-

@@ -133,6 +133,15 @@ class EmbeddingExecution:
 
 
 @dataclass(frozen=True)
+class ImageExecution:
+    """Decoded images and timing collected from one image generation or edit."""
+
+    images: list[bytes]
+    elapsed_s: float
+    created: int | None
+
+
+@dataclass(frozen=True)
 class AudioSpeechExecution:
     """Encoded audio and timing collected from one speech synthesis request."""
 
@@ -1688,6 +1697,86 @@ class SkulkClient:
             raw_response=response,
         )
 
+    def images_generate(
+        self,
+        *,
+        model_id: str,
+        prompt: str,
+        size: str = "512x512",
+        n: int = 1,
+        advanced_params: Mapping[str, object] | None = None,
+    ) -> ImageExecution:
+        """Generate images with Skulk's OpenAI-shaped generation endpoint.
+
+        Requests inline base64 PNGs so the harness verifies the exact bytes the
+        caller receives rather than a node-local stored copy.
+        """
+
+        payload: dict[str, object] = {
+            "model": model_id,
+            "prompt": prompt,
+            "n": n,
+            "size": size,
+            "response_format": "b64_json",
+        }
+        if advanced_params:
+            payload["advanced_params"] = dict(advanced_params)
+        start = time.monotonic()
+        response = self._request_json(
+            "POST",
+            "/v1/images/generations",
+            json_body=payload,
+            timeout_s=self.generation_timeout_s,
+        )
+        return _image_execution(
+            response, time.monotonic() - start, "/v1/images/generations"
+        )
+
+    def images_edit(
+        self,
+        *,
+        model_id: str,
+        prompt: str,
+        image: bytes,
+        filename: str,
+        media_type: str,
+        size: str = "512x512",
+        n: int = 1,
+        advanced_params: Mapping[str, object] | None = None,
+    ) -> ImageExecution:
+        """Edit one input image with Skulk's multipart image edit endpoint."""
+
+        data: dict[str, str] = {
+            "model": model_id,
+            "prompt": prompt,
+            "n": str(n),
+            "size": size,
+            "response_format": "b64_json",
+        }
+        if advanced_params:
+            data["advanced_params"] = json.dumps(dict(advanced_params))
+        start = time.monotonic()
+        try:
+            response = self._client.post(
+                "/v1/images/edits",
+                data=data,
+                files={"image": (filename, image, media_type)},
+                timeout=self.generation_timeout_s,
+            )
+        except (httpx.TimeoutException, httpx.TransportError) as exc:
+            raise SkulkApiError(
+                "POST",
+                "/v1/images/edits",
+                0,
+                f"{type(exc).__name__}: {exc}",
+            ) from exc
+        elapsed = time.monotonic() - start
+        if response.status_code >= 400:
+            raise SkulkApiError(
+                "POST", "/v1/images/edits", response.status_code, response.text
+            )
+        return _image_execution(cast(object, response.json()), elapsed, "/v1/images/edits")
+
     def audio_speech(
         self,
         *,
@@ -2978,3 +3067,25 @@ def _active_runner_ids(state: dict[str, object]) -> set[str]:
         if isinstance(runner_to_shard, dict):
             active.update(str(runner_id) for runner_id in runner_to_shard)
     return active
+
+
+def _image_execution(payload: object, elapsed: float, path: str) -> ImageExecution:
+    """Decode an OpenAI-shaped image response carrying inline base64 images."""
+
+    if not isinstance(payload, dict):
+        raise TypeError(f"Unexpected {path} payload: {payload!r}")
+    data = payload.get("data")
+    if not isinstance(data, list) or not data:
+        raise TypeError(f"Expected {path} to return non-empty data")
+    images: list[bytes] = []
+    for item in data:
+        encoded = item.get("b64_json") if isinstance(item, dict) else None
+        if not isinstance(encoded, str) or not encoded:
+            raise TypeError(f"An {path} data item carried no b64_json image")
+        images.append(base64.b64decode(encoded, validate=True))
+    created = payload.get("created")
+    return ImageExecution(
+        images=images,
+        elapsed_s=elapsed,
+        created=created if isinstance(created, int) else None,
+    )

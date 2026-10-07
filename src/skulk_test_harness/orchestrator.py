@@ -26,6 +26,7 @@ from skulk_test_harness.client import (
     ChatExecution,
     ClusterApiOwner,
     DataPlaneDiagnosticsSnapshot,
+    ImageExecution,
     ProviderCapabilityDiagnosticsSnapshot,
     RealtimeTranscriptionExecution,
     SkulkApiError,
@@ -1124,6 +1125,14 @@ class HarnessRunner:
         if test.kind == "embedding":
             return self._run_embedding_test(
                 client, model_id=model_id, test=test, repetition=repetition
+            )
+        if test.kind in {"image_generation", "image_edit"}:
+            return self._run_image_test(
+                client,
+                model_id=model_id,
+                test=test,
+                repetition=repetition,
+                artifact_dir=artifact_dir,
             )
         if test.kind == "vision_data_plane":
             return self._run_vision_data_plane_test(
@@ -2396,6 +2405,126 @@ class HarnessRunner:
                 generated_chars=len(output),
             ),
             issues=issues,
+        )
+
+    def _run_image_test(
+        self,
+        client: SkulkClient,
+        *,
+        model_id: str,
+        test: PromptTest,
+        repetition: int,
+        artifact_dir: Path,
+    ) -> TestResult:
+        """Generate or edit images and require real PNGs of the requested size.
+
+        A generation must return exactly ``image_count`` images at
+        ``image_size``. An edit must return valid PNGs; their size follows the
+        model's handling of the input image, so only positive dimensions are
+        required. Every image is saved as a reportable artifact.
+        """
+
+        issues: list[Issue] = []
+        execution: ImageExecution | None = None
+        try:
+            if test.kind == "image_edit":
+                input_path = test.images[0].input_path
+                if input_path is None:
+                    raise ValueError("kind='image_edit' requires an input_path")
+                source = _resolve_audio_input_path(input_path)
+                execution = client.images_edit(
+                    model_id=model_id,
+                    prompt=_expanded_prompt(test),
+                    image=source.read_bytes(),
+                    filename=source.name,
+                    media_type=mimetypes.guess_type(source)[0] or "image/png",
+                    size=test.image_size,
+                    n=test.image_count,
+                    advanced_params=test.image_advanced_params or None,
+                )
+            else:
+                execution = client.images_generate(
+                    model_id=model_id,
+                    prompt=_expanded_prompt(test),
+                    size=test.image_size,
+                    n=test.image_count,
+                    advanced_params=test.image_advanced_params or None,
+                )
+        except (OSError, SkulkApiError, TypeError, ValueError) as exc:
+            issues.append(
+                Issue(
+                    severity="error",
+                    model_id=model_id,
+                    test_name=test.name,
+                    message="Image request failed",
+                    evidence={"error": str(exc)},
+                )
+            )
+        sizes: list[tuple[int, int] | None] = []
+        artifact_path: Path | None = None
+        if execution is not None:
+            sizes = [_png_dimensions(image) for image in execution.images]
+            if len(execution.images) != test.image_count:
+                issues.append(
+                    Issue(
+                        severity="error",
+                        model_id=model_id,
+                        test_name=test.name,
+                        message="Image count did not match the request",
+                        evidence={
+                            "expected": test.image_count,
+                            "actual": len(execution.images),
+                        },
+                    )
+                )
+            width, height = (int(part) for part in test.image_size.split("x"))
+            for index, size in enumerate(sizes):
+                wrong_size = test.kind == "image_generation" and size != (
+                    width,
+                    height,
+                )
+                if size is None or size[0] <= 0 or size[1] <= 0 or wrong_size:
+                    issues.append(
+                        Issue(
+                            severity="error",
+                            model_id=model_id,
+                            test_name=test.name,
+                            message="Image was not a PNG of the expected size",
+                            evidence={
+                                "index": index,
+                                "requested": test.image_size,
+                                "actual": list(size) if size else None,
+                                "bytes": len(execution.images[index]),
+                            },
+                        )
+                    )
+            artifact_dir.mkdir(parents=True, exist_ok=True)
+            for index, image in enumerate(execution.images):
+                path = artifact_dir / (
+                    f"{slugify(model_id)}--{slugify(test.name)}--"
+                    f"rep-{repetition}--{index}.png"
+                )
+                path.write_bytes(image)
+                artifact_path = artifact_path or path
+        elapsed = execution.elapsed_s if execution is not None else 0.0
+        output = (
+            f"{len(execution.images)} image(s) {[list(s) if s else None for s in sizes]}"
+            if execution is not None
+            else ""
+        )
+        return TestResult(
+            model_id=model_id,
+            test_name=test.name,
+            repetition=repetition,
+            passed=not any(issue.severity == "error" for issue in issues),
+            output_text=output,
+            metrics=GenerationMetrics(
+                elapsed_s=elapsed,
+                output_chars=len(output),
+                generated_chars=len(output),
+            ),
+            issues=issues,
+            artifact_path=artifact_path,
         )
 
     def _run_audio_speech_test(
@@ -4869,6 +4998,14 @@ def _prompt_image_url(image: PromptImage) -> str:
         raise ValueError(f"Unable to determine image media type for {image_path}")
     encoded = base64.b64encode(image_path.read_bytes()).decode("ascii")
     return f"data:{media_type};base64,{encoded}"
+
+
+def _png_dimensions(image: bytes) -> tuple[int, int] | None:
+    """Return a PNG's width and height from its header, or ``None`` if not a PNG."""
+
+    if len(image) < 24 or image[:8] != b"\x89PNG\r\n\x1a\n" or image[12:16] != b"IHDR":
+        return None
+    return int.from_bytes(image[16:20], "big"), int.from_bytes(image[20:24], "big")
 
 
 def _resolve_audio_input_path(path: Path) -> Path:
