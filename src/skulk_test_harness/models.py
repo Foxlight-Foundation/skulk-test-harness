@@ -40,6 +40,8 @@ TestKind = Literal[
     "speech_translation_roundtrip",
     "speech_reference_roundtrip",
     "vision_data_plane",
+    "image_generation",
+    "image_edit",
 ]
 RunMode = Literal["plan", "execute"]
 IssueSeverity = Literal["info", "warning", "error"]
@@ -1207,6 +1209,27 @@ class PromptTest(HarnessBaseModel):
         ge=0,
         description="For `kind: embedding`, minimum L2 norm for every vector.",
     )
+    image_size: str = Field(
+        default="512x512",
+        pattern=r"^[1-9][0-9]{1,4}x[1-9][0-9]{1,4}$",
+        description=(
+            "For `kind: image_generation` and `image_edit`, the requested "
+            "`size`. Generated images must come back at exactly this size."
+        ),
+    )
+    image_count: int = Field(
+        default=1,
+        ge=1,
+        le=4,
+        description="For image tests, the number of images requested (`n`).",
+    )
+    image_advanced_params: dict[str, object] = Field(
+        default_factory=dict,
+        description=(
+            "For image tests, optional `advanced_params` such as `seed`, "
+            "`num_inference_steps` and `guidance`."
+        ),
+    )
     audio_response_format: AudioResponseFormat = Field(
         default="wav",
         description="For speech tests, encoded audio format requested from TTS.",
@@ -1489,6 +1512,18 @@ class PromptTest(HarnessBaseModel):
         if len(value) != len(set(value)):
             raise ValueError("PromptTest.model_ids entries must be unique")
         return value
+
+    @model_validator(mode="after")
+    def _validate_image_edit_input(self) -> "PromptTest":
+        """An image edit needs exactly one local input image to send."""
+
+        if self.kind == "image_edit" and (
+            len(self.images) != 1 or self.images[0].input_path is None
+        ):
+            raise ValueError(
+                "kind='image_edit' requires exactly one image with input_path"
+            )
+        return self
 
     @model_validator(mode="after")
     def _validate_concurrency_contract(self) -> "PromptTest":

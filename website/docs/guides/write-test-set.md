@@ -179,6 +179,43 @@ test_sets:
           min_chars: 0
 ```
 
+## An Image Test
+
+`image_generation` sends a prompt to `/v1/images/generations` and requires each
+returned image to be a PNG of exactly `image_size`. `image_edit` sends the one
+fixture in `images` to `/v1/images/edits` and requires valid PNGs back. Both
+save every image as an artifact. Name each test's model with `model_ids` so a
+generation model is never asked to edit.
+
+```yaml
+test_sets:
+  my-image-tests:
+    name: my-image-tests
+    description: Generate one image and edit a fixture.
+    tests:
+      - name: text-to-image-512
+        kind: image_generation
+        model_ids:
+          - exolabs/FLUX.1-schnell-4bit
+        prompt: a red fox curled up in autumn leaves
+        image_size: 512x512
+        image_advanced_params:
+          seed: 7
+          num_inference_steps: 4
+        success:
+          min_chars: 0
+      - name: image-edit-512
+        kind: image_edit
+        model_ids:
+          - exolabs/FLUX.1-Kontext-dev-4bit
+        prompt: make it snow
+        images:
+          - input_path: fixtures/vision/semantic-qualification-card.png
+            media_type: image/png
+        success:
+          min_chars: 0
+```
+
 ## A Vision DATA Test
 
 Use `vision_data_plane` when a multi-node cluster must prove both inbound VLM

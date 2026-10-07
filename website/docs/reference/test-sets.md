@@ -51,6 +51,8 @@ Each map key must match the test set's `name`.
 | `speech_translation_roundtrip` | TTS output saved and translated to English by a mounted translation model |
 | `speech_reference_roundtrip` | A donor TTS clip conditions a multipart TTS request; both clips are saved, with optional STT/WER scoring of the conditioned output |
 | `vision_data_plane` | Send the same image through colocated and remote API owners, require equivalent output, prove local/remote vision-media routing, reject transport anomalies, and save sanitized diagnostics |
+| `image_generation` | Text-to-image through `/v1/images/generations`; every image must be a PNG of exactly `image_size` and is saved as an artifact |
+| `image_edit` | Image-to-image through the multipart `/v1/images/edits` with one `images` fixture; every result must be a valid PNG and is saved as an artifact |
 
 ## Prompt Test Fields
 
@@ -84,6 +86,9 @@ Each map key must match the test set's `name`.
 | `embedding_input` | Embedding request input |
 | `expected_embedding_dimensions` | Required vector dimensionality |
 | `min_embedding_norm` | Minimum L2 norm for embedding vectors |
+| `image_size` | Requested `size` for image tests, such as `512x512`; generated images must match it exactly |
+| `image_count` | Images requested per image test (`n`, 1 to 4) |
+| `image_advanced_params` | Optional image `advanced_params`, such as `seed`, `num_inference_steps` and `guidance` |
 | `audio_response_format` | TTS audio response format, such as `wav` |
 | `speech_voice` | Optional voice name for TTS |
 | `speech_lang_code` | Optional model-language value sent as `lang_code` for TTS |
