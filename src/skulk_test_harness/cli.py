@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 import socket
+import subprocess
 import time
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 
+import httpx
 import typer
 from rich.console import Console
 from rich.table import Table
@@ -33,6 +35,11 @@ from skulk_test_harness.orchestrator import HarnessRunner
 from skulk_test_harness.reporting import ReportWriter
 from skulk_test_harness.specs import load_config, load_model_sets, load_test_sets
 from skulk_test_harness.steward_qualification import qualify_steward
+from skulk_test_harness.video_qualification import (
+    BASELINE,
+    VideoApiQualification,
+    VideoProfile,
+)
 
 app = typer.Typer(help="Agent-controlled Skulk end-to-end test and benchmark harness.")
 models_app = typer.Typer(help="Inspect model sets and live Skulk model catalog.")
@@ -46,12 +53,16 @@ fleet_app = typer.Typer(
 fresh_install_app = typer.Typer(
     help="Qualify the literal fresh-install experience used for release gates."
 )
+video_app = typer.Typer(
+    help="Check an exact LTX candidate through an isolated video API."
+)
 steward_app = typer.Typer(help="Qualify Skulk's resident intelligent-fabric service.")
 app.add_typer(models_app, name="models")
 app.add_typer(tests_app, name="tests")
 app.add_typer(stability_app, name="stability")
 app.add_typer(fleet_app, name="fleet")
 app.add_typer(fresh_install_app, name="fresh-install")
+app.add_typer(video_app, name="video")
 app.add_typer(steward_app, name="steward")
 
 console = Console()
@@ -1630,3 +1641,74 @@ def submit(
     except submit_module.SubmitError as exc:
         typer.echo(f"submit failed: {exc}", err=True)
         raise typer.Exit(code=1) from exc
+
+
+@video_app.command("plan")
+def video_plan(
+    profile: Annotated[
+        Path, typer.Option("--profile", help="Reviewed exact-candidate JSON profile.")
+    ],
+) -> None:
+    """Print the five LTX baseline cells offline, without a time estimate."""
+    try:
+        candidate = VideoProfile.model_validate_json(profile.read_bytes())
+    except (ValueError, OSError) as error:
+        typer.echo(f"invalid video profile: {error}", err=True)
+        raise typer.Exit(code=2) from error
+    typer.echo(
+        json.dumps(
+            {
+                "scope": "API/media baseline checks; not complete qualification",
+                "cells": [
+                    {
+                        "name": cell.name,
+                        "body": cell.body(candidate.model),
+                        "parts": cell.parts,
+                    }
+                    for cell in BASELINE
+                ],
+            },
+            indent=2,
+        )
+    )
+
+
+@video_app.command("run")
+def video_run(
+    profile: Annotated[
+        Path, typer.Option("--profile", help="Reviewed exact-candidate JSON profile.")
+    ],
+    artifacts: Annotated[
+        Path,
+        typer.Option(
+            "--artifacts",
+            help="New private evidence directory; must not already exist.",
+        ),
+    ],
+    config: ConfigPath = Path("skulk-harness.yaml"),
+) -> None:
+    """Run scoped LTX API checks under the configured fleet lease policy.
+
+    Provision the isolated candidate and acquire the normal shared-fleet lease
+    first. This command changes no placement or engine installation. Its raw
+    evidence can contain operator details and is never submitted publicly.
+    """
+    try:
+        candidate = VideoProfile.model_validate_json(profile.read_bytes())
+        _require_fleet_or_refuse(load_config(config), force=False)
+        with httpx.Client(
+            base_url=candidate.api_url.rstrip("/"), timeout=30.0, follow_redirects=False
+        ) as client:
+            VideoApiQualification(candidate, client).run(artifacts)
+    except (
+        ValueError,
+        RuntimeError,
+        OSError,
+        httpx.HTTPError,
+        subprocess.SubprocessError,
+    ) as error:
+        typer.echo(f"video API checks failed: {error}", err=True)
+        raise typer.Exit(code=1) from error
+    typer.echo(
+        "Baseline API/media checks passed. Quality, semantic audio sync, external peak memory and lifecycle acceptance remain separate gates."
+    )
