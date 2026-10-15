@@ -1,0 +1,1 @@
+"use strict";(self.webpackChunkskulk_test_harness_docs=self.webpackChunkskulk_test_harness_docs||[]).push([[8488],{8488(s,e,c){c.d(e,{createArchitectureServices:()=>t.S});var t=c(9221);c(1400)}}]);
