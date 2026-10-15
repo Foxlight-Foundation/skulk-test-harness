@@ -1,0 +1,308 @@
+{
+  "fixture_source_commit": "cd2f2225fa24f7fd6e670ba94e1f5ddb29832be8",
+  "instances": {
+    "placement": {
+      "MlxRingInstance": {
+        "contextTokenLimit": null,
+        "ephemeralPort": 50000,
+        "excludedInstallIds": [],
+        "excludedNodes": [],
+        "hostsByNode": {},
+        "instanceId": "placement",
+        "requestedContextTokens": null,
+        "shardAssignments": {
+          "modelId": "Lightricks/LTX-2.5-distilled-comfy-int8",
+          "nodeToRunner": {
+            "worker": "runner"
+          },
+          "runnerToShard": {
+            "runner": {
+              "PipelineShardMetadata": {
+                "deviceRank": 0,
+                "endLayer": 48,
+                "immediateException": false,
+                "llamaServerSettings": null,
+                "memorySettings": null,
+                "modelCard": {
+                  "artifactBundle": {
+                    "bundleId": "bundle_awv3vyfccz7hzkpwkem47o7q6ww45rt2q7vqsxohwewyajlffeaa",
+                    "downloadSize": 39689918812,
+                    "files": [
+                      {
+                        "objectId": "sha256:c4279eeff115cbeaca494bd2183e7d768c38fe85a184dc6afbb7159157c44334",
+                        "path": "diffusion_models/ltx-2.5-22b-distilled-transformer-comfy-int8-convrot.safetensors",
+                        "sizeBytes": 21504034224
+                      },
+                      {
+                        "objectId": "sha256:6ce688a0aa98a5fa36a9f1e6c3f42152a498cc2b53ee8c15674c64244f91487f",
+                        "path": "text_encoders/gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors",
+                        "sizeBytes": 15372969374
+                      },
+                      {
+                        "objectId": "sha256:685b06ee3d9b2039647698fc4ea33175112462fc374e2777312c907897dfce8d",
+                        "path": "vae/ltx-2.5-video-vae-conv-bf16.safetensors",
+                        "sizeBytes": 1452269922
+                      },
+                      {
+                        "objectId": "sha256:c52733d37f6a7fb7949c3dc0fb468c6cb2169e4d836983a73babb9f0d54837a5",
+                        "path": "vae/ltx-2.5-audio-vae-bf16.safetensors",
+                        "sizeBytes": 364866540
+                      },
+                      {
+                        "objectId": "sha256:eb5a71fe4068ee87ccdb1c3aa635e547ca76bd2d30ae20ae889f2c325c0677e8",
+                        "path": "latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors",
+                        "sizeBytes": 995778752
+                      }
+                    ],
+                    "root": null
+                  },
+                  "attentionHeadDim": null,
+                  "audio": null,
+                  "baseModel": "Lightricks/LTX-2.5",
+                  "capabilities": [
+                    "video_gen"
+                  ],
+                  "components": [
+                    {
+                      "canShard": false,
+                      "componentName": "transformer",
+                      "componentPath": "diffusion_models",
+                      "nLayers": null,
+                      "safetensorsIndexFilename": null,
+                      "storageSize": {
+                        "inBytes": 21504034224
+                      }
+                    },
+                    {
+                      "canShard": false,
+                      "componentName": "text_encoder",
+                      "componentPath": "text_encoders",
+                      "nLayers": null,
+                      "safetensorsIndexFilename": null,
+                      "storageSize": {
+                        "inBytes": 15372969374
+                      }
+                    },
+                    {
+                      "canShard": false,
+                      "componentName": "video_vae",
+                      "componentPath": "vae",
+                      "nLayers": null,
+                      "safetensorsIndexFilename": null,
+                      "storageSize": {
+                        "inBytes": 1452269922
+                      }
+                    },
+                    {
+                      "canShard": false,
+                      "componentName": "audio_vae",
+                      "componentPath": "vae",
+                      "nLayers": null,
+                      "safetensorsIndexFilename": null,
+                      "storageSize": {
+                        "inBytes": 364866540
+                      }
+                    }
+                  ],
+                  "contextLength": 0,
+                  "family": "ltx-2.5",
+                  "generatorRevision": null,
+                  "ggufCacheGeometry": null,
+                  "ggufFile": null,
+                  "hiddenSize": 4096,
+                  "image": null,
+                  "isCustom": false,
+                  "license": {
+                    "displayName": "LTX-2.5",
+                    "name": "LTX-2.x Community License Agreement",
+                    "notice": "Read the LTX-2.x Community License before downloading. Commercial use by entities with annual revenue of at least USD 10 million requires a paid agreement, subject to its noncommercial exception. Preserve required license and transparency notices.",
+                    "spdxId": null,
+                    "url": "https://github.com/Lightricks/LTX-2/blob/9ec55f9f22798a3198d9c923856824821bc3317e/LICENSE-2_x"
+                  },
+                  "modalities": null,
+                  "modelId": "Lightricks/LTX-2.5-distilled-comfy-int8",
+                  "music": null,
+                  "nLayers": 48,
+                  "numKeyValueHeads": null,
+                  "placement": {
+                    "backendPreference": [
+                      "comfy-cuda",
+                      "comfy-rocm"
+                    ],
+                    "compatibleBackends": [
+                      "comfy-cuda",
+                      "comfy-rocm"
+                    ],
+                    "maxContextTokens": null,
+                    "maxPipelineSplitLayer": null,
+                    "minVramGib": null
+                  },
+                  "qualificationOnly": false,
+                  "quantization": "int8_convrot",
+                  "reasoning": null,
+                  "registryArchitecture": null,
+                  "registryArtifactFormat": null,
+                  "registryCapabilityClaims": [],
+                  "registryCardId": null,
+                  "registryGgufMetadata": null,
+                  "registryProvenance": null,
+                  "registrySnapshotId": null,
+                  "runtime": null,
+                  "sourceRepository": "Lightricks/LTX-2.5",
+                  "sourceRevision": "49b093a39c19169a8a81721dcc541e07e945232f",
+                  "storageSize": {
+                    "inBytes": 39689918812
+                  },
+                  "supportsTensor": false,
+                  "tasks": [
+                    "TextToVideo",
+                    "ImageToVideo",
+                    "ReferenceToVideo"
+                  ],
+                  "tooling": null,
+                  "trustRemoteCode": false,
+                  "usesCfg": false,
+                  "video": {
+                    "aspectRatios": [],
+                    "audioChannels": 2,
+                    "audioConditioning": true,
+                    "audioOutput": true,
+                    "audioSampleRate": 48000,
+                    "audioShift": null,
+                    "canvasMultiple": 32,
+                    "companions": [
+                      {
+                        "audioShift": null,
+                        "kind": "latent_upscaler",
+                        "license": null,
+                        "modes": [],
+                        "name": "spatial_x2",
+                        "path": "latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors",
+                        "repo": null,
+                        "revision": null,
+                        "role": null,
+                        "sizeBytes": 995778752,
+                        "steps": null,
+                        "strength": null,
+                        "videoShift": null
+                      }
+                    ],
+                    "defaultShortEdge": 512,
+                    "defaultSteps": 8,
+                    "editing": [
+                      "retake",
+                      "extend"
+                    ],
+                    "fps": 24,
+                    "frameGridMultiple": 8,
+                    "frameGridOffset": 1,
+                    "generatedKeyframes": true,
+                    "maxPixels": null,
+                    "maxSeconds": 20,
+                    "minSeconds": 1,
+                    "modes": [
+                      "t2va",
+                      "fl2va",
+                      "ref2va"
+                    ],
+                    "promptRelay": true,
+                    "referenceLimits": {
+                      "clipMaxSeconds": null,
+                      "clipMinSeconds": null,
+                      "maxAudioClips": 1,
+                      "maxFiles": 9,
+                      "maxImages": 8,
+                      "maxVideos": 1,
+                      "totalClipSeconds": null
+                    },
+                    "transformerVariant": "distilled",
+                    "videoShift": null
+                  },
+                  "vision": null
+                },
+                "nLayers": 48,
+                "resolvedBackend": "comfy-rocm",
+                "resolvedEngineBuild": null,
+                "shouldTimeout": null,
+                "startLayer": 0,
+                "worldSize": 1
+              }
+            }
+          }
+        },
+        "systemRole": null
+      }
+    }
+  },
+  "nodeIdentities": {
+    "api": {
+      "skulkCommit": "aaaaaaaa"
+    },
+    "worker": {
+      "skulkCommit": "aaaaaaaa"
+    }
+  },
+  "nodeResources": {
+    "api": {
+      "dataTransport": "zenoh",
+      "engineBuilds": {}
+    },
+    "worker": {
+      "dataTransport": "zenoh",
+      "engineBuilds": {
+        "comfy-rocm": "fixture-build"
+      }
+    }
+  },
+  "tasks": {
+    "task": {
+      "VideoGeneration": {
+        "commandId": "job",
+        "errorMessage": null,
+        "errorType": null,
+        "instanceId": "placement",
+        "ownerNode": "api",
+        "taskId": "task",
+        "taskParams": {
+          "aspect_ratio": null,
+          "audio": true,
+          "audio_conditioning": null,
+          "audio_shift": null,
+          "codec": "h264",
+          "control_end": 1.0,
+          "control_kind": null,
+          "control_start": 0.0,
+          "control_strength": null,
+          "decoder": "convolutional",
+          "duration": "fixed",
+          "duration_min_seconds": null,
+          "editing": null,
+          "generated_keyframe_interval": null,
+          "guidance": null,
+          "lora": null,
+          "lora_strength": null,
+          "mode": "t2va",
+          "model": "Lightricks/LTX-2.5-distilled-comfy-int8",
+          "negative_prompt": null,
+          "pipeline": "distilled_two_stage",
+          "prompt": "A red ball rolls slowly from left to right across a blue tabletop. The camera stays fixed. Soft rolling sounds and three gentle wooden taps.",
+          "prompt_relay": null,
+          "reference_bytes": 0,
+          "reference_fidelity": null,
+          "references": [],
+          "sampler": null,
+          "scheduler": null,
+          "seconds": 2,
+          "seed": 7,
+          "size": "512x512",
+          "steps": 8,
+          "styles": [],
+          "total_input_chunks": 0,
+          "video_shift": null
+        },
+        "taskStatus": "Pending",
+        "traceEnabled": false
+      }
+    }
+  }
+}

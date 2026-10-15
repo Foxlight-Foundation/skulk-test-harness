@@ -41,6 +41,96 @@ keep, compare against later runs, and (if you want) publish to the public
 - **Share results**: one command submits a run to the community benchmarks
   ledger, redacted on your machine before anything leaves it.
 
+## LTX-2.5 baseline API checks
+
+`skulk-harness video` checks an already placed distilled LTX-2.5 candidate
+through its real `/v1/videos` API. It runs five 512×512, 49-frame, 24 fps
+audio/video cells: text, a repeat with a different seed, first image,
+first/last images, and a keyframe at one second. It requests the actual
+distilled two-stage pipeline (8+3 sampling intervals) without H3 sampler,
+frame-grid or timing assumptions.
+
+Prepare an isolated candidate cluster and its exact model placement first.
+Use the normal fleet lease before touching shared hardware. Engines still
+come from Core's existing on-demand published-wheel flow. This tool never
+installs engines, downloads weights, changes placements, deletes models or
+lowers memory admission. For media inspection, use `ffmpeg`/`ffprobe` on the
+operator host, or set the optional `media_python` profile field to a local
+verified engine interpreter that already carries PyAV. The latter inspects
+media in an isolated child; it adds no dependency to Skulk's base environment.
+
+Create a private profile, replacing every placeholder with independently
+reviewed candidate provenance:
+
+```json
+{
+  "api_url": "http://localhost:52415",
+  "core_commit": "<accepted 40-character Core commit>",
+  "node_ids": ["api-node-id", "render-node-id"],
+  "api_node_id": "api-node-id",
+  "worker_node_id": "render-node-id",
+  "model": "Lightricks/LTX-2.5-distilled-comfy-int8",
+  "card_sha256": "<64-character digest of the complete reviewed wire card>",
+  "backend": "comfy-rocm",
+  "engine_build": "<exact installed engine build>",
+  "timeout_seconds": 3600,
+  "media_python": null
+}
+```
+
+Allowed rendering lanes are `comfy-cuda`, `comfy-rocm` and `mlx_video-metal`.
+The exact profile scopes this evidence run; it is not a production hardware
+permission list. For a local run, both node identifiers can name the same
+node and `node_ids` contains it once. A remote media check requires distinct
+API and worker identifiers. All scoped nodes must report the accepted Core
+commit and shipping Zenoh transport. Short live commit reports must be known
+hexadecimal prefixes of the independently pinned full commit.
+
+The card digest covers the entire reviewed card object as serialized inside
+the shard's `modelCard` on `/state`: SHA-256 of UTF-8
+`json.dumps(card, sort_keys=True, separators=(",", ":"))`. It is a wire-evidence
+digest, not a registry card ID. Derive it from the accepted candidate card;
+do not automatically trust whatever an unrelated live node reports.
+
+```bash
+# Offline: inspect exact requests and required conditioning roles.
+uv run skulk-harness video plan --profile /private/profile.json
+
+# Online, after isolated setup and the normal lease. Evidence must be new.
+uv run skulk-harness video run --profile /private/profile.json \
+  --artifacts /private/ltx-run --config skulk-harness.yaml
+```
+
+Each run retains request fields, conditioning digests, observed task and
+complete shard, installed build, job statistics, downloaded MP4 and media
+probe. Actual task parameters, reference bytes/times, API owner, selected
+worker, full card and live engine must agree. A missing or changed proof,
+cache hit, checksum mismatch, unexpected peer, timeout or malformed media
+fails the run. On interruption it requests cancellation only for its own
+active job and retains the partial receipt. It never retries an ambiguous
+submission automatically or overwrites an earlier evidence directory.
+
+`api_checks_passed` means these baseline API/media checks passed. It does
+not mean complete model qualification. The full container is decoded and
+stream durations must agree within one video frame; perceptual quality,
+conditioning adherence and semantic audio synchronization remain unreviewed.
+Node memory and accelerator telemetry are sampled observations, not measured
+high-water counters. Keep a separate process/allocator/driver peak-memory
+receipt, labeling overlapping counters separately. Engine-reported peak
+memory, when available, remains in the raw job statistics. Installation,
+cancellation at specific stages, crash/restart/orphan recovery, queue bounds,
+retention, soak, advanced workflows and H3 regression require their own gates.
+
+These raw artifacts include operator identities and unredacted state. Keep
+them private; this command does not submit them to the benchmark ledger.
+
+The committed task/shard/card/result fixtures were serialized from Core
+candidate `cd2f2225fa24f7fd6e670ba94e1f5ddb29832be8` using its actual models
+and Comfy planner, with synthetic node identities. Focused media tests also
+decode real generated MP4s. Test hosts without system media tools can set
+`SKULK_TEST_MEDIA_PYTHON` to their verified PyAV interpreter and
+`SKULK_TEST_FFMPEG` to their existing FFmpeg executable; no weights are loaded.
+
 ## Five-minute start
 
 You need: a running Skulk node (its API defaults to `http://localhost:52415`)
