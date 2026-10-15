@@ -10,6 +10,7 @@ import subprocess
 from email import policy
 from email.parser import BytesParser
 from pathlib import Path
+from typing import Literal
 
 import httpx
 import pytest
@@ -79,9 +80,9 @@ def test_actual_core_wire_and_resolved_schedule_are_accepted() -> None:
         == proof
     )
     assert (
-        video.verify_video_result(_load("ltx25-core-result.json"), video.BASELINE[0])[
-            "frame_count"
-        ]
+        video.verify_video_result(
+            _load("ltx25-core-result.json"), video.BASELINE[0], backend="comfy-rocm"
+        )["frame_count"]
         == 49
     )
 
@@ -145,14 +146,39 @@ def test_wrong_actual_media_is_refused(field: str, value: int) -> None:
     job = _load("ltx25-core-result.json")
     _section(job, "output")[field] = value
     with pytest.raises(ValueError):
-        video.verify_video_result(job, video.BASELINE[0])
+        video.verify_video_result(job, video.BASELINE[0], backend="comfy-rocm")
 
 
 def test_cached_render_is_not_a_timing_measurement() -> None:
     job = _load("ltx25-core-result.json")
     _section(job, "stats")["seconds_per_step"] = 0.0
     with pytest.raises(ValueError, match="cache hit"):
-        video.verify_video_result(job, video.BASELINE[0])
+        video.verify_video_result(job, video.BASELINE[0], backend="comfy-rocm")
+
+
+@pytest.mark.parametrize(
+    "backend,scheduler",
+    [
+        ("comfy-cuda", "manual"),
+        ("comfy-rocm", "manual"),
+        ("mlx_video-metal", "ltx-2.5"),
+    ],
+)
+@pytest.mark.parametrize("fault", [None, "sampler", "scheduler"])
+def test_ltx_integrator_contract_excludes_h3_defaults(
+    backend: Literal["comfy-cuda", "comfy-rocm", "mlx_video-metal"],
+    scheduler: str,
+    fault: str | None,
+) -> None:
+    job = _load("ltx25-core-result.json")
+    engine = _section(_section(job, "stats"), "engine")
+    engine["scheduler"] = scheduler
+    if fault is not None:
+        engine[fault] = "res_multistep" if fault == "sampler" else "simple"
+        with pytest.raises(ValueError, match=fault):
+            video.verify_video_result(job, video.BASELINE[0], backend=backend)
+    else:
+        assert video.verify_video_result(job, video.BASELINE[0], backend=backend)
 
 
 class _Api:

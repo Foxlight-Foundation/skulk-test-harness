@@ -371,7 +371,10 @@ def make_video_fixtures(directory: Path) -> dict[str, str]:
 
 
 def verify_video_result(
-    job: dict[str, JsonValue], cell: VideoCell
+    job: dict[str, JsonValue],
+    cell: VideoCell,
+    *,
+    backend: Literal["comfy-cuda", "comfy-rocm", "mlx_video-metal"],
 ) -> dict[str, JsonValue]:
     """Require a sampled 8+3 render and the requested output/audio geometry."""
     if job.get("status") != "completed":
@@ -399,6 +402,8 @@ def verify_video_result(
         "pipeline": "distilled_two_stage",
         "decoder": "convolutional",
         "codec": "h264",
+        "sampler": "euler_ancestral",
+        "scheduler": "ltx-2.5" if backend == "mlx_video-metal" else "manual",
     }.items():
         if engine.get(key) != value:
             raise ValueError(f"executed settings differ at {key}")
@@ -614,7 +619,7 @@ class VideoApiQualification:
             if self.clock() - started >= self.profile.timeout_seconds:
                 raise TimeoutError("render exceeded its deadline")
             self.sleep(1.0)
-        output = verify_video_result(job, cell)
+        output = verify_video_result(job, cell, backend=self.profile.backend)
         if proof is None:
             raise ValueError("no actual task/shard evidence was observed")
         path = directory / "output.mp4"
